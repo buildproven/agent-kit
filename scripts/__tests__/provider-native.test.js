@@ -2462,7 +2462,7 @@ describe("provider-native platform", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(calls, "utf8")).toContain("-s read-only");
     expect(readFileSync(calls, "utf8")).toContain("mcp_servers={}");
-    expect(readFileSync(calls, "utf8")).toContain("-a never");
+    expect(readFileSync(calls, "utf8")).not.toContain("-a never");
     expect(
       JSON.parse(readFileSync(path.join(output, "run-record.json"), "utf8")),
     ).toMatchObject({

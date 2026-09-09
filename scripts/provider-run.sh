@@ -448,7 +448,6 @@ run_one() {
       if [ "$PHASE_MODE" -eq 1 ]; then
         CODEX_COMMAND=(env -i "PATH=$PATH" "HOME=$HOME" "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" "TERM=${TERM:-dumb}" codex)
         CODEX_PLAN_ARGS+=(
-          -a never
           -c 'mcp_servers={}'
           -c 'plugins={}'
           -c 'hooks={}'
