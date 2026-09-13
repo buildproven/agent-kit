@@ -14,12 +14,17 @@ whole process tree is gone.
 
 ## Decision
 
-New ownership records use schema version 2. Before each foreground execution,
-the runner creates a dedicated process group and persists its leader PID,
-process-group ID, and start time. A failed direct child is safe to release only
-when both the PID and the complete process group return `ESRCH`. Any live,
-foreign, inaccessible, malformed, or unproved process remains quarantined.
-Signals target the dedicated process group.
+On POSIX systems, new ownership records use schema version 2. Before each
+foreground execution, the runner creates a dedicated process group and persists
+its leader PID, process-group ID, and start time. A failed direct child is safe
+to release only when both the PID and the complete process group return `ESRCH`.
+Any live, foreign, inaccessible, malformed, or unproved process remains
+quarantined. Signals target the dedicated process group.
+
+Windows does not provide POSIX process-group proof. Until the runtime owns a
+native Job Object implementation, Windows writes the schema-v1 compatibility
+record and requires explicit child-quiescence confirmation. It does not emit a
+schema-v2 record whose recovery condition cannot be satisfied.
 
 `quality-runner-reconcile.js` is the supported recovery path. It takes the exact
 manifest path, current head, owner host, owner PID, and owner nonce. It acquires

@@ -14,6 +14,7 @@ const { createHash } = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const SOURCE_RUNNER = path.resolve(__dirname, "..", "quality-run.js");
 const { writeAllSync } = require(SOURCE_RUNNER);
+const { ownershipSchemaVersion } = require("../quality-runner-ownership");
 
 const FAKE_INVOCATION = `
 "use strict";
@@ -536,6 +537,12 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("uses the explicit-confirmation compatibility schema without POSIX process groups", () => {
+    expect(ownershipSchemaVersion("win32")).toBe(1);
+    expect(ownershipSchemaVersion("darwin")).toBe(2);
+    expect(ownershipSchemaVersion("linux")).toBe(2);
+  });
+
   it("completes short ownership writes before returning", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "quality-run-write-"));
     const file = path.join(root, "owner");

@@ -29,6 +29,10 @@ function processGroupAbsent(processGroupId) {
   }
 }
 
+function ownershipSchemaVersion(platform = process.platform) {
+  return platform === "win32" ? 1 : 2;
+}
+
 function validChild(child) {
   return (
     child === null ||
@@ -100,14 +104,15 @@ function createOwner(file) {
     throw error;
   }
   const stat = fs.fstatSync(descriptor);
+  const schemaVersion = ownershipSchemaVersion();
   const record = {
-    schemaVersion: 2,
+    schemaVersion,
     hostname: os.hostname(),
     pid: process.pid,
     nonce: crypto.randomBytes(16).toString("hex"),
     acquiredAt: new Date().toISOString(),
     childInFlight: false,
-    child: null,
+    ...(schemaVersion === 2 ? { child: null } : {}),
   };
   const write = () => {
     if (!sameFile(fs.lstatSync(file), stat))
@@ -193,11 +198,11 @@ function acquireRunner(manifestPath) {
     async execute(execute, command, args, options = {}) {
       priorUncertain = uncertain;
       owner.record.childInFlight = true;
-      owner.record.child = null;
+      if (owner.record.schemaVersion === 2) owner.record.child = null;
       owner.write();
       const onChild = (child) => {
         options.onChild?.(child);
-        if (!child?.pid) return;
+        if (!child?.pid || owner.record.schemaVersion !== 2) return;
         owner.record.child = {
           pid: child.pid,
           processGroupId: child.pid,
@@ -208,6 +213,7 @@ function acquireRunner(manifestPath) {
       try {
         const result = await execute(command, args, { ...options, onChild });
         const childQuiescent =
+          owner.record.schemaVersion === 2 &&
           owner.record.child &&
           processAbsent(owner.record.child.pid) &&
           processGroupAbsent(owner.record.child.processGroupId);
@@ -215,7 +221,8 @@ function acquireRunner(manifestPath) {
           signalUncertain ||
           ((result.code !== 0 || Boolean(result.signal)) && !childQuiescent);
         owner.record.childInFlight = uncertain;
-        if (!uncertain) owner.record.child = null;
+        if (!uncertain && owner.record.schemaVersion === 2)
+          owner.record.child = null;
         owner.write();
         return result;
       } catch (error) {
@@ -226,7 +233,8 @@ function acquireRunner(manifestPath) {
     acceptTypedPause() {
       uncertain = signalUncertain || priorUncertain;
       owner.record.childInFlight = uncertain;
-      if (!uncertain) owner.record.child = null;
+      if (!uncertain && owner.record.schemaVersion === 2)
+        owner.record.child = null;
       owner.write();
     },
     markSignalUncertain() {
@@ -321,6 +329,7 @@ function reconcileRunner({
 
 module.exports = {
   acquireRunner,
+  ownershipSchemaVersion,
   processAbsent,
   processGroupAbsent,
   readOwner,
