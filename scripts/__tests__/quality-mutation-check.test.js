@@ -1293,6 +1293,112 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     expect(state.mutationCarry.priorHead).toBe(priorHead);
   });
 
+  it("proves a submodule pointer change when a changed behavioral test observes it", () => {
+    const submodule = makeTempDir(
+      "quality-mutation-observed-gitlink-submodule-",
+    );
+    git(submodule, ["init", "-q", "-b", "main"]);
+    git(submodule, ["config", "user.name", "Quality Test"]);
+    git(submodule, ["config", "user.email", "quality@example.com"]);
+    writeFileSync(path.join(submodule, "file.txt"), "v1\n");
+    git(submodule, ["add", "."]);
+    git(submodule, ["commit", "-q", "-m", "v1"]);
+    const firstRevision = git(submodule, ["rev-parse", "HEAD"]);
+    writeFileSync(path.join(submodule, "file.txt"), "v2\n");
+    git(submodule, ["add", "."]);
+    git(submodule, ["commit", "-q", "-m", "v2"]);
+
+    const root = makeTempDir("quality-mutation-observed-gitlink-");
+    git(root, ["init", "-q", "-b", "main"]);
+    git(root, ["config", "user.name", "Quality Test"]);
+    git(root, ["config", "user.email", "quality@example.com"]);
+    writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        scripts: {
+          lint: "true",
+          test: "node scripts/__tests__/submodule-routing.test.js",
+          "security:audit": "true",
+        },
+      }),
+    );
+    mkdirSync(path.join(root, "scripts", "__tests__"), { recursive: true });
+    writeFileSync(
+      path.join(root, "scripts", "__tests__", "submodule-routing.test.js"),
+      "const fs = require('node:fs');\nif (fs.readFileSync('sub/file.txt', 'utf8') !== 'v1\\n') process.exit(1);\n",
+    );
+    git(root, [
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      submodule,
+      "sub",
+    ]);
+    git(root, ["-C", "sub", "checkout", "-q", firstRevision]);
+    git(root, ["add", "."]);
+    git(root, ["commit", "-q", "-m", "base"]);
+    git(root, ["remote", "add", "origin", root]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "-c", "feature"]);
+    git(root, [
+      "-c",
+      "protocol.file.allow=always",
+      "-C",
+      "sub",
+      "pull",
+      "-q",
+      "origin",
+      "main",
+    ]);
+    writeFileSync(
+      path.join(root, "scripts", "__tests__", "submodule-routing.test.js"),
+      "const fs = require('node:fs');\nif (fs.readFileSync('sub/file.txt', 'utf8') !== 'v2\\n') process.exit(1);\n",
+    );
+    git(root, ["add", "sub", "scripts/__tests__/submodule-routing.test.js"]);
+    git(root, ["commit", "-qm", "feat: route through updated submodule"]);
+
+    const manifest = execFileSync(
+      "node",
+      [INVOCATION, "create", "--repo", root, "--base-ref", "origin/main"],
+      { cwd: root, encoding: "utf8" },
+    ).trim();
+    execFileSync(
+      "node",
+      [
+        INVOCATION,
+        "risk",
+        manifest,
+        "--tier",
+        "high",
+        "--task-type",
+        "feature",
+        "--score",
+        "50",
+        "--agents",
+        "2",
+        "--codex-depth",
+        "high",
+        "--codex-rounds",
+        "1",
+      ],
+      { cwd: root },
+    );
+
+    expect(runMutation(root, manifest)).toMatch(
+      /mutation evidence: revert-diff caught by sub/,
+    );
+    const state = JSON.parse(readFileSync(manifest, "utf8"));
+    const artifact = JSON.parse(
+      readFileSync(state.mutation.artifactPath, "utf8"),
+    );
+    expect(artifact).toMatchObject({
+      method: "revert-diff",
+      mutatedPaths: ["sub"],
+      testFailureObserved: true,
+    });
+  });
+
   it("skips the gate when the diff touches only a submodule pointer bump", () => {
     const submodule = makeTempDir("quality-mutation-gitlink-submodule-");
     git(submodule, ["init", "-q", "-b", "main"]);
