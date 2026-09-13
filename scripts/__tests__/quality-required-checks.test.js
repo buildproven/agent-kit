@@ -1776,6 +1776,7 @@ describe("required-check transport failures", () => {
     for (const changed of [
       { ...entry, nonce: "different" },
       { ...entry, status: "accepted" },
+      { ...entry, expiresAt: entry.expiresAt + 1 },
     ]) {
       const protectedMonitor = { dispatches: [changed] };
       expect(() => removeRejectedDispatch(protectedMonitor, entry)).toThrow(
