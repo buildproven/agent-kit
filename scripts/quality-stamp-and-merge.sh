@@ -374,7 +374,7 @@ else
       --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
       --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD" \
       --head-ref "$EXPECTED_HEAD_REF" --manifest "$MANIFEST" \
-      --timeout "$CI_TIMEOUT")" || exit 1
+      --timeout "$CI_TIMEOUT")" || exit $?
     if [ "$(printf '%s' "$ENSURE_JSON" | jq '.deferred | length')" -gt 0 ]; then
       printf '%s' "$ENSURE_JSON" | jq -r \
         '.deferred[] | "[quality] exact-head workflow registered; required check remains deferred: \(.context) workflow=\(.workflowId) run=\(.runId) status=\(.status)"' >&2
