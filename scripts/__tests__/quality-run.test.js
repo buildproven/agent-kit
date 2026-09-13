@@ -513,13 +513,15 @@ describe("quality-run public orchestration", () => {
       .mockImplementation((fd, data, offset, length, position) =>
         originalWrite(fd, data, offset, Math.min(length, 3), position),
       );
+    let contents;
     try {
       writeAllSync(descriptor, Buffer.from("complete ownership record"));
+      contents = fs.readFileSync(descriptor, "utf8");
     } finally {
       write.mockRestore();
       fs.closeSync(descriptor);
     }
-    expect(readFileSync(file, "utf8")).toBe("complete ownership record");
+    expect(contents).toBe("complete ownership record");
   });
 
   function seedRunnerLock(entry, overrides = {}) {
