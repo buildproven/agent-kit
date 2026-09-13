@@ -1289,6 +1289,7 @@ function removeRejectedDispatch(monitor, entry) {
       item.transport === entry.transport &&
       item.nonce === entry.nonce &&
       item.issuedAt === entry.issuedAt &&
+      item.expiresAt === entry.expiresAt &&
       JSON.stringify(item.requirement) === JSON.stringify(entry.requirement),
   );
   if (index === -1) {
