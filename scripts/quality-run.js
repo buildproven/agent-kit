@@ -4,13 +4,16 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 const quality = require("./quality-invocation");
 const { productionCodeChange } = require("./product-completion");
+const { assertEngineeringPolicy } = require("./engineering-delivery-policy");
 
 const ORCHESTRATION_SCHEMA_VERSION = 1;
 const ACTION_REQUIRED_EXIT = 3;
 const WORK_REQUIRED_EXIT = 4;
+const BUSY_EXIT = 5;
 const SCRIPT_DIR = __dirname;
 
 function parseArgs(argv) {
@@ -22,6 +25,210 @@ function parseArgs(argv) {
 
 function manifestAt(manifestPath) {
   return quality.loadManifest(manifestPath).manifest;
+}
+
+function sameRunnerFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readRunnerOwner(file) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(
+      file,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.nlink !== 1) return null;
+    const record = quality.parseJson(
+      fs.readFileSync(descriptor, "utf8"),
+      "runner owner",
+    );
+    if (
+      record.schemaVersion !== 1 ||
+      !Number.isInteger(record.pid) ||
+      record.pid < 1 ||
+      typeof record.hostname !== "string" ||
+      typeof record.nonce !== "string" ||
+      !record.nonce ||
+      !Number.isFinite(Date.parse(record.acquiredAt)) ||
+      typeof record.childInFlight !== "boolean"
+    )
+      return null;
+    return { stat, record };
+  } catch (error) {
+    // Unreadable or partially written ownership is not proof of abandonment.
+    if (error instanceof Error) return null;
+    throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function deadIdleRunner(owner) {
+  if (
+    !owner ||
+    owner.record.hostname !== os.hostname() ||
+    owner.record.childInFlight
+  )
+    return false;
+  try {
+    process.kill(owner.record.pid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+}
+
+function writeAllSync(descriptor, data) {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = fs.writeSync(
+      descriptor,
+      data,
+      offset,
+      data.length - offset,
+      offset,
+    );
+    if (written <= 0)
+      throw new Error("runner ownership write made no progress");
+    offset += written;
+  }
+}
+
+function createRunnerFile(file) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, "wx", 0o600);
+  } catch (error) {
+    if (["EEXIST", "EACCES", "EPERM"].includes(error.code)) return null;
+    throw error;
+  }
+  const stat = fs.fstatSync(descriptor);
+  const record = {
+    schemaVersion: 1,
+    hostname: os.hostname(),
+    pid: process.pid,
+    nonce: crypto.randomBytes(16).toString("hex"),
+    acquiredAt: new Date().toISOString(),
+    childInFlight: false,
+  };
+  const write = () => {
+    if (!sameRunnerFile(fs.lstatSync(file), stat))
+      throw new Error("runner ownership file changed");
+    const data = Buffer.from(`${JSON.stringify(record)}\n`);
+    writeAllSync(descriptor, data);
+    fs.ftruncateSync(descriptor, data.length);
+    fs.fsyncSync(descriptor);
+  };
+  try {
+    write();
+  } catch (error) {
+    fs.closeSync(descriptor);
+    // Retain an incomplete file as evidence; do not guess it safe to reclaim.
+    throw error;
+  }
+  return {
+    record,
+    write,
+    release({ serialize = false } = {}) {
+      let fence = null;
+      if (!record.childInFlight && serialize) {
+        fence = createRunnerFile(`${file}.recovery`);
+      }
+      fs.closeSync(descriptor);
+      if (record.childInFlight || (serialize && !fence)) return;
+      try {
+        const current = readRunnerOwner(file);
+        if (
+          !current ||
+          !sameRunnerFile(current.stat, stat) ||
+          current.record.nonce !== record.nonce
+        )
+          return;
+        fs.unlinkSync(file);
+      } finally {
+        fence?.release();
+      }
+    },
+  };
+}
+
+function recoverDeadRunner(file, manifestPath, observed) {
+  if (!deadIdleRunner(observed)) return null;
+  const current = readRunnerOwner(file);
+  if (
+    !current ||
+    !sameRunnerFile(current.stat, observed.stat) ||
+    current.record.nonce !== observed.record.nonce ||
+    !deadIdleRunner(current) ||
+    manifestAt(manifestPath).governor?.activeExecution
+  )
+    return null;
+  fs.unlinkSync(file);
+  return createRunnerFile(file);
+}
+
+function acquireRunner(manifestPath) {
+  const file = `${manifestPath}.runner-lock`;
+  const fence = createRunnerFile(`${file}.recovery`);
+  if (!fence) return null;
+  let owner;
+  try {
+    owner = createRunnerFile(file);
+    if (!owner) {
+      owner = recoverDeadRunner(file, manifestPath, readRunnerOwner(file));
+    }
+  } finally {
+    // A recovered replacement is created before this fence is released, so
+    // another public runner cannot interleave between validation and unlink.
+    fence.release();
+  }
+  if (!owner) return null;
+  let uncertain = false;
+  let priorUncertain = false;
+  let signalUncertain = false;
+  return {
+    async execute(execute, ...args) {
+      priorUncertain = uncertain;
+      owner.record.childInFlight = true;
+      owner.write();
+      try {
+        const result = await execute(...args);
+        uncertain ||=
+          signalUncertain || result.code !== 0 || Boolean(result.signal);
+        owner.record.childInFlight = uncertain;
+        owner.write();
+        return result;
+      } catch (error) {
+        uncertain = true;
+        throw error;
+      }
+    },
+    acceptTypedPause() {
+      // Called only after matching atomic merge-admission evidence validates
+      // the foreground merge helper's documented, normal exit-3 pause.
+      uncertain = signalUncertain || priorUncertain;
+      owner.record.childInFlight = uncertain;
+      owner.write();
+    },
+    markSignalUncertain() {
+      signalUncertain = true;
+      uncertain = true;
+      owner.record.childInFlight = true;
+      owner.write();
+    },
+    release(checkExecution = true) {
+      if (
+        checkExecution &&
+        manifestAt(manifestPath).governor?.activeExecution
+      ) {
+        owner.record.childInFlight = true;
+        owner.write();
+      }
+      owner.release({ serialize: true });
+    },
+  };
 }
 
 function pinRepositoryLease(manifest) {
@@ -390,6 +597,16 @@ function verifierFailure(result) {
   return errors.slice(0, 10).join("; ");
 }
 
+function verifyEngineeringDeliveryClaim(manifest, productInputs) {
+  if (productInputs.some(Boolean)) {
+    throw new Error(
+      "engineering delivery claim cannot carry product acceptance inputs",
+    );
+  }
+  const policy = assertEngineeringPolicy(manifest);
+  return `declared engineering at protected policy ${policy.policyRevision}; product acceptance not established`;
+}
+
 function verifyDeliveryClaim(manifest) {
   const claim = deliveryClaim(manifest);
   const { productPrd, productTasks, deliveryEvidence } = manifest.options || {};
@@ -400,6 +617,13 @@ function verifyDeliveryClaim(manifest) {
   );
   if (changedFiles === null) {
     throw new Error("delivery claim cannot classify the exact candidate diff");
+  }
+  if (claim === "engineering") {
+    return verifyEngineeringDeliveryClaim(manifest, [
+      productPrd,
+      productTasks,
+      deliveryEvidence,
+    ]);
   }
   if (
     claim === "contract" &&
@@ -485,6 +709,10 @@ function actionRequired(manifestPath, phase, message, manifest, review) {
 function prepareProductAdmission(manifestPath) {
   const manifest = manifestAt(manifestPath);
   if (deliveryClaim(manifest) === "contract") return null;
+  if (deliveryClaim(manifest) === "engineering") {
+    verifyDeliveryClaim(manifest);
+    return null;
+  }
 
   // Validate the candidate-owned receipt before spending gate or provider
   // budget. Protected admission is still authoritative, but its request can
@@ -677,7 +905,7 @@ async function finishWithoutMerge(manifestPath, invoke, manifest, review) {
 }
 
 async function finishWithMerge(context, manifestPath, manifest, review) {
-  if (deliveryClaim(manifest) !== "contract") {
+  if (!["contract", "engineering"].includes(deliveryClaim(manifest))) {
     try {
       verifyProtectedProductAdmission(manifest);
     } catch (error) {
@@ -789,6 +1017,8 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
         { terminalContractFailure: true },
       );
     }
+    if (!afterMerge.governor?.activeExecution)
+      context.ownership.acceptTypedPause();
     return actionRequired(
       manifestPath,
       "merge",
@@ -1035,11 +1265,41 @@ async function runOpenCampaign(context, manifestPath, manifest) {
 }
 
 async function runManifest(manifestPath, dependencies = {}) {
-  const execute = dependencies.runProcess || runProcess;
+  // Validate before canonicalizing: a symlinked manifest remains forbidden.
+  const initial = quality.loadManifest(manifestPath);
+  manifestPath = fs.realpathSync(initial.manifestPath);
+  const ownership = acquireRunner(manifestPath);
+  if (!ownership)
+    return {
+      status: "busy",
+      reason: "runner-owned",
+      head: initial.manifest.revisions.currentHead,
+    };
+  if (manifestAt(manifestPath).governor?.activeExecution) {
+    // This invocation has not dispatched a child. Release only its new lock;
+    // existing governor reconciliation, not admission, owns orphan expiry.
+    ownership.release(false);
+    return {
+      status: "busy",
+      reason: "active-execution",
+      head: initial.manifest.revisions.currentHead,
+    };
+  }
+  const execute = (...args) =>
+    ownership.execute(dependencies.runProcess || runProcess, ...args);
   const runtime = invocationRuntime(manifestPath, execute);
-  const context = { execute, runtime };
+  const context = { execute, runtime, ownership };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-  for (const signal of signals) process.on(signal, runtime.onSignal);
+  const signalHandlers = new Map(
+    signals.map((signal) => [
+      signal,
+      () => {
+        ownership.markSignalUncertain();
+        runtime.onSignal(signal);
+      },
+    ]),
+  );
+  for (const [signal, handler] of signalHandlers) process.on(signal, handler);
   try {
     let manifest = manifestAt(manifestPath);
     if (manifest.terminalState?.recovery?.kind === "merge-read-failure") {
@@ -1108,7 +1368,9 @@ async function runManifest(manifestPath, dependencies = {}) {
   } catch (error) {
     return await recordFailure(context, manifestPath, error);
   } finally {
-    for (const signal of signals) process.off(signal, runtime.onSignal);
+    for (const [signal, handler] of signalHandlers)
+      process.off(signal, handler);
+    ownership.release();
   }
 }
 
@@ -1117,7 +1379,9 @@ async function main() {
     const manifestPath = parseArgs(process.argv.slice(2));
     const result = await runManifest(manifestPath);
     emit(result);
-    if (result.status === "action-required") {
+    if (result.status === "busy") {
+      process.exitCode = BUSY_EXIT;
+    } else if (result.status === "action-required") {
       process.exitCode = ACTION_REQUIRED_EXIT;
     } else if (result.status === "work-required") {
       process.exitCode = WORK_REQUIRED_EXIT;
@@ -1143,6 +1407,7 @@ module.exports = {
   pinRepositoryLease,
   reviewSummary,
   runManifest,
+  writeAllSync,
 };
 
 if (require.main === module) main();

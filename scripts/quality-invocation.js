@@ -27,6 +27,7 @@ const REQUIRED_GATES_POLICY_VERSION = 3;
 const MAX_AGENT_TARGET = 9;
 const DELIVERY_CLAIMS = new Set([
   "contract",
+  "engineering",
   "local-product",
   "hosted",
   "validated",

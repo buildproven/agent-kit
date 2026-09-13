@@ -25,6 +25,28 @@ pairs in an approved offline or secrets-management environment:
 Do not place either private key in a repository variable, workflow output,
 artifact, log, environment file, or local project configuration.
 
+## Recover an unavailable admission public key
+
+Use the original public key from the approved key-management record when it is
+available. If that public key is unavailable, run **Product Admission Public
+Key** manually from the reviewed protected default branch. It has no inputs and
+checks both the dispatch ref and workflow ref before it receives the admission
+and evidence signing secrets. It checks out that protected base and runs only
+inline platform crypto code.
+
+Before installation, verify in GitHub that the successful run belongs to this
+repository and reviewed workflow commit. Download the
+`product-admission-public-key-<run-id>` artifact and verify its public key,
+SHA-256 fingerprint, workflow commit, run ID, and run attempt against the
+artifact provenance. The artifact contains the base64 DER SPKI admission and
+evidence public keys and their provenance. Keep each repository's public keys
+separate; the local multi-repository trust-root selection is a separate review.
+
+Install the verified key atomically as a root-owned regular file at the fixed
+trust-root path. Refuse to replace a different existing key. Keep the existing
+key when rolling back this workflow change. A different key requires the
+separate rotation procedure below.
+
 ## Rotation
 
 1. Create a new producer pair and a new admission pair.

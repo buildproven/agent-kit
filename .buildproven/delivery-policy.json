@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "claims": {
+    "engineering": {
+      "enabled": true,
+      "claim": "engineering",
+      "requiredControls": [
+        "deterministic-gates",
+        "independent-review",
+        "required-ci",
+        "base-freshness",
+        "merge-authority"
+      ],
+      "productAcceptance": "not-established"
+    }
+  }
+}

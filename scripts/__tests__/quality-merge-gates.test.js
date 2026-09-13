@@ -516,7 +516,10 @@ esac
     ).toBeLessThan(STAMP_AND_MERGE.lastIndexOf("quality-authorize-merge.sh"));
     expect(AUTHORIZE).toMatch(/persisted empty stamp/);
     expect(STAMP_AND_MERGE).toMatch(
-      /--head "\$MERGE_HEAD" --timeout "\$CI_TIMEOUT" --interval 10 \|\| RC=\$\?/,
+      /--head "\$MERGE_HEAD" --timeout "\$CI_TIMEOUT" --interval 10 \\\n[ ]{6}--manifest "\$MANIFEST" \|\| RC=\$\?/,
+    );
+    expect(STAMP_AND_MERGE).toMatch(
+      /quality-required-checks\.js" ensure[\s\S]*--manifest "\$MANIFEST"[\s\S]*--timeout "\$CI_TIMEOUT"/,
     );
     expect(AUTHORIZE).toMatch(
       /quality-ci-billing-waiver\.js[\s\S]*LEASE_ADMIN=true/,

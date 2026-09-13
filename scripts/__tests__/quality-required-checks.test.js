@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const dispatchKey = generateKeyPairSync("ed25519")
@@ -18,14 +18,19 @@ const SCRIPT = path.resolve(
   "../quality-required-checks.js",
 );
 const {
+  adoptPersistedDispatch,
   checkRuns,
   checkState,
   claimDispatchNonce,
   claimRemoteDispatchNonce,
   cleanupRemoteDispatchClaims,
   ensureChecks,
+  inspectChecks,
   matchingRuns,
+  newRequiredChecksMonitor,
   prepareChecks,
+  protectedMonitorLifetimeValid,
+  rememberPersistedDispatch,
   requiredChecks,
   trustedSecretCheckState,
 } = require("../quality-required-checks.js");
@@ -113,6 +118,175 @@ function run(root, args, fixture) {
 }
 
 describe("quality-required-checks", () => {
+  it("adopts the winning persisted nonce after a concurrent intent race", () => {
+    const common = {
+      workflowId: 77,
+      transport: "repository_dispatch",
+      requirement: { context: "harness-summary", appId: 15368 },
+    };
+    const winner = { ...common, nonce: "a".repeat(32) };
+    const loser = { ...common, nonce: "b".repeat(32) };
+
+    expect(adoptPersistedDispatch(winner, loser)).toBe(winner);
+  });
+
+  it("does not let final wait accept a protected run with another nonce", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-bound-wait-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const expectedExternalId = `secret-history-scan:${"b".repeat(40)}:${"c".repeat(40)}:${"a".repeat(32)}`;
+    const otherExternalId = `secret-history-scan:${"b".repeat(40)}:${"c".repeat(40)}:${"b".repeat(32)}`;
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *protection/required_status_checks*) printf '%s\\n' '{"checks":[{"context":"secret-history-scan","app_id":15368}]}' ;;
+  *rules/branches/main*) printf '%s\\n' '[]' ;;
+  *commits/${"b".repeat(40)}/check-runs*) printf '%s\\n' '${JSON.stringify({ check_runs: [{ id: 2, name: "secret-history-scan", status: "completed", conclusion: "success", app: { id: 15368 }, external_id: otherExternalId, details_url: "https://github.com/o/r/actions/runs/124" }] })}' ;;
+  *git/ref/heads/main*) printf '%s\\n' '{"object":{"sha":"${"c".repeat(40)}"}}' ;;
+  *actions/runs/124*) printf '%s\\n' '${JSON.stringify({ workflow_id: 77, event: "repository_dispatch", head_branch: "main", head_sha: "c".repeat(40), path: ".github/workflows/secret-history-scan.yml", display_title: otherExternalId, status: "completed", conclusion: "success" })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    const requirements = [{ context: "secret-history-scan", appId: 15368 }];
+    const monitor = {
+      repository: "owner/repo",
+      base: "main",
+      targetHead: "b".repeat(40),
+      baseHead: "c".repeat(40),
+      requirements,
+      startedAt: 1000,
+      deadline: 1000 + 900 * 1000,
+      dispatches: [
+        {
+          requirement: {
+            ...requirements[0],
+            externalId: expectedExternalId,
+          },
+          workflowId: 77,
+          transport: "repository_dispatch",
+          nonce: "a".repeat(32),
+        },
+      ],
+    };
+    try {
+      expect(inspectChecks("owner/repo", "main", "b".repeat(40))[0].state).toBe(
+        "success",
+      );
+      expect(
+        inspectChecks("owner/repo", "main", "b".repeat(40), monitor)[0].state,
+      ).toBe("missing");
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restores shared-workflow deduplication from a persisted dispatch", () => {
+    const dispatchedWorkflowIds = new Set();
+
+    rememberPersistedDispatch(dispatchedWorkflowIds, {
+      workflowId: 77,
+      transport: "repository_dispatch",
+    });
+
+    expect(dispatchedWorkflowIds).toEqual(new Set(["77:repository_dispatch"]));
+  });
+
+  it("rejects a persisted protected monitor longer than 15 minutes", () => {
+    const requirements = [{ context: "harness-summary", appId: 15368 }];
+
+    expect(
+      protectedMonitorLifetimeValid(
+        { startedAt: 1000, deadline: 1000 + 900 * 1000 },
+        requirements,
+      ),
+    ).toBe(true);
+    expect(
+      protectedMonitorLifetimeValid(
+        { startedAt: 1000, deadline: 1001 + 900 * 1000 },
+        requirements,
+      ),
+    ).toBe(false);
+  });
+
+  it("builds a maximum monitor deadline from one clock reading", () => {
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValueOnce(1000)
+      .mockReturnValueOnce(1001);
+
+    const monitor = newRequiredChecksMonitor(
+      { targetHead: "b".repeat(40) },
+      [{ context: "harness-summary", appId: 15368 }],
+      "c".repeat(40),
+      900,
+    );
+
+    expect(monitor.deadline - monitor.startedAt).toBe(900 * 1000);
+    expect(clock).toHaveBeenCalledTimes(1);
+    clock.mockRestore();
+  });
+
+  it("keeps accepted registration pending beyond 30 seconds within the head deadline", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-delayed-"));
+    const source = [
+      {
+        id: 1,
+        name: "quality",
+        status: "completed",
+        conclusion: "success",
+        app: { id: 15368 },
+        details_url: "https://github.com/owner/repo/actions/runs/123",
+      },
+    ];
+    const fixture = fakeGh(root, source, [], []);
+    const executable = path.join(fixture.bin, "gh");
+    const original = fs.readFileSync(executable, "utf8");
+    let now = 0;
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${fixture.bin}:${previousPath}`;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(Atomics, "wait").mockImplementation(
+      (_array, _index, _value, duration) => {
+        now += duration;
+        if (now >= 70000) {
+          fs.writeFileSync(
+            executable,
+            original.replace(
+              JSON.stringify({ check_runs: [] }),
+              JSON.stringify({ check_runs: source }),
+            ),
+          );
+        }
+        return "timed-out";
+      },
+    );
+    try {
+      const result = ensureChecks({
+        repository: "owner/repo",
+        base: "main",
+        sourceHead: "a".repeat(40),
+        targetHead: "b".repeat(40),
+        headRef: "feature/fix",
+        timeoutSeconds: 900,
+      });
+      expect(result.dispatched).toHaveLength(1);
+      expect(now).toBeGreaterThan(60000);
+      expect(
+        fs.readFileSync(fixture.log, "utf8").trim().split("\n"),
+      ).toHaveLength(1);
+    } finally {
+      process.env.PATH = previousPath;
+      vi.restoreAllMocks();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("prepares protected dispatches without mutating GitHub", () => {
     const originalPath = process.env.PATH;
     const originalKey = process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY;

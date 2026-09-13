@@ -155,6 +155,8 @@ Invoked naturally — Claude Code or Codex picks the right skill from context.
 
 `/bs:quality` uses one exact-manifest deterministic runner for gates, bounded
 review, resume, optional protected merge, and terminal telemetry.
+The `engineering` claim requires protected-base policy and proves only the
+normal engineering controls. It never marks product acceptance complete.
 Product delivery claims also require protected-producer receipts bound to the
 numeric repository ID, exact HEAD, requirements, and artifact. Caller-authored
 digests and candidate-worker verification are not admission evidence.
