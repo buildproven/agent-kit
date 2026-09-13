@@ -30,6 +30,14 @@ because the check is absent. Existing signed local/remote nonce claims remain
 authoritative. Missing, uncertain, malformed, wrong-app, wrong-source, failed,
 or expired checks never become successful evidence.
 
+Classify write outcomes before reconciliation. A network failure after a POST
+is ambiguous, so its exact intended record remains read-only on resume. An HTTP
+authentication, authorization, or validation response is a definite rejection.
+Remove only the creator-owned matching `intended` record for that rejected
+write, propagate the error, and allow the same monitor to create a new attempt
+after the external condition is corrected. Never remove an accepted, changed,
+or differently bound record.
+
 After the short initial registration grace, dispatch missing eligible checks
 once. Poll all dispatched requirements against exact nonce/head/base/app/source
 bindings until registration or the original deadline. Completion uses these same

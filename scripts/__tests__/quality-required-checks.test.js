@@ -17,6 +17,7 @@ const SCRIPT = path.resolve(
   import.meta.dirname,
   "../quality-required-checks.js",
 );
+const quality = require("../quality-invocation.js");
 const {
   adoptPersistedDispatch,
   assertChecks,
@@ -27,10 +28,12 @@ const {
   cleanupRemoteDispatchClaims,
   ensureChecks,
   inspectChecks,
+  isWriteTransportFailure,
   matchingRuns,
   newRequiredChecksMonitor,
   prepareChecks,
   protectedMonitorLifetimeValid,
+  removeRejectedDispatch,
   rememberPersistedDispatch,
   requiredChecks,
   trustedSecretCheckState,
@@ -1733,6 +1736,137 @@ esac
 });
 
 describe("required-check transport failures", () => {
+  it("classifies only ambiguous POST transport failures as uncertain", () => {
+    const args = ["api", "--method", "POST", "repos/owner/repo/dispatches"];
+    expect(
+      isWriteTransportFailure(args, {
+        status: 1,
+        stderr: "error connecting to api.github.com",
+      }),
+    ).toBe(true);
+    expect(
+      isWriteTransportFailure(args, {
+        status: 1,
+        stderr: "gh: upstream timed out (HTTP 504)",
+      }),
+    ).toBe(true);
+    for (const stderr of [
+      "gh: Bad credentials (HTTP 401)",
+      "gh: Resource not accessible (HTTP 403)",
+      "gh: Validation Failed (HTTP 422)",
+    ]) {
+      expect(isWriteTransportFailure(args, { status: 1, stderr })).toBe(false);
+    }
+  });
+
+  it("removes only the creator-owned intended dispatch after rejection", () => {
+    const entry = {
+      requirement: { context: "quality", appId: 15368 },
+      workflowId: 77,
+      transport: "workflow_dispatch",
+      nonce: null,
+      status: "intended",
+      issuedAt: 1000,
+      expiresAt: 2000,
+    };
+    const monitor = { dispatches: [structuredClone(entry)] };
+    removeRejectedDispatch(monitor, entry);
+    expect(monitor.dispatches).toEqual([]);
+
+    for (const changed of [
+      { ...entry, nonce: "different" },
+      { ...entry, status: "accepted" },
+    ]) {
+      const protectedMonitor = { dispatches: [changed] };
+      expect(() => removeRejectedDispatch(protectedMonitor, entry)).toThrow(
+        /intent changed/,
+      );
+      expect(protectedMonitor.dispatches).toEqual([changed]);
+    }
+  });
+
+  it("removes a definite rejection so the same monitor can dispatch after credentials recover", () => {
+    const root = activeClaimDirectory;
+    const sourceRuns = [
+      {
+        id: 1,
+        name: "quality",
+        status: "completed",
+        conclusion: "success",
+        app: { id: 15368 },
+        details_url: "https://github.com/o/r/actions/runs/123",
+      },
+    ];
+    const registeredRuns = [
+      {
+        id: 2,
+        name: "quality",
+        status: "completed",
+        conclusion: "success",
+        app: { id: 15368 },
+      },
+    ];
+    const fixture = fakeGh(root, sourceRuns, [], registeredRuns);
+    const executable = path.join(fixture.bin, "gh");
+    const successfulScript = fs.readFileSync(executable, "utf8");
+    fs.writeFileSync(
+      executable,
+      successfulScript.replace(
+        `*actions/workflows/77/dispatches*) printf '%s\\n' "$*" >> '${fixture.log}' ;;`,
+        `*actions/workflows/77/dispatches*) echo 'gh: Bad credentials (HTTP 401)' >&2; exit 1 ;;`,
+      ),
+    );
+    const manifest = {
+      repo: {
+        realpath: root,
+        githubRepository: "owner/repo",
+        headRefName: "feature/fix",
+      },
+      revisions: {
+        currentHead: "a".repeat(40),
+        baseRef: "origin/main",
+      },
+      merge: { stampHead: "b".repeat(40) },
+    };
+    const withManifestLock = vi
+      .spyOn(quality, "withManifestLock")
+      .mockImplementation((_manifestPath, callback) => {
+        callback(manifest);
+        return structuredClone(manifest);
+      });
+    const validateIdentity = vi
+      .spyOn(quality, "validateIdentity")
+      .mockImplementation(() => {});
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fixture.bin}:${originalPath}`;
+    const request = {
+      repository: "owner/repo",
+      base: "main",
+      sourceHead: "a".repeat(40),
+      targetHead: "b".repeat(40),
+      headRef: "feature/fix",
+      registrationSeconds: 0,
+      manifestPath: "fixture-manifest",
+      timeoutSeconds: 900,
+    };
+    try {
+      expect(() => ensureChecks(request)).toThrow(/Bad credentials/);
+      expect(manifest.merge.requiredChecksMonitor.dispatches).toEqual([]);
+
+      fs.writeFileSync(executable, successfulScript);
+      expect(ensureChecks(request).dispatched).toEqual([
+        { context: "quality", workflowId: 77 },
+      ]);
+      expect(manifest.merge.requiredChecksMonitor.dispatches).toMatchObject([
+        { status: "accepted", workflowId: 77 },
+      ]);
+    } finally {
+      process.env.PATH = originalPath;
+      withManifestLock.mockRestore();
+      validateIdentity.mockRestore();
+    }
+  });
+
   it.each([
     ["error connecting to api.github.com", 75, 2],
     ["read tcp: connection reset by peer", 75, 2],
