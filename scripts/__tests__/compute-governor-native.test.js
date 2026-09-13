@@ -300,6 +300,42 @@ describe("compute governor native advisory", () => {
     );
   });
 
+  it("selects only the exact neutral Claude profile for an effort", () => {
+    const result = resolve({
+      ...request,
+      facts: { ...request.facts, provider: "claude", ambiguous: true },
+      capabilities: {
+        ...capabilities,
+        profiles: [
+          { subagent_type: "security-review", effort: "medium" },
+          ...capabilities.profiles,
+        ],
+      },
+    });
+    expect(result).toMatchObject({
+      status: "ready",
+      modelArguments: {
+        subagent_type: "native-task-medium",
+        model: "sonnet",
+      },
+    });
+  });
+
+  it("blocks when only an unrelated Claude profile has the selected effort", () => {
+    const result = resolve({
+      ...request,
+      facts: { ...request.facts, provider: "claude", ambiguous: true },
+      capabilities: {
+        ...capabilities,
+        profiles: [{ subagent_type: "security-review", effort: "medium" }],
+      },
+    });
+    expect(result).toMatchObject({ status: "blocked", modelArguments: null });
+    expect(result.reasons).toContain(
+      "requested model and effort unavailable or unknown",
+    );
+  });
+
   it("requires native delegation instructions to consume ready advice", () => {
     for (const file of [
       "config/CLAUDE.md",

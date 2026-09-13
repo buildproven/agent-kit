@@ -84,6 +84,11 @@ const CLAUDE_TASK_MODEL_ALIASES = {
   "claude-haiku-4-5": "haiku",
   "claude-sonnet-5": "sonnet",
 };
+const CLAUDE_TASK_PROFILES = {
+  low: "native-task-low",
+  medium: "native-task-medium",
+  high: "native-task-high",
+};
 const BOOLEAN_FACT_KEYS = new Set([
   "readOnly",
   "localized",
@@ -881,8 +886,15 @@ function routeForIdentity(identity, provider, minimumRoute, policy) {
 }
 
 function profileForIdentity(capabilities, identity) {
+  const expectedProfile =
+    identity.effort === null
+      ? "general-purpose"
+      : CLAUDE_TASK_PROFILES[identity.effort];
+  if (!expectedProfile) return undefined;
   return capabilities.profiles?.find(
-    (profile) => profile.effort === identity.effort,
+    (profile) =>
+      profile.subagent_type === expectedProfile &&
+      profile.effort === identity.effort,
   );
 }
 
