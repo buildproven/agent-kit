@@ -1002,6 +1002,24 @@ function protectedMonitorLifetimeValid(monitor, requirements) {
   );
 }
 
+function newRequiredChecksMonitor(
+  context,
+  requirements,
+  baseHead,
+  timeoutSeconds,
+) {
+  const startedAt = Date.now();
+  return {
+    schemaVersion: 1,
+    ...context,
+    baseHead,
+    requirements,
+    startedAt,
+    deadline: startedAt + timeoutSeconds * 1000,
+    dispatches: [],
+  };
+}
+
 function monitorFor(
   manifestPath,
   context,
@@ -1029,15 +1047,12 @@ function monitorFor(
       delete manifest.merge.requiredChecksMonitor;
     }
     if (!manifest.merge.requiredChecksMonitor) {
-      manifest.merge.requiredChecksMonitor = {
-        schemaVersion: 1,
-        ...context,
-        baseHead,
+      manifest.merge.requiredChecksMonitor = newRequiredChecksMonitor(
+        context,
         requirements,
-        startedAt: Date.now(),
-        deadline: Date.now() + timeoutSeconds * 1000,
-        dispatches: [],
-      };
+        baseHead,
+        timeoutSeconds,
+      );
     }
     const monitor = manifest.merge.requiredChecksMonitor;
     if (
@@ -1075,6 +1090,18 @@ function rememberPersistedDispatch(dispatchedWorkflowIds, persisted) {
   );
 }
 
+function adoptPersistedDispatch(existing, entry) {
+  if (
+    existing.workflowId !== entry.workflowId ||
+    existing.transport !== entry.transport ||
+    existing.requirement.context !== entry.requirement.context ||
+    existing.requirement.appId !== entry.requirement.appId
+  ) {
+    throw new Error("required-check persisted dispatch identity mismatch");
+  }
+  return existing;
+}
+
 function assertBeforeDeadline(deadline) {
   if (deadline !== undefined && Date.now() >= deadline) {
     throw new Error(
@@ -1086,6 +1113,7 @@ function assertBeforeDeadline(deadline) {
 function persistDispatch(manifestPath, monitor, entry, accepted = false) {
   const quality = require("./quality-invocation.js");
   let created = false;
+  let persistedEntry;
   const updated = quality.withManifestLock(manifestPath, (manifest) => {
     assertMonitorIdentity(manifest, monitor);
     const current = manifest.merge.requiredChecksMonitor;
@@ -1111,13 +1139,21 @@ function persistDispatch(manifestPath, monitor, entry, accepted = false) {
       }
       existing.status = "accepted";
       existing.acceptedAt = Date.now();
+      persistedEntry = existing;
     } else if (!existing) {
       assertBeforeDeadline(current.deadline);
       current.dispatches.push(entry);
       created = true;
+      persistedEntry = entry;
+    } else {
+      persistedEntry = adoptPersistedDispatch(existing, entry);
     }
   });
-  return { created, monitor: updated.merge.requiredChecksMonitor };
+  return {
+    created,
+    entry: persistedEntry,
+    monitor: updated.merge.requiredChecksMonitor,
+  };
 }
 
 function prepareChecks({ repository, base, sourceHead, targetHead }) {
@@ -1269,7 +1305,7 @@ function ensureChecks({
           ...requirement,
           externalId: `${protectedConfig.runPrefix}${targetHead}:${baseHead}:${nonce}`,
         };
-      const entry = {
+      let entry = {
         requirement: dispatchedRequirement,
         workflowId,
         transport: protectedConfig
@@ -1284,6 +1320,8 @@ function ensureChecks({
       if (monitor) {
         const persistedIntent = persistDispatch(manifestPath, monitor, entry);
         monitor = persistedIntent.monitor;
+        entry = persistedIntent.entry;
+        dispatchedRequirement = entry.requirement;
         shouldDispatch = persistedIntent.created;
       }
       try {
@@ -1294,7 +1332,7 @@ function ensureChecks({
             {
               head_sha: targetHead,
               base_sha: baseHead,
-              nonce,
+              nonce: entry.nonce,
             },
             deadline,
           );
@@ -1452,26 +1490,44 @@ function ensureChecks({
   return { requirements, dispatched, deferred };
 }
 
-function inspectChecks(repository, base, head) {
+function inspectChecks(repository, base, head, monitor = null) {
   const requirements = requiredChecks(repository, base);
   const runs = checkRuns(repository, head);
   const baseHead = requirements.some(protectedCheckConfig)
     ? branchHeadSha(repository, base)
     : null;
-  return requirements.map((requirement) => ({
-    ...requirement,
-    ...(protectedCheckConfig(requirement)
-      ? trustedSecretCheckState({
-          repository,
-          runs,
-          requirement,
-          workflowId: null,
-          base,
-          targetHead: head,
-          baseHead,
-        })
-      : checkState(runs, requirement)),
-  }));
+  if (
+    monitor &&
+    (monitor.targetHead !== head ||
+      monitor.base !== base ||
+      monitor.baseHead !== baseHead ||
+      JSON.stringify(monitor.requirements) !== JSON.stringify(requirements) ||
+      !protectedMonitorLifetimeValid(monitor, requirements))
+  ) {
+    throw new Error(
+      "required-check completion monitor bindings changed or are stale",
+    );
+  }
+  return requirements.map((requirement) => {
+    const persisted = monitor?.dispatches.find(
+      (entry) => entry.requirement.context === requirement.context,
+    );
+    const boundRequirement = persisted?.requirement || requirement;
+    return {
+      ...requirement,
+      ...(protectedCheckConfig(requirement)
+        ? trustedSecretCheckState({
+            repository,
+            runs,
+            requirement: boundRequirement,
+            workflowId: persisted?.workflowId ?? null,
+            base,
+            targetHead: head,
+            baseHead,
+          })
+        : checkState(runs, requirement)),
+    };
+  });
 }
 
 function assertChecks(repository, base, head) {
@@ -1499,12 +1555,13 @@ function waitForChecks({
   intervalSeconds,
   failureGraceSeconds = 90,
   deadline: fixedDeadline,
+  monitor = null,
 }) {
   const startedAt = Date.now();
   const deadline = fixedDeadline ?? Date.now() + timeoutSeconds * 1000;
   let states = [];
   while (Date.now() < deadline) {
-    states = inspectChecks(repository, base, head);
+    states = inspectChecks(repository, base, head, monitor);
     if (states.every((entry) => entry.state === "success")) return states;
     const failed = states.filter((entry) => entry.state === "failed");
     if (
@@ -1613,10 +1670,11 @@ function main() {
       throw new Error("--failure-grace must be non-negative seconds");
     }
     let deadline;
+    let monitor = null;
     if (options.manifest) {
       const quality = require("./quality-invocation.js");
       const manifest = quality.loadManifest(options.manifest).manifest;
-      const monitor = manifest.merge?.requiredChecksMonitor;
+      monitor = manifest.merge?.requiredChecksMonitor || null;
       if (monitor) {
         assertMonitorIdentity(manifest, {
           repository: context.repository,
@@ -1642,6 +1700,7 @@ function main() {
           intervalSeconds: interval,
           failureGraceSeconds: failureGrace,
           deadline,
+          monitor,
         }),
       )}\n`,
     );
@@ -1666,6 +1725,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  adoptPersistedDispatch,
   assertChecks,
   checkRuns,
   checkState,
@@ -1675,6 +1735,8 @@ module.exports = {
   dispatchedRunsForHead,
   ensureChecks,
   matchingRuns,
+  newRequiredChecksMonitor,
+  inspectChecks,
   prepareChecks,
   protectedMonitorLifetimeValid,
   rememberPersistedDispatch,
