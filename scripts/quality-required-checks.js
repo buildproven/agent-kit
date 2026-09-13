@@ -995,6 +995,13 @@ function assertMonitorIdentity(manifest, context) {
   }
 }
 
+function protectedMonitorLifetimeValid(monitor, requirements) {
+  return (
+    !requirements.some(protectedCheckConfig) ||
+    monitor.deadline - monitor.startedAt <= 900 * 1000
+  );
+}
+
 function monitorFor(
   manifestPath,
   context,
@@ -1041,7 +1048,8 @@ function monitorFor(
       !Array.isArray(monitor.dispatches) ||
       !Number.isFinite(monitor.startedAt) ||
       !Number.isFinite(monitor.deadline) ||
-      monitor.deadline <= monitor.startedAt
+      monitor.deadline <= monitor.startedAt ||
+      !protectedMonitorLifetimeValid(monitor, requirements)
     ) {
       throw new Error(
         "required-check monitor bindings changed or are malformed",
@@ -1049,6 +1057,22 @@ function monitorFor(
     }
   });
   return updated.merge.requiredChecksMonitor;
+}
+
+function dispatchKey(workflowId, transport) {
+  return `${workflowId}:${transport}`;
+}
+
+function rememberPersistedDispatch(dispatchedWorkflowIds, persisted) {
+  if (
+    !Number.isInteger(persisted.workflowId) ||
+    !["repository_dispatch", "workflow_dispatch"].includes(persisted.transport)
+  ) {
+    throw new Error("persisted required-check dispatch is malformed");
+  }
+  dispatchedWorkflowIds.add(
+    dispatchKey(persisted.workflowId, persisted.transport),
+  );
 }
 
 function assertBeforeDeadline(deadline) {
@@ -1199,6 +1223,7 @@ function ensureChecks({
       (entry) => entry.requirement.context === requirement.context,
     );
     if (persisted) {
+      rememberPersistedDispatch(dispatchedWorkflowIds, persisted);
       dispatched.push({
         context: requirement.context,
         workflowId: persisted.workflowId,
@@ -1230,9 +1255,12 @@ function ensureChecks({
       });
       if (["pending", "success"].includes(target.state)) continue;
     }
-    const dispatchKey = `${workflowId}:${protectedConfig ? "repository_dispatch" : "workflow_dispatch"}`;
+    const currentDispatchKey = dispatchKey(
+      workflowId,
+      protectedConfig ? "repository_dispatch" : "workflow_dispatch",
+    );
     let dispatchedRequirement = requirement;
-    if (!dispatchedWorkflowIds.has(dispatchKey)) {
+    if (!dispatchedWorkflowIds.has(currentDispatchKey)) {
       const nonce = protectedConfig
         ? crypto.randomBytes(16).toString("hex")
         : null;
@@ -1280,7 +1308,7 @@ function ensureChecks({
           process.stderr.write(
             `[quality] dispatch outcome uncertain; reconciling persisted intent for ${requirement.context}\n`,
           );
-          dispatchedWorkflowIds.add(dispatchKey);
+          dispatchedWorkflowIds.add(currentDispatchKey);
           dispatched.push({ context: requirement.context, workflowId });
           dispatchedRequirements.push(entry);
           continue;
@@ -1291,7 +1319,7 @@ function ensureChecks({
           : checkState(targetRuns, requirement);
         if (!["pending", "success"].includes(refreshed.state)) throw error;
       }
-      dispatchedWorkflowIds.add(dispatchKey);
+      dispatchedWorkflowIds.add(currentDispatchKey);
     }
     dispatched.push({ context: requirement.context, workflowId });
     dispatchedRequirements.push({
@@ -1648,6 +1676,8 @@ module.exports = {
   ensureChecks,
   matchingRuns,
   prepareChecks,
+  protectedMonitorLifetimeValid,
+  rememberPersistedDispatch,
   requiredChecks,
   graphqlRequirements,
   trustedSecretCheckState,

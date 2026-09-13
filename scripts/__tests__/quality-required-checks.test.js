@@ -26,6 +26,8 @@ const {
   ensureChecks,
   matchingRuns,
   prepareChecks,
+  protectedMonitorLifetimeValid,
+  rememberPersistedDispatch,
   requiredChecks,
   trustedSecretCheckState,
 } = require("../quality-required-checks.js");
@@ -113,6 +115,34 @@ function run(root, args, fixture) {
 }
 
 describe("quality-required-checks", () => {
+  it("restores shared-workflow deduplication from a persisted dispatch", () => {
+    const dispatchedWorkflowIds = new Set();
+
+    rememberPersistedDispatch(dispatchedWorkflowIds, {
+      workflowId: 77,
+      transport: "repository_dispatch",
+    });
+
+    expect(dispatchedWorkflowIds).toEqual(new Set(["77:repository_dispatch"]));
+  });
+
+  it("rejects a persisted protected monitor longer than 15 minutes", () => {
+    const requirements = [{ context: "harness-summary", appId: 15368 }];
+
+    expect(
+      protectedMonitorLifetimeValid(
+        { startedAt: 1000, deadline: 1000 + 900 * 1000 },
+        requirements,
+      ),
+    ).toBe(true);
+    expect(
+      protectedMonitorLifetimeValid(
+        { startedAt: 1000, deadline: 1001 + 900 * 1000 },
+        requirements,
+      ),
+    ).toBe(false);
+  });
+
   it("keeps accepted registration pending beyond 30 seconds within the head deadline", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-delayed-"));
     const source = [
