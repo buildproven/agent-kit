@@ -755,6 +755,20 @@ describe("required gate reuse", () => {
 });
 
 describe("quality invocation manifest", () => {
+  it("persists the engineering claim without product evidence inputs", () => {
+    const root = repo("engineering-delivery-claim");
+    const manifestPath = create(root, ["--delivery-claim", "engineering"]);
+
+    expect(
+      invocation.loadManifest(manifestPath).manifest.options,
+    ).toMatchObject({
+      deliveryClaim: "engineering",
+      productPrd: null,
+      productTasks: null,
+      deliveryEvidence: null,
+    });
+  });
+
   it("binds the exact delivery-evidence index digest to the current HEAD", () => {
     const root = repo("delivery-evidence-digest");
     const evidence = path.join(root, "evidence.json");
@@ -9610,5 +9624,101 @@ describe("human-floor-check command (Phase 0 autonomy relaxation)", () => {
     );
     writeFileSync(path.join(root, "harness-config.json"), "{ not json");
     expect(rc(root, manifest)).not.toBe(0);
+  });
+});
+
+describe("historical merge-read recovery", () => {
+  function readyCampaign() {
+    const root = repo("historical-merge-read");
+    const file = create(root, ["--merge", "--pr", "7"]);
+    execFileSync("bash", [RISK, "--manifest", file], { cwd: root });
+    prepareCodexReview(root, file);
+    recordJudgeArtifact(root, file);
+    invocation.withManifestLock(file, (manifest) => {
+      manifest.orchestration = {
+        head: manifest.revisions.currentHead,
+        phase: "merge",
+        steps: { merge: { status: "running", attempts: 1 } },
+      };
+    });
+    invocation.recordTerminalState(
+      file,
+      "blocked",
+      "merge admission failed with exit 1",
+    );
+    const before = invocation.loadManifest(file).manifest;
+    const dependencies = {
+      readPullRequest: () => ({
+        state: "OPEN",
+        headRefOid: before.revisions.currentHead,
+      }),
+      readChecks: () => [{ state: "SUCCESS" }],
+    };
+    return { file, before, dependencies };
+  }
+
+  it("grants one entrant normal merge re-entry without resetting evidence or budgets", () => {
+    const { file, before, dependencies } = readyCampaign();
+    expect(invocation.resumeMergeReadFailure(file, dependencies)).toMatchObject(
+      { head: before.revisions.currentHead },
+    );
+    const after = invocation.loadManifest(file).manifest;
+    expect(after.terminalState).toMatchObject({
+      state: "recovering",
+      terminalEpoch: 1,
+      recovery: { kind: "merge-read-failure" },
+    });
+    expect(after.governor).toEqual(before.governor);
+    expect(after.gates).toEqual(before.gates);
+    expect(after.reviews).toEqual(before.reviews);
+    expect(after.terminalHistory[0]).toMatchObject({
+      detail: before.terminalState.detail,
+    });
+    expect(invocation.resumeMergeReadFailure(file, dependencies)).toBeNull();
+    expect(invocation.loadManifest(file).manifest.terminalState).toEqual(
+      after.terminalState,
+    );
+  });
+
+  it.each([
+    "red-checks",
+    "changed-head",
+    "stale-gate",
+    "active-execution",
+    "wrong-phase",
+    "second-attempt",
+    "explicit-block",
+  ])("refuses %s without replacing the original terminal", (scenario) => {
+    const { file, before, dependencies } = readyCampaign();
+    if (scenario === "red-checks")
+      dependencies.readChecks = () => [{ state: "FAILURE" }];
+    if (scenario === "changed-head")
+      dependencies.readPullRequest = () => ({
+        state: "OPEN",
+        headRefOid: "f".repeat(40),
+      });
+    invocation.withManifestLock(file, (manifest) => {
+      if (scenario === "stale-gate") manifest.gates = [];
+      if (scenario === "active-execution")
+        manifest.governor.activeExecution = {
+          kind: "provider",
+          pid: process.pid,
+        };
+      if (scenario === "wrong-phase") manifest.orchestration.phase = "review";
+      if (scenario === "second-attempt")
+        manifest.orchestration.steps.merge.attempts = 2;
+      if (scenario === "explicit-block")
+        manifest.merge.admissionBlock = { conditions: ["ci:failed"] };
+    });
+    let result;
+    try {
+      result = invocation.resumeMergeReadFailure(file, dependencies);
+    } catch (error) {
+      expect(error.message).toMatch(/gate|checks|exact-head/);
+    }
+    expect(result || null).toBeNull();
+    expect(invocation.loadManifest(file).manifest.terminalState).toEqual(
+      before.terminalState,
+    );
   });
 });

@@ -11,4 +11,5 @@
 - [ ] 3.0 Provision protected GitHub keys and run a live admission.
   - Phase: validation
   - Delivers: A production check on an exact PR head.
-  - Evidence: GitHub Actions run and `product-admission` check URL.
+  - Evidence: GitHub Actions run, verified public trust-root provenance when
+    required, and `product-admission` check URL.
