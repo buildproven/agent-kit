@@ -18,7 +18,7 @@ the repository's deterministic gates, independent review, required CI, freshness
 and merge-authority checks. It never satisfies `local-product`, `hosted`, or
 `validated`, never completes a product task, and never supplies a receipt.
 
-The policy is inert in this change. A later runtime change must read it from the
+The policy landed inert before this consumer. The runtime reads it from the
 exact protected base revision recorded in the campaign. Candidate-only policy is
 not authority. Missing, disabled, malformed, unrecognized, stale, or unreadable
 policy rejects the engineering claim and keeps the existing claim rules.
@@ -29,7 +29,7 @@ unknown or missing fields fail. The accepted controls are the complete fixed set
 `deterministic-gates`, `independent-review`, `required-ci`, `base-freshness`, and
 `merge-authority`. The product result is `not-established`.
 
-The later consumer must re-read the same policy from the protected base during
+The consumer re-reads the same policy from the protected base during
 final merge authorization. Base movement is handled by the existing freshness
 gate and cannot silently change authority within a campaign. Disabling or
 removing the policy on a later base revokes it for new campaigns.
@@ -45,8 +45,8 @@ removing the policy on a later base revokes it for new campaigns.
 
 ## Rollout and rollback
 
-First merge only the inert protected policy and this ADR through the current
-contract path. Then add the base-bound consumer, CLI claim, closed-schema tests,
-candidate-only and revoked-policy tests, and merge-time re-read. Activate no
-installation or hosted state. Roll back by disabling the claim in a reviewed
-policy change; existing audit records retain the policy revision they used.
+The inert protected policy and this ADR merged first through the contract path.
+The base-bound consumer adds the CLI claim, closed-schema tests, candidate-only
+and revoked-policy tests, and merge-time re-read. It activates no installation
+or hosted state. Roll back by disabling the claim in a reviewed policy change;
+existing audit records retain the policy revision they used.

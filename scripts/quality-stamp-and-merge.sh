@@ -416,6 +416,12 @@ fi
   echo "❌ MERGE BLOCKED: PR HEAD changed while waiting for exact-candidate CI." >&2
   exit 1
 }
+if [ "$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" options.deliveryClaim)" = engineering ]; then
+  # Re-read the closed policy from the exact protected base after CI and
+  # immediately before final authorization. Candidate files never supply the
+  # policy, and a stale or revoked base remains blocked.
+  node "$SCRIPT_DIR/engineering-delivery-policy.js" --manifest "$MANIFEST" >/dev/null
+fi
 if [ "$CI_BILLING_WAIVED" = true ]; then
   BS_QUALITY_CI_BILLING_WAIVER_ARTIFACT="$CI_WAIVER_ARTIFACT" \
     QUALITY_CI_BILLING_LOCAL_REVIEW="$LOCAL_REVIEW_EVIDENCE" \
