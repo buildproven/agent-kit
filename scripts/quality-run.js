@@ -4,6 +4,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 const quality = require("./quality-invocation");
 const { productionCodeChange } = require("./product-completion");
@@ -11,6 +12,7 @@ const { productionCodeChange } = require("./product-completion");
 const ORCHESTRATION_SCHEMA_VERSION = 1;
 const ACTION_REQUIRED_EXIT = 3;
 const WORK_REQUIRED_EXIT = 4;
+const BUSY_EXIT = 5;
 const SCRIPT_DIR = __dirname;
 
 function parseArgs(argv) {
@@ -22,6 +24,169 @@ function parseArgs(argv) {
 
 function manifestAt(manifestPath) {
   return quality.loadManifest(manifestPath).manifest;
+}
+
+function sameRunnerFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readRunnerOwner(file) {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+      return null;
+    const record = quality.parseJson(
+      fs.readFileSync(file, "utf8"),
+      "runner owner",
+    );
+    if (
+      record.schemaVersion !== 1 ||
+      !Number.isInteger(record.pid) ||
+      record.pid < 1 ||
+      typeof record.hostname !== "string" ||
+      typeof record.nonce !== "string" ||
+      !record.nonce ||
+      !Number.isFinite(Date.parse(record.acquiredAt)) ||
+      typeof record.childInFlight !== "boolean"
+    )
+      return null;
+    return { stat, record };
+  } catch (error) {
+    // Unreadable or partially written ownership is not proof of abandonment.
+    if (error instanceof Error) return null;
+    throw error;
+  }
+}
+
+function deadIdleRunner(owner) {
+  if (
+    !owner ||
+    owner.record.hostname !== os.hostname() ||
+    owner.record.childInFlight
+  )
+    return false;
+  try {
+    process.kill(owner.record.pid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+}
+
+function createRunnerFile(file) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, "wx", 0o600);
+  } catch (error) {
+    if (["EEXIST", "EACCES", "EPERM"].includes(error.code)) return null;
+    throw error;
+  }
+  const stat = fs.fstatSync(descriptor);
+  const record = {
+    schemaVersion: 1,
+    hostname: os.hostname(),
+    pid: process.pid,
+    nonce: crypto.randomBytes(16).toString("hex"),
+    acquiredAt: new Date().toISOString(),
+    childInFlight: false,
+  };
+  const write = () => {
+    if (!sameRunnerFile(fs.lstatSync(file), stat))
+      throw new Error("runner ownership file changed");
+    const data = Buffer.from(`${JSON.stringify(record)}\n`);
+    fs.writeSync(descriptor, data, 0, data.length, 0);
+    fs.ftruncateSync(descriptor, data.length);
+    fs.fsyncSync(descriptor);
+  };
+  try {
+    write();
+  } catch (error) {
+    fs.closeSync(descriptor);
+    // Retain an incomplete file as evidence; do not guess it safe to reclaim.
+    throw error;
+  }
+  return {
+    record,
+    write,
+    release() {
+      fs.closeSync(descriptor);
+      const current = readRunnerOwner(file);
+      if (
+        record.childInFlight ||
+        !current ||
+        !sameRunnerFile(current.stat, stat) ||
+        current.record.nonce !== record.nonce
+      )
+        return;
+      fs.unlinkSync(file);
+    },
+  };
+}
+
+function recoverDeadRunner(file, manifestPath, observed) {
+  if (!deadIdleRunner(observed)) return false;
+  const fence = createRunnerFile(`${file}.recovery`);
+  if (!fence) return false;
+  try {
+    const current = readRunnerOwner(file);
+    if (
+      !current ||
+      !sameRunnerFile(current.stat, observed.stat) ||
+      current.record.nonce !== observed.record.nonce ||
+      !deadIdleRunner(current) ||
+      manifestAt(manifestPath).governor?.activeExecution
+    )
+      return false;
+    fs.unlinkSync(file);
+    return true;
+  } finally {
+    fence.release();
+  }
+}
+
+function acquireRunner(manifestPath) {
+  const file = `${manifestPath}.runner-lock`;
+  let owner = createRunnerFile(file);
+  if (!owner && recoverDeadRunner(file, manifestPath, readRunnerOwner(file))) {
+    owner = createRunnerFile(file);
+  }
+  if (!owner) return null;
+  let uncertain = false;
+  let priorUncertain = false;
+  return {
+    async execute(execute, ...args) {
+      priorUncertain = uncertain;
+      owner.record.childInFlight = true;
+      owner.write();
+      try {
+        const result = await execute(...args);
+        uncertain ||= result.code !== 0 || Boolean(result.signal);
+        owner.record.childInFlight = uncertain;
+        owner.write();
+        return result;
+      } catch (error) {
+        uncertain = true;
+        throw error;
+      }
+    },
+    acceptTypedPause() {
+      // Called only after matching atomic merge-admission evidence validates
+      // the foreground merge helper's documented, normal exit-3 pause.
+      uncertain = priorUncertain;
+      owner.record.childInFlight = uncertain;
+      owner.write();
+    },
+    release(checkExecution = true) {
+      if (
+        checkExecution &&
+        manifestAt(manifestPath).governor?.activeExecution
+      ) {
+        owner.record.childInFlight = true;
+        owner.write();
+      }
+      owner.release();
+    },
+  };
 }
 
 function pinRepositoryLease(manifest) {
@@ -789,6 +954,8 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
         { terminalContractFailure: true },
       );
     }
+    if (!afterMerge.governor?.activeExecution)
+      context.ownership.acceptTypedPause();
     return actionRequired(
       manifestPath,
       "merge",
@@ -1010,9 +1177,30 @@ async function runOpenCampaign(context, manifestPath, manifest) {
 }
 
 async function runManifest(manifestPath, dependencies = {}) {
-  const execute = dependencies.runProcess || runProcess;
+  // Validate before canonicalizing: a symlinked manifest remains forbidden.
+  const initial = quality.loadManifest(manifestPath);
+  manifestPath = fs.realpathSync(initial.manifestPath);
+  const ownership = acquireRunner(manifestPath);
+  if (!ownership)
+    return {
+      status: "busy",
+      reason: "runner-owned",
+      head: initial.manifest.revisions.currentHead,
+    };
+  if (manifestAt(manifestPath).governor?.activeExecution) {
+    // This invocation has not dispatched a child. Release only its new lock;
+    // existing governor reconciliation, not admission, owns orphan expiry.
+    ownership.release(false);
+    return {
+      status: "busy",
+      reason: "active-execution",
+      head: initial.manifest.revisions.currentHead,
+    };
+  }
+  const execute = (...args) =>
+    ownership.execute(dependencies.runProcess || runProcess, ...args);
   const runtime = invocationRuntime(manifestPath, execute);
-  const context = { execute, runtime };
+  const context = { execute, runtime, ownership };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, runtime.onSignal);
   try {
@@ -1065,6 +1253,7 @@ async function runManifest(manifestPath, dependencies = {}) {
     return await recordFailure(context, manifestPath, error);
   } finally {
     for (const signal of signals) process.off(signal, runtime.onSignal);
+    ownership.release();
   }
 }
 
@@ -1073,7 +1262,9 @@ async function main() {
     const manifestPath = parseArgs(process.argv.slice(2));
     const result = await runManifest(manifestPath);
     emit(result);
-    if (result.status === "action-required") {
+    if (result.status === "busy") {
+      process.exitCode = BUSY_EXIT;
+    } else if (result.status === "action-required") {
       process.exitCode = ACTION_REQUIRED_EXIT;
     } else if (result.status === "work-required") {
       process.exitCode = WORK_REQUIRED_EXIT;
