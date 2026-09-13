@@ -44,6 +44,18 @@ MUTATION_BASE="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" muta
 [ -n "$MUTATION_BASE" ] || MUTATION_BASE="$BASE"
 REUSED_ARTIFACT_SHA="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.artifactSha256 2>/dev/null || true)"
 AVOIDED_SECONDS="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.avoidedSeconds 2>/dev/null || true)"
+# A rebase-only advance changes commit identity without changing the PR patch.
+# Comparing the old and new heads includes commits that arrived only through
+# the protected base, so those paths are not valid mutation subjects for this
+# candidate. Re-prove the complete live PR patch against the exact carried
+# base instead. This is fresh evidence: do not claim prior execution savings.
+REBASE_CARRY_HEAD="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" revisions.baseRebaseCarry.head 2>/dev/null || true)"
+REBASE_CARRY_BASE="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" revisions.baseRebaseCarry.baseSha 2>/dev/null || true)"
+if [ "$REBASE_CARRY_HEAD" = "$HEAD" ] && [ -n "$REBASE_CARRY_BASE" ]; then
+  MUTATION_BASE="$REBASE_CARRY_BASE"
+  REUSED_ARTIFACT_SHA=""
+  AVOIDED_SECONDS=0
+fi
 case "$AVOIDED_SECONDS" in ''|*[!0-9]*) AVOIDED_SECONDS=0 ;; esac
 STATE_ROOT="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" stateRoot)"
 INVOCATION_ID="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" invocationId)"
