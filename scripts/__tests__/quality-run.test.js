@@ -13,6 +13,7 @@ const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const SOURCE_RUNNER = path.resolve(__dirname, "..", "quality-run.js");
+const { writeAllSync } = require(SOURCE_RUNNER);
 
 const FAKE_INVOCATION = `
 "use strict";
@@ -501,6 +502,26 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("completes short ownership writes before returning", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "quality-run-write-"));
+    const file = path.join(root, "owner");
+    const descriptor = require("node:fs").openSync(file, "w+");
+    const fs = require("node:fs");
+    const originalWrite = fs.writeSync;
+    const write = vi
+      .spyOn(fs, "writeSync")
+      .mockImplementation((fd, data, offset, length, position) =>
+        originalWrite(fd, data, offset, Math.min(length, 3), position),
+      );
+    try {
+      writeAllSync(descriptor, Buffer.from("complete ownership record"));
+    } finally {
+      write.mockRestore();
+      fs.closeSync(descriptor);
+    }
+    expect(readFileSync(file, "utf8")).toBe("complete ownership record");
+  });
+
   function seedRunnerLock(entry, overrides = {}) {
     const record = {
       schemaVersion: 1,
@@ -1155,13 +1176,17 @@ describe("quality-run public orchestration", () => {
   });
 
   it("records signal interruption as one terminal campaign", () => {
-    const result = run(fixture({ signalGate: "lint" }));
+    const entry = fixture({ signalGate: "lint" });
+    const result = run(entry);
     expect(result.status).toBe(1);
     expect(JSON.parse(result.output)).toMatchObject({
       status: "terminal",
       state: "interrupted",
     });
     expect(result.manifest.telemetryWrites).toBe(1);
+    expect(
+      JSON.parse(readFileSync(entry.manifestPath + ".runner-lock", "utf8")),
+    ).toMatchObject({ childInFlight: true });
   });
 
   it("resumes an exact-head reviewed campaign after host interruption", () => {

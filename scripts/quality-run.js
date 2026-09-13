@@ -80,6 +80,22 @@ function deadIdleRunner(owner) {
   }
 }
 
+function writeAllSync(descriptor, data) {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = fs.writeSync(
+      descriptor,
+      data,
+      offset,
+      data.length - offset,
+      offset,
+    );
+    if (written <= 0)
+      throw new Error("runner ownership write made no progress");
+    offset += written;
+  }
+}
+
 function createRunnerFile(file) {
   let descriptor;
   try {
@@ -101,7 +117,7 @@ function createRunnerFile(file) {
     if (!sameRunnerFile(fs.lstatSync(file), stat))
       throw new Error("runner ownership file changed");
     const data = Buffer.from(`${JSON.stringify(record)}\n`);
-    fs.writeSync(descriptor, data, 0, data.length, 0);
+    writeAllSync(descriptor, data);
     fs.ftruncateSync(descriptor, data.length);
     fs.fsyncSync(descriptor);
   };
@@ -160,6 +176,7 @@ function acquireRunner(manifestPath) {
   if (!owner) return null;
   let uncertain = false;
   let priorUncertain = false;
+  let signalUncertain = false;
   return {
     async execute(execute, ...args) {
       priorUncertain = uncertain;
@@ -167,7 +184,8 @@ function acquireRunner(manifestPath) {
       owner.write();
       try {
         const result = await execute(...args);
-        uncertain ||= result.code !== 0 || Boolean(result.signal);
+        uncertain ||=
+          signalUncertain || result.code !== 0 || Boolean(result.signal);
         owner.record.childInFlight = uncertain;
         owner.write();
         return result;
@@ -179,8 +197,14 @@ function acquireRunner(manifestPath) {
     acceptTypedPause() {
       // Called only after matching atomic merge-admission evidence validates
       // the foreground merge helper's documented, normal exit-3 pause.
-      uncertain = priorUncertain;
+      uncertain = signalUncertain || priorUncertain;
       owner.record.childInFlight = uncertain;
+      owner.write();
+    },
+    markSignalUncertain() {
+      signalUncertain = true;
+      uncertain = true;
+      owner.record.childInFlight = true;
       owner.write();
     },
     release(checkExecution = true) {
@@ -1230,7 +1254,16 @@ async function runManifest(manifestPath, dependencies = {}) {
   const runtime = invocationRuntime(manifestPath, execute);
   const context = { execute, runtime, ownership };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-  for (const signal of signals) process.on(signal, runtime.onSignal);
+  const signalHandlers = new Map(
+    signals.map((signal) => [
+      signal,
+      () => {
+        ownership.markSignalUncertain();
+        runtime.onSignal(signal);
+      },
+    ]),
+  );
+  for (const [signal, handler] of signalHandlers) process.on(signal, handler);
   try {
     let manifest = manifestAt(manifestPath);
     pinRepositoryLease(manifest);
@@ -1280,7 +1313,8 @@ async function runManifest(manifestPath, dependencies = {}) {
   } catch (error) {
     return await recordFailure(context, manifestPath, error);
   } finally {
-    for (const signal of signals) process.off(signal, runtime.onSignal);
+    for (const [signal, handler] of signalHandlers)
+      process.off(signal, handler);
     ownership.release();
   }
 }
@@ -1318,6 +1352,7 @@ module.exports = {
   pinRepositoryLease,
   reviewSummary,
   runManifest,
+  writeAllSync,
 };
 
 if (require.main === module) main();
