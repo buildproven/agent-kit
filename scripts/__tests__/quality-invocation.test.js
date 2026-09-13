@@ -8022,6 +8022,55 @@ exit 1
     ]);
   });
 
+  it("BUI-895: funds an audit impact gate from the declared test timeout", () => {
+    const root = repo("audit-impact-gate-timeout");
+    mkdirSync(path.join(root, ".buildproven"));
+    writeFileSync(
+      path.join(root, ".buildproven", "test-impact.json"),
+      JSON.stringify({
+        version: 1,
+        jsRunner: "vitest",
+        audits: [
+          {
+            paths: ["file.js"],
+            reason: "implementation requires the complete suite",
+            commands: [{ executable: "npm", args: ["test"] }],
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      path.join(root, "harness-config.json"),
+      JSON.stringify({
+        checkDefinitions: {
+          test: { timeoutMinutes: 15 },
+        },
+      }),
+    );
+    git(root, ["add", ".buildproven/test-impact.json", "harness-config.json"]);
+    git(root, ["commit", "-q", "-m", "configure audit test selection"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    writeFileSync(path.join(root, "file.js"), "export const value = 3;\n");
+    git(root, ["commit", "-qam", "change implementation"]);
+
+    const manifestPath = create(root);
+    let manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(
+      manifest.requiredGates.find((gate) => gate.name === "test"),
+    ).toMatchObject({
+      source: "test-impact:.buildproven/test-impact.json",
+      testImpactMode: "audit",
+      timeoutSeconds: 900,
+    });
+
+    execFileSync("bash", [RISK, "--manifest", manifestPath], { cwd: root });
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(manifest.risk.runtime.gateTimeoutSeconds).toMatchObject({
+      test: 900,
+    });
+    expect(manifest.risk.runtime.campaignSeconds).toBeGreaterThan(900);
+  });
+
   it("BUI-733: a policy change cannot authorize its own narrower test gate", () => {
     const root = repo("test-impact-policy-bootstrap");
     mkdirSync(path.join(root, ".buildproven"));
