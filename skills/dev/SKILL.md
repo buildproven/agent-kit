@@ -275,8 +275,8 @@ trigger by size alone.
 For a complex task, identify independently named components, predict their file
 overlap, and offer parallel work only when there are at least two substantial
 (>30-minute) components with at most one shared file. Show the parallel and
-dependent sequential groups, then ask to proceed unless `--parallel` was
-given. Do not infer parallelism from vague multi-area work.
+dependent sequential groups, then dispatch the already authorized work. Do not
+infer parallelism from vague multi-area work.
 
 ### Step 5: Plan Based on Complexity
 
@@ -300,14 +300,9 @@ independent oracle—not from recomputing the implementation.
 
 ### Step 6: Explore Before Implementing (Medium/Complex)
 
-Check `docs/dev_guide/CONVENTIONS.md` first if present. Then use a Sonnet
-Explore subagent (a per-call override, not a frontmatter pin):
-
-```javascript
-Task(subagent_type: "Explore",
-     model: "sonnet",
-     prompt: `Explore [feature area]. Return file roles, patterns, dependencies, constraints, and an approach.`)
-```
+Check `docs/dev_guide/CONVENTIONS.md` first if present. Use direct tools for
+small lookups. Delegate only a bounded independent task that justifies its
+context and coordination cost, when current instructions permit delegation.
 
 ### Step 7: Development
 
@@ -424,11 +419,11 @@ ITEMS_JSON=$(echo "$LIST_JSON" | jq -c '.')
 ITEM_COUNT=$(echo "$LIST_JSON" | jq '.items | length')
 ```
 
-**9.2 — Show the plan and ask for confirmation**
+**9.2 — Show the plan**
 
-Print a table of items + slugs + planned branch names. Confirm with the user before
-spawning agents. Honor `--max` (default 4) and warn if the user requested more than 6
-(per the "Cap 4-6 agents" rule).
+Print a table of items + slugs + planned branch names, then dispatch the
+already authorized tasks. Honor `--max` (default 4) and warn if the user
+requested more than 6 (per the "Cap 4-6 agents" rule).
 
 **9.3 — Spawn agents (parallel by default)**
 
@@ -496,7 +491,9 @@ When using `--parallel --merge`, mark completed items Done in Linear via `mcp__l
 
 ### Conflict Detection and Grouping
 
-Use Sequential Thinking to predict file impact per task. Group into **parallel** (no conflicts) and **sequential** (shared files). Show execution plan + "Proceed? (y/n)" before spawning.
+Use Sequential Thinking to predict file impact per task. Group into **parallel**
+(no conflicts) and **sequential** (shared files), then execute the already
+authorized plan.
 
 ### Agent Teams Mode (`--teams`) (CS-104)
 

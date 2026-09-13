@@ -227,8 +227,8 @@ the two Claude slots use distinct model families. A one-provider native run or
 missing diversity is signed as incomplete, never independent or clean. See
 `checklist.md` for provider failure handling.
 
-Codex review model selection is task-scoped: low uses Luna, medium/high uses
-Terra, and critical uses Sol. This does not change the interactive builder
+Codex review model selection is task-scoped: low launches no AI reviewer;
+medium/high use Terra, and critical uses Sol. This does not change the interactive builder
 session. Claude agents continue to inherit the selected session model, with the
 existing critical diversity rule. Starting a session on a stronger model does
 not automatically downshift it; only an explicit scoped invocation can do that.

@@ -664,6 +664,29 @@ exit 1
   return bin;
 }
 
+describe("quality changed-file coverage", () => {
+  it("preserves both rename paths for affected-test selection", () => {
+    const root = makeTempDir("quality-renamed-impact-");
+    git(root, ["init", "-q", "-b", "main"]);
+    git(root, ["config", "user.name", "Quality Test"]);
+    git(root, ["config", "user.email", "quality@example.invalid"]);
+    writeFileSync(
+      path.join(root, "old source.js"),
+      "export const value = 1;\n",
+    );
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "base"]);
+    const base = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["mv", "old source.js", "new source.js"]);
+    git(root, ["commit", "-qm", "rename source"]);
+    expect(
+      invocation
+        .changedFiles(root, base, git(root, ["rev-parse", "HEAD"]))
+        .sort(),
+    ).toEqual(["new source.js", "old source.js"]);
+  });
+});
+
 describe("mutationEvidenceValid — BUI-603 #1 fail-closed on unresolved risk", () => {
   it("returns false for an unresolved risk contract by default", () => {
     const manifest = { risk: { resolved: false } };

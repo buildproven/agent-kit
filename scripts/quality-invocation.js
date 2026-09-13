@@ -646,7 +646,13 @@ function changedFiles(root, baseSha, head) {
     // containing non-ASCII bytes (core.quotePath's default), which would
     // otherwise break a suffix check like .endsWith(".py") on a path such
     // as "café.py".
-    return git(root, ["diff", "-z", "--name-only", `${baseSha}..${head}`])
+    return git(root, [
+      "diff",
+      "-z",
+      "--name-only",
+      "--no-renames",
+      `${baseSha}..${head}`,
+    ])
       .split("\0")
       .filter(Boolean);
   } catch {
