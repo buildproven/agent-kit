@@ -16,10 +16,14 @@ whole process tree is gone.
 
 On POSIX systems, new ownership records use schema version 2. Before each
 foreground execution, the runner creates a dedicated process group and persists
-its leader PID, process-group ID, and start time. A failed direct child is safe
-to release only when both the PID and the complete process group return `ESRCH`.
-Any live, foreign, inaccessible, malformed, or unproved process remains
-quarantined. Signals target the dedicated process group.
+its leader PID, process-group ID, and start time. A direct child exit is safe to
+release only when both the PID and the complete process group return `ESRCH`.
+If the direct child succeeds but a descendant remains, the runner keeps the
+original child provenance and refuses every later child dispatch, including
+terminal-state recording. The campaign remains nonterminal until reconciliation
+proves that the process group is gone. Any live, foreign, inaccessible,
+malformed, or unproved process remains quarantined. Signals target the dedicated
+process group.
 
 Windows does not provide POSIX process-group proof. Until the runtime owns a
 native Job Object implementation, Windows writes the schema-v1 compatibility
@@ -58,8 +62,8 @@ foreign host or a process that does not return `ESRCH`.
 
 ## Verification
 
-Tests cover automatic release after a failed but quiescent dedicated process
-group, preserved refusal while an orphan child can write, exact legacy binding
+Tests cover automatic release after a quiescent dedicated process group,
+preserved nonterminal refusal while a successful orphan child can write, exact legacy binding
 and confirmation, held recovery fences, live and foreign owners, malformed
 records, null active-execution enforcement, and byte-identical manifest state
 across reconciliation.

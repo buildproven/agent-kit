@@ -195,8 +195,13 @@ function acquireRunner(manifestPath) {
   let priorUncertain = false;
   let signalUncertain = false;
   let lastChildQuiescent = false;
+  let quarantined = false;
   return {
     async execute(execute, command, args, options = {}) {
+      if (quarantined)
+        throw new Error(
+          "quality foreground child process group is not quiescent",
+        );
       priorUncertain = uncertain;
       owner.record.childInFlight = true;
       if (owner.record.schemaVersion === 2) owner.record.child = null;
@@ -221,11 +226,24 @@ function acquireRunner(manifestPath) {
         lastChildQuiescent = Boolean(childQuiescent);
         uncertain ||=
           signalUncertain ||
-          ((result.code !== 0 || Boolean(result.signal)) && !childQuiescent);
+          (owner.record.schemaVersion === 2
+            ? !childQuiescent
+            : result.code !== 0 || Boolean(result.signal));
         owner.record.childInFlight = uncertain;
         if (!uncertain && owner.record.schemaVersion === 2)
           owner.record.child = null;
         owner.write();
+        if (
+          owner.record.schemaVersion === 2 &&
+          result.code === 0 &&
+          !result.signal &&
+          !childQuiescent
+        ) {
+          quarantined = true;
+          throw new Error(
+            "quality foreground child process group is not quiescent",
+          );
+        }
         return result;
       } catch (error) {
         uncertain = true;

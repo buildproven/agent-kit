@@ -215,6 +215,13 @@ let manifest = JSON.parse(fs.readFileSync(file, "utf8"));
 manifest.calls ||= [];
 manifest.calls.push(step);
 if (step === "quality-risk-resolve.sh") manifest.risk.resolved = true;
+if (step === "quality-risk-resolve.sh" && manifest.behavior?.orphanSuccessfulChild) {
+  const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+  orphan.unref();
+  fs.writeFileSync(file + ".successful-orphan-pid", String(orphan.pid));
+}
 if (step === "quality-risk-resolve.sh" && manifest.behavior?.failRisk) {
   fs.writeFileSync(file, JSON.stringify(manifest));
   process.exit(5);
@@ -696,6 +703,47 @@ describe("quality-run public orchestration", () => {
     expect(run(entry).status).toBe(1);
     expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
     expect(run(entry).status).toBe(1);
+  });
+
+  it("retains ownership when a successful child leaves its process group live", async () => {
+    const entry = fixture({ orphanSuccessfulChild: true });
+    const result = run(entry);
+    const orphanPid = Number(
+      readFileSync(entry.manifestPath + ".successful-orphan-pid", "utf8"),
+    );
+    let cleanupError;
+    try {
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "quality foreground child process group is not quiescent",
+      );
+      const lock = JSON.parse(
+        readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(lock).toMatchObject({
+        schemaVersion: 2,
+        childInFlight: true,
+        child: { processGroupId: expect.any(Number) },
+      });
+      expect(
+        JSON.parse(readFileSync(entry.manifestPath, "utf8")),
+      ).not.toHaveProperty("terminalState");
+      expectBusyUnchanged(entry, "runner-owned");
+    } finally {
+      try {
+        process.kill(orphanPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") cleanupError = error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(orphanPid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 10000 },
+    );
   });
 
   it("reconciles a dead legacy quarantine only with exact bindings and confirmation", () => {
