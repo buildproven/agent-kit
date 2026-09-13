@@ -732,12 +732,6 @@ function trustedSecretCheckState({
   if (!latest || typeof latest.details_url !== "string") {
     return { state: "missing", run: null };
   }
-  let workflowRun;
-  try {
-    workflowRun = workflowRunForCheck(repository, latest);
-  } catch {
-    return { state: "missing", run: null };
-  }
   const noncePrefix = `${protectedConfig.runPrefix}${targetHead}:${baseHead}:`;
   const externalId = String(requirement.externalId || latest.external_id || "");
   if (!externalId.startsWith(noncePrefix)) {
@@ -748,6 +742,17 @@ function trustedSecretCheckState({
     return { state: "missing", run: null };
   }
   const expectedRunName = `${noncePrefix}${nonce}`;
+  let workflowRun;
+  try {
+    workflowRun = workflowRunForCheck(repository, latest, {
+      workflowId,
+      base,
+      baseHead,
+      expectedRunName,
+    });
+  } catch {
+    return { state: "missing", run: null };
+  }
   if (
     (workflowId !== null && workflowRun.workflow_id !== workflowId) ||
     workflowRun.event !== "repository_dispatch" ||
@@ -796,16 +801,82 @@ function workflowIdForProtectedController(repository, protectedConfig) {
   return workflow.id;
 }
 
-function workflowRunForCheck(repository, run) {
+function workflowRunForCheck(
+  repository,
+  run,
+  {
+    workflowId = null,
+    base = null,
+    baseHead = null,
+    expectedRunName = null,
+  } = {},
+) {
   const match = String(run.details_url || "").match(/\/actions\/runs\/(\d+)/);
-  if (!match) {
+  if (match) {
+    const workflowRun = apiJson(`repos/${repository}/actions/runs/${match[1]}`);
+    if (!Number.isInteger(workflowRun.workflow_id)) {
+      throw new Error(`required check '${run.name}' has no workflow identity`);
+    }
+    return workflowRun;
+  }
+
+  if (
+    !Number.isInteger(workflowId) ||
+    typeof base !== "string" ||
+    typeof baseHead !== "string" ||
+    typeof expectedRunName !== "string"
+  ) {
     throw new Error(`required check '${run.name}' has no Actions run identity`);
   }
-  const workflowRun = apiJson(`repos/${repository}/actions/runs/${match[1]}`);
-  if (!Number.isInteger(workflowRun.workflow_id)) {
-    throw new Error(`required check '${run.name}' has no workflow identity`);
+
+  const workflowRuns = [];
+  let totalCount = null;
+  for (let page = 1; page <= 10; page += 1) {
+    const query = new URLSearchParams({
+      event: "repository_dispatch",
+      branch: base,
+      head_sha: baseHead,
+      per_page: "100",
+      page: String(page),
+    });
+    const response = apiJson(
+      `repos/${repository}/actions/workflows/${workflowId}/runs?${query}`,
+    );
+    if (!Array.isArray(response.workflow_runs)) {
+      throw new Error("GitHub workflow-runs response is invalid");
+    }
+    if (page === 1) {
+      if (!Number.isInteger(response.total_count) || response.total_count < 0) {
+        throw new Error("GitHub workflow-runs total_count is invalid");
+      }
+      totalCount = response.total_count;
+    }
+    workflowRuns.push(...response.workflow_runs);
+    if (workflowRuns.length >= totalCount) break;
+    if (response.workflow_runs.length === 0) {
+      throw new Error(
+        "GitHub workflow-runs pagination ended before total_count",
+      );
+    }
+    if (page === 10) {
+      throw new Error("GitHub workflow-runs pagination exceeded 10 pages");
+    }
   }
-  return workflowRun;
+
+  const exact = workflowRuns.filter(
+    (workflowRun) =>
+      workflowRun.workflow_id === workflowId &&
+      workflowRun.event === "repository_dispatch" &&
+      workflowRun.head_branch === base &&
+      workflowRun.head_sha === baseHead &&
+      workflowRun.display_title === expectedRunName,
+  );
+  if (exact.length !== 1) {
+    throw new Error(
+      `required check '${run.name}' has ${exact.length} matching Actions run identities`,
+    );
+  }
+  return exact[0];
 }
 
 function sourceRunForRequirement(

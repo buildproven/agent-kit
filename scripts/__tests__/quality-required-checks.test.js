@@ -810,6 +810,122 @@ esac
     }
   });
 
+  it("resolves a GitHub-rewritten check URL through one exact workflow run", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const externalId =
+      "secret-history-scan:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:cccccccccccccccccccccccccccccccccccccccc:0123456789abcdef0123456789abcdef";
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *actions/workflows/77/runs*) printf '%s\\n' '${JSON.stringify({ total_count: 1, workflow_runs: [{ id: 124, workflow_id: 77, event: "repository_dispatch", head_branch: "main", head_sha: "c".repeat(40), path: ".github/workflows/secret-history-scan.yml", display_title: externalId, status: "completed", conclusion: "success" }] })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    try {
+      expect(
+        trustedSecretCheckState({
+          repository: "owner/repo",
+          runs: [
+            {
+              id: 2,
+              name: "secret-history-scan",
+              status: "completed",
+              conclusion: "success",
+              app: { id: 15368 },
+              external_id: externalId,
+              details_url: "https://github.com/owner/repo/runs/2",
+            },
+          ],
+          requirement: {
+            context: "secret-history-scan",
+            appId: 15368,
+            externalId,
+          },
+          workflowId: 77,
+          base: "main",
+          targetHead: "b".repeat(40),
+          baseHead: "c".repeat(40),
+        }),
+      ).toMatchObject({ state: "success" });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("rejects rewritten check URLs with ambiguous workflow-run matches", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const externalId =
+      "secret-history-scan:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:cccccccccccccccccccccccccccccccccccccccc:0123456789abcdef0123456789abcdef";
+    const workflowRun = {
+      workflow_id: 77,
+      event: "repository_dispatch",
+      head_branch: "main",
+      head_sha: "c".repeat(40),
+      path: ".github/workflows/secret-history-scan.yml",
+      display_title: externalId,
+      status: "completed",
+      conclusion: "success",
+    };
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *actions/workflows/77/runs*) printf '%s\\n' '${JSON.stringify({
+    total_count: 2,
+    workflow_runs: [
+      { ...workflowRun, id: 124 },
+      { ...workflowRun, id: 125 },
+    ],
+  })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    try {
+      expect(
+        trustedSecretCheckState({
+          repository: "owner/repo",
+          runs: [
+            {
+              id: 2,
+              name: "secret-history-scan",
+              status: "completed",
+              conclusion: "success",
+              app: { id: 15368 },
+              external_id: externalId,
+              details_url: "https://github.com/owner/repo/runs/2",
+            },
+          ],
+          requirement: {
+            context: "secret-history-scan",
+            appId: 15368,
+            externalId,
+          },
+          workflowId: 77,
+          base: "main",
+          targetHead: "b".repeat(40),
+          baseHead: "c".repeat(40),
+        }),
+      ).toMatchObject({ state: "missing" });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it("rejects a forged success when the protected workflow failed", () => {
     const originalPath = process.env.PATH;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
