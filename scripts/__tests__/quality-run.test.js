@@ -745,6 +745,37 @@ describe("quality-run public orchestration", () => {
     expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
   });
 
+  it("retains creator ownership when the release fence is unavailable", async () => {
+    const entry = fixture({ holdReview: true });
+    const owner = spawn(
+      process.execPath,
+      [entry.runner, "--manifest", entry.manifestPath],
+      {
+        env: { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath },
+        stdio: "ignore",
+      },
+    );
+    const completed = new Promise((resolve, reject) => {
+      owner.once("error", reject);
+      owner.once("exit", resolve);
+    });
+    await vi.waitFor(
+      () => expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true),
+      { timeout: 10000 },
+    );
+    writeFileSync(entry.manifestPath + ".runner-lock.recovery", "held fence");
+    writeFileSync(entry.manifestPath + ".review-release", "release");
+    await completed;
+
+    expect(owner.exitCode).toBe(0);
+    expect(
+      JSON.parse(readFileSync(entry.manifestPath + ".runner-lock", "utf8")),
+    ).toMatchObject({ childInFlight: false });
+    expect(
+      readFileSync(entry.manifestPath + ".runner-lock.recovery", "utf8"),
+    ).toBe("held fence");
+  });
+
   it("merges engineering work without claiming product acceptance", () => {
     const result = run(
       fixture({ deliveryClaim: "engineering" }, { merge: true, tier: "low" }),

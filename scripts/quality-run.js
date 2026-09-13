@@ -131,17 +131,25 @@ function createRunnerFile(file) {
   return {
     record,
     write,
-    release() {
+    release({ serialize = false } = {}) {
+      let fence = null;
+      if (!record.childInFlight && serialize) {
+        fence = createRunnerFile(`${file}.recovery`);
+      }
       fs.closeSync(descriptor);
-      const current = readRunnerOwner(file);
-      if (
-        record.childInFlight ||
-        !current ||
-        !sameRunnerFile(current.stat, stat) ||
-        current.record.nonce !== record.nonce
-      )
-        return;
-      fs.unlinkSync(file);
+      if (record.childInFlight || (serialize && !fence)) return;
+      try {
+        const current = readRunnerOwner(file);
+        if (
+          !current ||
+          !sameRunnerFile(current.stat, stat) ||
+          current.record.nonce !== record.nonce
+        )
+          return;
+        fs.unlinkSync(file);
+      } finally {
+        fence?.release();
+      }
     },
   };
 }
@@ -218,7 +226,7 @@ function acquireRunner(manifestPath) {
         owner.record.childInFlight = true;
         owner.write();
       }
-      owner.release();
+      owner.release({ serialize: true });
     },
   };
 }
