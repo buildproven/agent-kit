@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { canonicalJson, verifyAdmissionEnvelope } from "../product-evidence.js";
-import { validateRequest } from "../product-evidence-producer.js";
+import { produce, validateRequest } from "../product-evidence-producer.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -119,6 +119,105 @@ describe("protected product admission", () => {
         acceptanceCommand: "npm run test:patterns",
       }),
     ).toThrow(/allowlisted/);
+  });
+
+  it("records a command only for behavioral-test evidence", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "evidence-producer-"));
+    const sourceDirectory = path.join(root, "source");
+    const outputDirectory = path.join(root, "output");
+    fs.mkdirSync(sourceDirectory);
+    const repository = { id: 123456, full_name: expected.repository };
+    const request = {
+      schemaVersion: 1,
+      repository: expected.repository,
+      repositoryId: expected.repositoryId,
+      pullRequest: 7,
+      base: "d".repeat(40),
+      head: expected.head,
+      nonce: "e".repeat(32),
+      behavioralCommand: "npm test",
+      acceptanceCommand: "npm run test:patterns",
+    };
+    for (const [name, value] of Object.entries({
+      "request.json": `${JSON.stringify(request)}\n`,
+      "prd.md": "# Product\n",
+      "tasks.md": "- [x] evidence\n",
+      "changed-files.json": "[]\n",
+      "behavioral-tests.log": "passed\n",
+      "acceptance-evidence.log": "passed\n",
+    })) {
+      fs.writeFileSync(path.join(sourceDirectory, name), value);
+    }
+    const pair = generateKeyPairSync("ed25519");
+    try {
+      produce({
+        event: {
+          action: "completed",
+          repository: { ...repository, default_branch: "main" },
+          workflow_run: {
+            id: 100,
+            name: "Product Evidence Source",
+            path: ".github/workflows/product-evidence-source.yml",
+          },
+        },
+        sourceRun: {
+          id: 100,
+          name: "Product Evidence Source",
+          path: ".github/workflows/product-evidence-source.yml",
+          event: "repository_dispatch",
+          status: "completed",
+          conclusion: "success",
+          run_attempt: 1,
+          head_branch: "main",
+          updated_at: "2026-09-13T00:00:00Z",
+        },
+        sourceJobs: {
+          jobs: [
+            {
+              name: "collect-product-evidence",
+              conclusion: "success",
+              run_id: 100,
+            },
+          ],
+        },
+        pullRequest: {
+          number: 7,
+          state: "open",
+          head: { sha: expected.head, repo: repository },
+          base: { ref: "main", repo: repository },
+        },
+        sourceDirectory,
+        outputDirectory,
+        encodedPrivateKey: pair.privateKey
+          .export({ format: "der", type: "pkcs8" })
+          .toString("base64"),
+        runtime: {
+          githubActions: "true",
+          eventName: "workflow_run",
+          runAttempt: "1",
+          workflowRef: ".github/workflows/product-evidence-producer.yml",
+          repository: expected.repository,
+          repositoryId: expected.repositoryId,
+          runId: "101",
+        },
+      });
+      const behavioral = JSON.parse(
+        fs.readFileSync(
+          path.join(outputDirectory, "behavioralTests.receipt.json"),
+          "utf8",
+        ),
+      );
+      const acceptance = JSON.parse(
+        fs.readFileSync(
+          path.join(outputDirectory, "acceptanceEvidence.receipt.json"),
+          "utf8",
+        ),
+      );
+      expect(behavioral.payload.command).toBe("npm test");
+      expect(acceptance.payload).not.toHaveProperty("command");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

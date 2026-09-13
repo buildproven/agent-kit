@@ -11,6 +11,17 @@ model: haiku
 
 ## Model routing
 
+For a substantial independent native task, resolve the complete
+`compute-governor` native-advisory request before delegation. Use ready model
+arguments only with a bounded or fresh worker; full-history forks inherit the
+parent. A blocked capability result is visible; continue safe local work or use
+another supported route. It does not weaken quality or permit an implicit
+global-model fallback.
+
+Codex uses the ready `spawn_agent` model and effort pair. Claude Task uses the
+ready profile and model alias; its profile sets effort. Confirm the effective
+identity in `/tasks` and do not change global settings.
+
 Use each runtime's normal medium-effort profile for daily development. The
 quality workflow performs any bounded high-effort adversarial escalation; do
 not select Opus or a Codex power profile for ordinary commands.

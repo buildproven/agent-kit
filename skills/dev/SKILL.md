@@ -304,6 +304,18 @@ Check `docs/dev_guide/CONVENTIONS.md` first if present. Use direct tools for
 small lookups. Delegate only a bounded independent task that justifies its
 context and coordination cost, when current instructions permit delegation.
 
+Before native delegation, find the installed `scripts/compute-governor.js`
+under the active plugin, project `.claude`, or `~/.claude` directory. Resolve
+its symlink to the source script and read `../docs/compute-governor.md` relative
+to that source script's directory. Use its `native-advisory` request with
+`node <installed-governor> resolve <request.json>`. Supply complete facts, the
+full task text, planned paths, parent identity, and live client capabilities. Only a ready
+bounded/fresh decision may supply Task or `spawn_agent` model/effort arguments.
+Claude Task uses the returned profile and model alias; the profile supplies
+effort. Confirm the effective identity in `/tasks`. Preserve full-history
+inheritance. A blocked result does not block safe local work and must not be
+replaced with a global model default.
+
 ### Step 7: Development
 
 Use TodoWrite to track tasks. Read files before editing. Follow project conventions. Test incrementally. Break at < 50 turns: `/bs:dev` → automatic quality/merge → `/clear`.

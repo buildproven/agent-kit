@@ -4,6 +4,86 @@ Compute Governor gives fresh autonomous workers one explicit model, effort,
 access profile, runtime cap, prompt hash, and exact Git revision. It does not
 change the interactive builder model.
 
+## Native advisory selection
+
+For an installed caller, locate `scripts/compute-governor.js` under the active
+plugin, project `.claude`, or `~/.claude` directory. Resolve that symlink to the
+source script. This reference is `../docs/compute-governor.md` relative to its
+source directory, regardless of the caller's working directory. Invoke
+`node <installed-governor> resolve <request.json>` with the request below.
+
+Native Codex and Claude delegation can call `resolve` or `explain` with the
+separate `native-advisory` request. The result launches nothing and is not a V1
+or V2 execution plan.
+
+```json
+{
+  "interface": "native-advisory",
+  "schemaVersion": 1,
+  "work": "delegation",
+  "facts": {
+    "provider": "codex",
+    "phase": "scan",
+    "readOnly": true,
+    "localized": true,
+    "reversible": true,
+    "targetedProof": true,
+    "ambiguous": false,
+    "changedFiles": 1,
+    "protectedSurfaces": [],
+    "sameFailureStreak": 0,
+    "publicContract": false,
+    "crossRepository": false,
+    "operatorRoute": null
+  },
+  "task": {
+    "text": "Inspect the targeted worker behavior.",
+    "plannedPaths": ["src/worker.js"]
+  },
+  "parent": { "model": "gpt-5.6-sol", "effort": "high" },
+  "override": null,
+  "fork": "bounded",
+  "capabilities": {
+    "delegation": true,
+    "overrides": true,
+    "models": [{ "model": "gpt-5.6-luna", "efforts": ["medium"] }],
+    "profiles": []
+  }
+}
+```
+
+Every fact is required. The task text and planned paths must describe the full
+delegated task. The result returns a task SHA-256 and classified protected
+surfaces, not the task text or paths. Unknown capabilities, unsupported
+model/effort pairs, and below-floor overrides return `blocked` with no
+`modelArguments`.
+
+For a fresh or bounded Codex worker, consume ready `modelArguments` through
+`spawn_agent` `model` and `reasoning_effort` controls. For Claude,
+`modelArguments` names the Task `subagent_type` and model alias. The selected task profile supplies its
+effort; Task has no per-call effort control. The kit profiles are
+`native-task-low`, `native-task-medium`, and `native-task-high`, all with
+`model: inherit` and their named `effort:` frontmatter. They omit `tools` and
+`permissionMode` so the client inherits the parent's available tool surface and
+permissions, including available WebSearch and MCP tools. Confirm required task
+tools are available before delegating; a ready model pair does not prove tool
+availability. See [Claude subagent tools](https://code.claude.com/docs/en/sub-agents#available-tools). Claude uses the built-in
+`general-purpose` type for the Haiku/null-effort pair. Declare only installed
+profiles in `capabilities.profiles`, then inspect `/tasks` to confirm the
+effective model and effort. Do not mutate global model settings. A full-history
+fork preserves its parent selection and receives no model arguments. Do not
+silently replace a blocked selection with an inherited global default; continue
+safe local work or use an already-supported route.
+
+Native advice uses the V1 task classifier without launch-time economy promotion:
+unprotected, complete low-risk work can select Luna; ordinary work selects
+Terra; protected/public/cross-repository work remains Critical. Ambiguous work
+is at least Standard. Repeated-failure facts only explain an Expert
+recommendation; they do not grant a budget, authority, execution receipt, or
+sandbox. An explicit supported override may be below the recommendation only
+when it stays at or above the hard safety floor. Native advice does not change
+V1/V2 execution, quality, the active coordinator, permissions, or merge policy.
+
 ## Phase-v2 workers
 
 Schema v2 covers `scan`, `plan`, `implement`, `verify`, `remediate`, `diagnose`,

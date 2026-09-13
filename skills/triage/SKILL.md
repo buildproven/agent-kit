@@ -111,18 +111,16 @@ For a specific Sentry issue ID:
 2. Find the repo + commit that shipped the regression (via release tag in Sentry)
 3. Create and lock the worktree through the shared manager:
    `node <kit-scripts>/worktree-manager.js create --repo <repo> --branch fix/sentry-<issue-id> --creator bs:triage --purpose <issue-id> --lock-reason bs:triage/<issue-id>`
-4. Generate and record a one-paragraph root-cause hypothesis with a
-   Sonnet-pinned subagent. Reading a stack trace and proposing a root cause is
-   bounded analysis, not the coding work, so it does not need the session
-   model's tier. Continue automatically when the hypothesis identifies a
-   testable, reversible fix; ask only when it exposes a genuinely ambiguous
-   product decision or an irreversible architecture boundary.
-
-   ```javascript
-   Task(subagent_type: "general-purpose",
-        model: "sonnet",
-        prompt: `Read this Sentry issue (stack trace, breadcrumbs, release) and propose a one-paragraph root-cause hypothesis + the file:line most likely responsible. Do NOT write a fix. <issue context>`)
-   ```
+4. Generate and record a one-paragraph root-cause hypothesis with a bounded
+   native subagent only when the task is independent. First resolve the complete
+   `native-advisory` request: resolve the installed `scripts/compute-governor.js`
+   symlink under the active plugin, project `.claude`, or `~/.claude` directory.
+   Read `../docs/compute-governor.md` relative to that source script's directory
+   and invoke `node <installed-governor> resolve <request.json>`. Use Task or
+   `spawn_agent` arguments only when the decision is ready. Claude Task uses the
+   returned profile and model alias, then confirms effective effort in `/tasks`.
+   Reading a stack trace can continue locally if a native capability is
+   unavailable. Do not replace a blocked decision with a hard-coded model.
 
 5. Implement the minimal fix in the worktree at the normal runtime profile.
    Escalate only when the automatic Architecture Decision Gate triggers.
