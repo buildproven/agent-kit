@@ -964,10 +964,13 @@ function resolveNative(request, policy = loadPolicy()) {
     classification.floor.route,
     facts.operatorRoute || classification.floor.route,
   );
+  const recommendationRoute = atLeast(classification.route, safetyFloor);
+  const recommendationMapping =
+    policy.routes[recommendationRoute].providers[classifiedFacts.provider];
   const recommendation = {
-    route: classification.route,
-    model: classification.mapping.model,
-    effort: classification.mapping.effort,
+    route: recommendationRoute,
+    model: recommendationMapping.model,
+    effort: recommendationMapping.effort,
     reasons: [classification.floor.reason, ...classification.work.reasons],
   };
   const inherited = request.fork === "all";

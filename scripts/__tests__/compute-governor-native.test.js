@@ -207,6 +207,29 @@ describe("compute governor native advisory", () => {
     }
   });
 
+  it("raises the default recommendation to an explicit operator floor", () => {
+    expect(
+      resolve({
+        ...request,
+        facts: { ...request.facts, operatorRoute: "critical" },
+      }),
+    ).toMatchObject({
+      status: "ready",
+      safetyFloor: "critical",
+      recommendation: {
+        route: "critical",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
+      requested: { model: "gpt-5.6-sol", effort: "high" },
+      requestedRoute: "critical",
+      modelArguments: {
+        model: "gpt-5.6-sol",
+        reasoning_effort: "high",
+      },
+    });
+  });
+
   it("keeps retries advisory and full-history parent selection unchanged", () => {
     expect(
       resolve({
