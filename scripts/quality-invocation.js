@@ -6915,11 +6915,24 @@ function runtimeCohortDigest(
     if (
       !relative
         .split("/")
-        .every((segment) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment))
+        .every(
+          (segment) =>
+            segment !== "." &&
+            segment !== ".." &&
+            /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment),
+        )
     ) {
       throw new Error(`${cohort} runtime dependency name is malformed`);
     }
     const candidate = path.join(runtimeDir, relative);
+    const fromRuntime = path.relative(runtimeDir, candidate);
+    if (
+      fromRuntime === ".." ||
+      fromRuntime.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(fromRuntime)
+    ) {
+      throw new Error(`${cohort} runtime dependency escapes its cohort`);
+    }
     const canonical = fs.realpathSync(candidate);
     if (canonical !== candidate) {
       throw new Error(`${cohort} runtime dependency is not canonical`);
