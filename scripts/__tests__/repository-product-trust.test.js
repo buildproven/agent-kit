@@ -130,6 +130,34 @@ function receipt(dir, privateKey, identity) {
 }
 
 describe("repository-scoped product trust", () => {
+  it("keeps repository trust tests mapped to every mutable trust implementation", () => {
+    const policy = JSON.parse(
+      fs.readFileSync(
+        path.resolve(
+          import.meta.dirname,
+          "../../.buildproven/test-impact.json",
+        ),
+        "utf8",
+      ),
+    );
+    const test = "scripts/__tests__/repository-product-trust.test.js";
+    const implementation = [
+      "scripts/install-product-trust.js",
+      "scripts/product-admission.js",
+      "scripts/product-evidence.js",
+    ];
+
+    for (const source of implementation) {
+      const commands = policy.mappings
+        .filter(({ paths }) => paths.includes(source))
+        .flatMap(({ commands: mappedCommands }) => mappedCommands);
+      expect(
+        commands.some(({ args }) => args.includes(test)),
+        `${source} must select ${test}`,
+      ).toBe(true);
+    }
+  });
+
   it("selects separate producer and admission keys for two trusted repositories", () => {
     const kit = {
       producer: crypto.generateKeyPairSync("ed25519"),
