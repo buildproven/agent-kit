@@ -6895,6 +6895,64 @@ function recoveryDigest(value) {
     .digest("hex");
 }
 
+function sameRuntimeInode(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readCanonicalRuntimeFile(runtimeDir, relative, cohort) {
+  const segments = relative.split("/");
+  const directories = [runtimeDir];
+  for (let index = 1; index < segments.length; index += 1) {
+    directories.push(path.join(runtimeDir, ...segments.slice(0, index)));
+  }
+  const openedDirectories = [];
+  let fileDescriptor = null;
+  try {
+    for (const directory of directories) {
+      const descriptor = fs.openSync(
+        directory,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NOFOLLOW |
+          fs.constants.O_NONBLOCK,
+      );
+      const stat = fs.fstatSync(descriptor);
+      if (!stat.isDirectory() || fs.realpathSync(directory) !== directory) {
+        fs.closeSync(descriptor);
+        throw new Error(`${cohort} runtime ancestry is not canonical`);
+      }
+      openedDirectories.push({ descriptor, directory, stat });
+    }
+    const candidate = path.join(runtimeDir, relative);
+    if (fs.realpathSync(candidate) !== candidate) {
+      throw new Error(`${cohort} runtime dependency is not canonical`);
+    }
+    fileDescriptor = fs.openSync(
+      candidate,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
+    const fileStat = fs.fstatSync(fileDescriptor);
+    if (!fileStat.isFile()) {
+      throw new Error(`${cohort} runtime dependency is not a regular file`);
+    }
+    for (const opened of openedDirectories) {
+      const current = fs.lstatSync(opened.directory);
+      if (!current.isDirectory() || !sameRuntimeInode(current, opened.stat)) {
+        throw new Error(`${cohort} runtime ancestry changed during inspection`);
+      }
+    }
+    const currentFile = fs.lstatSync(candidate);
+    if (!currentFile.isFile() || !sameRuntimeInode(currentFile, fileStat)) {
+      throw new Error(`${cohort} runtime dependency changed during inspection`);
+    }
+    return fs.readFileSync(fileDescriptor);
+  } finally {
+    if (fileDescriptor !== null) fs.closeSync(fileDescriptor);
+    for (const opened of openedDirectories.reverse()) {
+      fs.closeSync(opened.descriptor);
+    }
+  }
+}
+
 // The runner and its shell entrypoint can be upgraded while a terminal
 // manifest exists. Hash each explicitly owned source file by its canonical
 // relative name and bytes. The fixed cohorts are deliberate: an unlisted,
@@ -6919,24 +6977,7 @@ function runtimeCohortDigest(
     ) {
       throw new Error(`${cohort} runtime dependency name is malformed`);
     }
-    const candidate = path.join(runtimeDir, relative);
-    const canonical = fs.realpathSync(candidate);
-    if (canonical !== candidate) {
-      throw new Error(`${cohort} runtime dependency is not canonical`);
-    }
-    const descriptor = fs.openSync(
-      candidate,
-      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-    );
-    let bytes;
-    try {
-      if (!fs.fstatSync(descriptor).isFile()) {
-        throw new Error(`${cohort} runtime dependency is not a regular file`);
-      }
-      bytes = fs.readFileSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
+    const bytes = readCanonicalRuntimeFile(runtimeDir, relative, cohort);
     const source = bytes.toString("utf8");
     seen.add(relative);
     entries.push([relative, bytes]);

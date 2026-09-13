@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  renameSync,
   rmSync,
   realpathSync,
   readFileSync,
@@ -867,6 +868,53 @@ describe("quality invocation manifest", () => {
     try {
       expect(() => invocation.selectionRuntimeDigests(runtime)).toThrow(
         /ELOOP/,
+      );
+    } finally {
+      inspect.mockRestore();
+    }
+  });
+
+  it("rejects an intermediate runtime directory swapped after validation", () => {
+    const runtime = realpathSync(makeTempDir("selection-ancestry-race-"));
+    const files = [
+      "quality-select-agents.sh",
+      "quality-run.js",
+      "quality-risk-resolve.sh",
+      "quality-runtime-plan.js",
+      "quality-run-gate.sh",
+      "quality-run-review.sh",
+      "quality-mutation-check.sh",
+      "quality-authorize-review-round.sh",
+      "quality-stamp-and-merge.sh",
+    ];
+    for (const file of files)
+      writeFileSync(path.join(runtime, file), "// fixture\n");
+    mkdirSync(path.join(runtime, "schemas"));
+    writeFileSync(path.join(runtime, "schemas", "review.json"), "trusted\n");
+    writeFileSync(
+      path.join(runtime, "quality-run-review.sh"),
+      'schema="$SCRIPT_DIR/schemas/review.json"\n',
+    );
+    const replacement = path.join(runtime, "replacement");
+    mkdirSync(replacement);
+    writeFileSync(path.join(replacement, "review.json"), "substituted\n");
+    const target = path.join(runtime, "schemas", "review.json");
+    const filesystem = require("node:fs");
+    const open = filesystem.openSync;
+    let swapped = false;
+    const inspect = vi
+      .spyOn(filesystem, "openSync")
+      .mockImplementation((file, ...args) => {
+        if (file === target && !swapped) {
+          swapped = true;
+          renameSync(path.join(runtime, "schemas"), path.join(runtime, "held"));
+          symlinkSync(replacement, path.join(runtime, "schemas"));
+        }
+        return open(file, ...args);
+      });
+    try {
+      expect(() => invocation.selectionRuntimeDigests(runtime)).toThrow(
+        /ancestry changed during inspection/,
       );
     } finally {
       inspect.mockRestore();
