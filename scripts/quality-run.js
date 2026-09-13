@@ -147,31 +147,34 @@ function createRunnerFile(file) {
 }
 
 function recoverDeadRunner(file, manifestPath, observed) {
-  if (!deadIdleRunner(observed)) return false;
-  const fence = createRunnerFile(`${file}.recovery`);
-  if (!fence) return false;
-  try {
-    const current = readRunnerOwner(file);
-    if (
-      !current ||
-      !sameRunnerFile(current.stat, observed.stat) ||
-      current.record.nonce !== observed.record.nonce ||
-      !deadIdleRunner(current) ||
-      manifestAt(manifestPath).governor?.activeExecution
-    )
-      return false;
-    fs.unlinkSync(file);
-    return true;
-  } finally {
-    fence.release();
-  }
+  if (!deadIdleRunner(observed)) return null;
+  const current = readRunnerOwner(file);
+  if (
+    !current ||
+    !sameRunnerFile(current.stat, observed.stat) ||
+    current.record.nonce !== observed.record.nonce ||
+    !deadIdleRunner(current) ||
+    manifestAt(manifestPath).governor?.activeExecution
+  )
+    return null;
+  fs.unlinkSync(file);
+  return createRunnerFile(file);
 }
 
 function acquireRunner(manifestPath) {
   const file = `${manifestPath}.runner-lock`;
-  let owner = createRunnerFile(file);
-  if (!owner && recoverDeadRunner(file, manifestPath, readRunnerOwner(file))) {
+  const fence = createRunnerFile(`${file}.recovery`);
+  if (!fence) return null;
+  let owner;
+  try {
     owner = createRunnerFile(file);
+    if (!owner) {
+      owner = recoverDeadRunner(file, manifestPath, readRunnerOwner(file));
+    }
+  } finally {
+    // A recovered replacement is created before this fence is released, so
+    // another public runner cannot interleave between validation and unlink.
+    fence.release();
   }
   if (!owner) return null;
   let uncertain = false;

@@ -632,6 +632,16 @@ describe("quality-run public orchestration", () => {
     ).toBe("held fence");
   });
 
+  it("refuses ordinary acquisition while a recovery fence is held", () => {
+    const entry = fixture();
+    writeFileSync(entry.manifestPath + ".runner-lock.recovery", "held fence");
+    expectBusyUnchanged(entry, "runner-owned");
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(
+      readFileSync(entry.manifestPath + ".runner-lock.recovery", "utf8"),
+    ).toBe("held fence");
+  });
+
   it("keeps a failed child's quarantine through successful terminal recording", () => {
     const entry = fixture({ failRisk: true });
     expect(run(entry).status).toBe(1);
