@@ -1076,10 +1076,17 @@ function resolveProtectedNonstrictMode(manifest, options, head) {
     });
   const authorization = invocation.reviewAuthorization(manifest);
   const basePolicy = protectedNonstrictBasePolicy(manifest);
-  const checkStates = require("./quality-required-checks.js").assertChecks(
-    manifest.repo.githubRepository,
-    branch,
+  const requiredChecks = require("./quality-required-checks.js");
+  const checkContext = {
+    repository: manifest.repo.githubRepository,
+    base: branch,
     head,
+  };
+  const checkStates = requiredChecks.assertChecks(
+    checkContext.repository,
+    checkContext.base,
+    checkContext.head,
+    requiredChecks.monitorForAssertion(manifest, checkContext),
   );
   return autonomousRefCasAuthority(manifest, options, head, {
     inspection,
