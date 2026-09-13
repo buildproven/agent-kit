@@ -739,7 +739,12 @@ function recover(manifestPath, ownerToken, options = {}) {
   });
 }
 
-function withManifestMutation(manifestPath, presentedToken, mutation) {
+function withManifestMutation(
+  manifestPath,
+  presentedToken,
+  mutation,
+  options = {},
+) {
   const loaded = loadManifest(manifestPath);
   if (loaded.manifest.options?.merge !== true) {
     return require("./quality-invocation").withManifestLockRaw(
@@ -763,6 +768,14 @@ function withManifestMutation(manifestPath, presentedToken, mutation) {
     ) {
       throw new Error(
         "repository merge lease credential is stale at manifest mutation",
+      );
+    }
+    if (
+      options.requireIdle &&
+      (fs.existsSync(paths.mergeGuard) || record.mergeIntent)
+    ) {
+      throw new Error(
+        "merge recovery requires an idle repository with no merge operation",
       );
     }
     return require("./quality-invocation").withManifestLockRaw(

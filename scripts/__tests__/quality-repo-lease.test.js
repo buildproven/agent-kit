@@ -1768,3 +1768,39 @@ esac
     lease.release(candidate.manifestPath, owner.token, "test-complete");
   });
 });
+
+describe("idle-only recovery mutation", () => {
+  it("rejects a live merge guard before invoking the mutation", () => {
+    const { manifestPath } = fixture("idle-recovery-merge-guard");
+    const owner = lease.acquire(manifestPath);
+    lease.acquireMergeGuard(manifestPath, owner.token);
+    let called = false;
+    expect(() =>
+      lease.withManifestMutation(
+        manifestPath,
+        owner.token,
+        () => {
+          called = true;
+        },
+        { requireIdle: true },
+      ),
+    ).toThrow(/idle repository/);
+    expect(called).toBe(false);
+  });
+
+  it("allows the exact idle owner without changing its lease generation", () => {
+    const { manifestPath } = fixture("idle-recovery-owner");
+    const owner = lease.acquire(manifestPath);
+    lease.withManifestMutation(
+      manifestPath,
+      owner.token,
+      (manifest) => {
+        manifest.recoveryProbe = true;
+      },
+      { requireIdle: true },
+    );
+    const { manifest } = invocation.loadManifest(manifestPath);
+    expect(manifest.recoveryProbe).toBe(true);
+    expect(manifest.merge.repositoryLease.generation).toBe(owner.generation);
+  });
+});

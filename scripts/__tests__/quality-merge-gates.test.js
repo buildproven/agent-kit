@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { makeTempDir } from "./helpers/tmp.js";
 
@@ -65,6 +65,128 @@ const WORKFLOW_COMMAND = readFileSync(
  * PASSED. These tests pin the gate that closes that hole.
  */
 describe("quality merge gates", () => {
+  it("keeps wait transport failure outside billing waiver and merge authority", () => {
+    const root = makeTempDir("quality-stamp-transport-");
+    const bin = path.join(root, "bin");
+    mkdirSync(bin);
+    const head = "a".repeat(40);
+    const calls = path.join(root, "calls.jsonl");
+    writeFileSync(calls, "");
+    const script = (name, body) =>
+      writeFileSync(path.join(root, name), body, { mode: 0o755 });
+    const record = `require("node:fs").appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(1)) + "\\n");`;
+    script("quality-stamp-and-merge.sh", STAMP_AND_MERGE);
+    script(
+      "quality-repo-lease-pin.sh",
+      "quality_pin_repository_lease() { return 0; }\n",
+    );
+    script("quality-assert-clean.sh", "#!/bin/bash\nexit 0\n");
+    script(
+      "quality-invocation.js",
+      `
+const fields = ${JSON.stringify({
+        "revisions.currentHead": head,
+        "repo.pr": "7",
+        "repo.githubRepository": "owner/repo",
+        "repo.headRefName": "feature/fix",
+        "repo.headRepository": "owner/repo",
+        "revisions.baseRef": "main",
+      })};
+if (process.argv[2] === "locate") console.log(${JSON.stringify(root)});
+else if (process.argv[2] === "field") console.log(fields[process.argv[4]] || "");
+else if (process.argv[2] === "ci-billing-capability") process.exit(1);
+`,
+    );
+    script(
+      "quality-authorize-merge.sh",
+      `#!/bin/bash
+if [ "\${3:-}" = --preflight ]; then
+  printf 'BS_QUALITY_PR_HEAD=${head}\nBS_QUALITY_BASE_PROTECTION=true\n'
+else
+  node '${root}/quality-merge-mutation.js'
+fi
+`,
+    );
+    script("quality-merge-mutation.js", `${record} process.exit(0);\n`);
+    script("quality-review-check.js", "process.exit(0);\n");
+    script(
+      "quality-required-checks.js",
+      `
+${record}
+if (process.argv[2] === "prepare") console.log('{"dispatches":[]}');
+else if (process.argv[2] === "wait") {
+  console.error('Get "https://api.github.com": unexpected EOF');
+  process.exit(75);
+} else process.exit(1);
+`,
+    );
+    script("quality-run-bounded.sh", '#!/bin/bash\nshift 3\nexec "$@"\n');
+    script("quality-ci-billing-waiver.js", `${record} process.exit(0);\n`);
+    script("quality-terminal-status.js", `${record} process.exit(0);\n`);
+    script("quality-merge-cleanup.sh", "#!/bin/bash\nexit 0\n");
+    writeFileSync(
+      path.join(bin, "git"),
+      `#!/bin/bash
+case "$1" in
+  rev-parse) echo '${head}' ;;
+  remote) if [ "$#" = 1 ]; then echo origin; else echo https://github.com/owner/repo.git; fi ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/bash
+case "$1 $2" in
+  'pr checks') echo '[{"state":"PENDING"}]' ;;
+  'repo view') echo owner/repo ;;
+  'pr view') echo '${head}' ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const result = spawnSync(
+      "bash",
+      [
+        path.join(root, "quality-stamp-and-merge.sh"),
+        "--manifest",
+        path.join(root, "invocation.json"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          QUALITY_REVIEW_EVIDENCE_PUBLIC_KEY: "fixture",
+          QUALITY_LOCAL_REVIEW_EVIDENCE: "false",
+        },
+      },
+    );
+    expect(result.status, result.stderr).toBe(75);
+    const observed = readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      observed.some(
+        (call) =>
+          call[0].endsWith("quality-required-checks.js") && call[1] === "wait",
+      ),
+    ).toBe(true);
+    expect(
+      observed.some((call) => call[0].endsWith("quality-ci-billing-waiver.js")),
+    ).toBe(false);
+    expect(
+      observed.some((call) => call[0].endsWith("quality-terminal-status.js")),
+    ).toBe(false);
+    expect(
+      observed.some((call) => call[0].endsWith("quality-merge-mutation.js")),
+    ).toBe(false);
+    expect(observed).toHaveLength(2);
+  });
+
   it("admits budget whenever preparation proves a dispatch is needed", () => {
     const source = STAMP_AND_MERGE;
     expect(source).toContain('gh pr checks "$PR"');

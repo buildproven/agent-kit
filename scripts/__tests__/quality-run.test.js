@@ -53,6 +53,7 @@ function advanceManifest(file) {
     return advanceHead(manifest);
   });
 }
+function resumeMergeReadFailure() { return null; }
 function resumeRecoverableTerminal(file) {
   const manifest = read(file);
   if (!manifest.behavior?.recoverTerminal || !["blocked", "recovering"].includes(manifest.terminalState?.state)) return null;
@@ -197,7 +198,7 @@ if (require.main === module) {
   process.stdout.write(inForce + "\\n");
 }
 module.exports = { advanceHead, incompleteRetryStatus, judgeContext, leadDispositionStatus, loadManifest, mutationEvidenceValid, parseJson, recordTerminalState,
-  advanceManifest, changedFiles, clearMergeAdmissionBlock, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeInterruptedTerminal, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
+  advanceManifest, changedFiles, clearMergeAdmissionBlock, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeInterruptedTerminal, resumeMergeReadFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
 `;
 
 const FAKE_STEP = `
@@ -301,7 +302,7 @@ if (step === "quality-stamp-and-merge.sh") {
       process.stderr.write(manifest.behavior.mergeWarning + "\\n");
     }
     process.stderr.write("required CI failed on exact candidate\\n");
-    process.exit(1);
+    process.exit(manifest.behavior.mergeExit || 1);
   }
   if (!manifest.behavior?.mergeWithoutTerminal) {
     if (manifest.behavior?.rewriteMergedHead) {
@@ -1626,5 +1627,46 @@ describe("quality-run public orchestration", () => {
       "terminal state recording failed after: risk failed with exit 5",
     );
     expect(result.stderr).not.toContain("Cannot read properties of undefined");
+  });
+});
+
+describe("merge read failure runner boundary", () => {
+  it("keeps a persisted creator-only recovery sentinel terminal", () => {
+    const entry = fixture({}, { merge: true, tier: "medium" });
+    const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    manifest.terminalState = {
+      state: "recovering",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: 1,
+      recovery: { kind: "merge-read-failure" },
+    };
+    writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+    const result = run(entry);
+    expect(result.status).toBe(1);
+    expect(result.manifest).toEqual(manifest);
+  });
+
+  it("retains typed read failure diagnostics separately from CI rejection", () => {
+    const entry = fixture(
+      {
+        failMerge: true,
+        mergeExit: 75,
+        mergeWarning: "GitHub GET transport exhausted",
+      },
+      { merge: true, tier: "medium" },
+    );
+    const result = run(entry);
+    expect(result.status).toBe(1);
+    expect(result.manifest.terminalState).toMatchObject({
+      state: "blocked",
+      detail: "ci-admission-read-failed",
+    });
+    expect(result.manifest.merge.readFailure).toMatchObject({
+      kind: "ci-admission-read-failed",
+      exitCode: 75,
+      head: result.manifest.revisions.currentHead,
+      stderr: expect.stringContaining("GitHub GET transport exhausted"),
+    });
+    expect(result.manifest.merge.admissionBlock).toBeUndefined();
   });
 });

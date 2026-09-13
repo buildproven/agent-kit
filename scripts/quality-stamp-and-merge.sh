@@ -365,7 +365,7 @@ else
   # real local budget refusal ahead of every workflow dispatch.
   PREPARE_JSON="$(node "$SCRIPT_DIR/quality-required-checks.js" prepare \
     --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
-    --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD")" || exit 1
+    --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD")" || exit $?
   PREPARED_DISPATCH_COUNT="$(printf '%s' "$PREPARE_JSON" | jq '.dispatches | length')"
   if [ "$PREPARED_DISPATCH_COUNT" -gt 0 ]; then
     admit_ci_dispatch
@@ -386,6 +386,9 @@ else
       --head "$MERGE_HEAD" --timeout "$CI_TIMEOUT" --interval 10 \
       --manifest "$MANIFEST" || RC=$?
 fi
+# A GitHub read transport failure is not CI failure or billing evidence.
+# Preserve its type for same-campaign recovery before any waiver evaluation.
+[ "$RC" -ne 75 ] || exit 75
 if [ "$RC" -ne 0 ]; then
   if node "$SCRIPT_DIR/quality-ci-billing-waiver.js" \
     --repo "$EXPECTED_REPOSITORY" --pr "$PR" --head "$MERGE_HEAD" \

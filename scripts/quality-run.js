@@ -1037,7 +1037,22 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
       head: afterMerge.revisions.currentHead,
     };
   }
-  throw new Error(`merge admission failed with exit ${merge.code}`);
+  quality.withManifestLock(manifestPath, (locked) => {
+    locked.merge.readFailure = {
+      kind:
+        merge.code === 75 ? "ci-admission-read-failed" : "merge-process-failed",
+      head: expectedHead,
+      exitCode: merge.code,
+      stdout: (merge.stdout || "").slice(-8192),
+      stderr: (merge.stderr || "").slice(-8192),
+      recordedAt: new Date().toISOString(),
+    };
+  });
+  throw new Error(
+    merge.code === 75
+      ? "ci-admission-read-failed"
+      : `merge admission failed with exit ${merge.code}`,
+  );
 }
 
 async function recordFailure(context, manifestPath, error) {
@@ -1046,6 +1061,16 @@ async function recordFailure(context, manifestPath, error) {
     manifest = manifestAt(manifestPath);
   } catch {
     throw error;
+  }
+  if (
+    manifest.terminalState?.recovery?.kind === "merge-read-failure" &&
+    !context.mergeReadRecoveryGranted
+  ) {
+    return {
+      status: "terminal",
+      state: manifest.terminalState.state,
+      head: manifest.revisions.currentHead,
+    };
   }
   if (error.terminalContractFailure && manifest.terminalState) {
     return {
@@ -1277,12 +1302,31 @@ async function runManifest(manifestPath, dependencies = {}) {
   for (const [signal, handler] of signalHandlers) process.on(signal, handler);
   try {
     let manifest = manifestAt(manifestPath);
+    if (manifest.terminalState?.recovery?.kind === "merge-read-failure") {
+      return {
+        status: "terminal",
+        state: manifest.terminalState.state,
+        head: manifest.revisions.currentHead,
+      };
+    }
     pinRepositoryLease(manifest);
     quality.advanceManifest(manifestPath);
     manifest = manifestAt(manifestPath);
     pinTerminalEpoch(manifest);
     quality.validateIdentity(manifest, manifest.repo.realpath);
     if (manifest.terminalState) {
+      const mergeReadRecovery = quality.resumeMergeReadFailure(manifestPath);
+      if (mergeReadRecovery) {
+        context.mergeReadRecoveryGranted = true;
+        const resumed = manifestAt(manifestPath);
+        pinTerminalEpoch(resumed);
+        return await finishWithMerge(
+          context,
+          manifestPath,
+          resumed,
+          reviewSummary(resumed),
+        );
+      }
       const ciRecovery = quality.resolveGreenCiAdmissionBlock(manifestPath);
       if (ciRecovery) {
         const resumed = manifestAt(manifestPath);

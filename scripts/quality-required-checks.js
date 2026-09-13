@@ -90,7 +90,29 @@ function validateRef(value, name) {
   return value;
 }
 
-function runGh(args, input = undefined) {
+class GhReadTransportError extends GhCommandError {}
+
+function isReadTransportFailure(args, result, input) {
+  if (
+    args[0] !== "api" ||
+    input !== undefined ||
+    result.status !== 1 ||
+    !args.some(
+      (argument, index) =>
+        (argument === "-X" || argument === "--method") &&
+        args[index + 1] === "GET",
+    )
+  )
+    return false;
+  const stderr = result.stderr || "";
+  if (/HTTP\s+\d{3}|bad credentials|authentication|rate limit/i.test(stderr))
+    return false;
+  return /error connecting to api\.github\.com|connection reset by peer|(?:Get|GET) "https:\/\/[^"\n]+": unexpected EOF|dial tcp[^\n]*(?:i\/o timeout|no such host|network is unreachable)|TLS handshake timeout/i.test(
+    stderr,
+  );
+}
+
+function runGh(args, input = undefined, retryAvailable = true) {
   const result = spawnSync("gh", args, {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -98,7 +120,10 @@ function runGh(args, input = undefined) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new GhCommandError(
+    const transportFailure = isReadTransportFailure(args, result, input);
+    if (transportFailure && retryAvailable) return runGh(args, input, false);
+    const ErrorType = transportFailure ? GhReadTransportError : GhCommandError;
+    throw new ErrorType(
       `gh ${args[0]} failed (${result.status}): ${(result.stderr || result.stdout || "").trim()}`,
       result,
     );
@@ -844,24 +869,16 @@ function workflowIdForRequirement({
 }
 
 function dispatchWorkflow(repository, workflowId, ref) {
-  let failure = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      runGh([
-        "api",
-        "--method",
-        "POST",
-        `repos/${repository}/actions/workflows/${workflowId}/dispatches`,
-        "-f",
-        `ref=${ref}`,
-      ]);
-      return;
-    } catch (error) {
-      failure = error;
-      if (attempt < 3) sleep(attempt * 1000);
-    }
-  }
-  throw failure;
+  // A failed response does not prove the dispatch was rejected. Never repeat
+  // this mutation without reconciling its exact remote execution first.
+  runGh([
+    "api",
+    "--method",
+    "POST",
+    `repos/${repository}/actions/workflows/${workflowId}/dispatches`,
+    "-f",
+    `ref=${ref}`,
+  ]);
 }
 
 function dispatchRepositoryEvent(repository, eventType, payload, deadline) {
@@ -1720,7 +1737,7 @@ if (require.main === module) {
     main();
   } catch (error) {
     process.stderr.write(`quality required checks: ${error.message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof GhReadTransportError ? 75 : 1;
   }
 }
 

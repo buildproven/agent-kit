@@ -1547,3 +1547,169 @@ esac
     });
   });
 });
+
+describe("required-check transport failures", () => {
+  it.each([
+    ["error connecting to api.github.com", 75, 2],
+    ["read tcp: connection reset by peer", 75, 2],
+    ['Get "https://api.github.com/repos/owner/repo": unexpected EOF', 75, 2],
+    ["internal parser failure: unexpected EOF", 1, 1],
+    ["gh: Bad credentials (HTTP 401)", 1, 1],
+    ["gh: API rate limit exceeded (HTTP 403)", 1, 1],
+    ["internal parser failure", 1, 1],
+  ])(
+    "classifies %s without retrying authority errors",
+    (message, status, attempts) => {
+      const root = activeClaimDirectory;
+      const bin = path.join(root, "bin");
+      fs.mkdirSync(bin);
+      const log = path.join(root, "calls");
+      fs.writeFileSync(
+        path.join(bin, "gh"),
+        `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");
+process.stderr.write(${JSON.stringify(message)});
+process.exit(1);
+`,
+        { mode: 0o755 },
+      );
+      const result = run(
+        root,
+        [
+          "prepare",
+          "--repo",
+          "owner/repo",
+          "--base",
+          "main",
+          "--source-head",
+          "a".repeat(40),
+          "--head",
+          "b".repeat(40),
+        ],
+        { bin },
+      );
+      expect(result.status, result.stderr).toBe(status);
+      expect(
+        fs
+          .readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .filter((call) => call.includes("protection/required_status_checks")),
+      ).toHaveLength(attempts);
+    },
+  );
+
+  it("completes the same GET after one transport failure", () => {
+    const root = activeClaimDirectory;
+    const fixture = fakeGh(
+      root,
+      [],
+      [
+        {
+          id: 2,
+          name: "quality",
+          status: "completed",
+          conclusion: "success",
+          app: { id: 15368 },
+        },
+      ],
+    );
+    const executable = path.join(fixture.bin, "gh");
+    const attempts = path.join(root, "read-attempts");
+    fs.writeFileSync(
+      executable,
+      fs.readFileSync(executable, "utf8").replace(
+        "set -eu",
+        `set -eu
+case "$*" in
+  *protection/required_status_checks*)
+    if [ ! -f '${attempts}' ]; then
+      printf 'first\n' > '${attempts}'
+      echo 'error connecting to api.github.com' >&2
+      exit 1
+    fi
+    printf 'retry\n' >> '${attempts}'
+    ;;
+esac`,
+      ),
+    );
+    const result = run(
+      root,
+      [
+        "assert",
+        "--repo",
+        "owner/repo",
+        "--base",
+        "main",
+        "--head",
+        "b".repeat(40),
+      ],
+      fixture,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)[0].state).toBe("success");
+    expect(fs.readFileSync(attempts, "utf8").trim().split("\n")).toEqual([
+      "first",
+      "retry",
+    ]);
+  });
+
+  it("does not retry an ambiguous workflow POST transport failure", () => {
+    const root = activeClaimDirectory;
+    const fixture = fakeGh(
+      root,
+      [
+        {
+          id: 1,
+          name: "quality",
+          status: "completed",
+          conclusion: "success",
+          app: { id: 15368 },
+          details_url: "https://github.com/o/r/actions/runs/123",
+        },
+      ],
+      [],
+    );
+    const executable = path.join(fixture.bin, "gh");
+    const attempts = path.join(root, "post-attempts");
+    fs.writeFileSync(
+      executable,
+      fs.readFileSync(executable, "utf8").replace(
+        "set -eu",
+        `set -eu
+case "$*" in
+  *actions/workflows/77/dispatches*)
+    printf 'attempt\n' >> '${attempts}'
+    echo 'error connecting to api.github.com' >&2
+    exit 1
+    ;;
+esac`,
+      ),
+    );
+    const result = run(
+      root,
+      [
+        "ensure",
+        "--repo",
+        "owner/repo",
+        "--base",
+        "main",
+        "--source-head",
+        "a".repeat(40),
+        "--head",
+        "b".repeat(40),
+        "--head-ref",
+        "feature/fix",
+        "--registration-timeout",
+        "0",
+      ],
+      fixture,
+    );
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("error connecting to api.github.com");
+    expect(fs.readFileSync(attempts, "utf8").trim().split("\n")).toEqual([
+      "attempt",
+    ]);
+  });
+});
