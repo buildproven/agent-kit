@@ -8,6 +8,7 @@ const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 const quality = require("./quality-invocation");
 const { productionCodeChange } = require("./product-completion");
+const { assertEngineeringPolicy } = require("./engineering-delivery-policy");
 
 const ORCHESTRATION_SCHEMA_VERSION = 1;
 const ACTION_REQUIRED_EXIT = 3;
@@ -555,6 +556,16 @@ function verifierFailure(result) {
   return errors.slice(0, 10).join("; ");
 }
 
+function verifyEngineeringDeliveryClaim(manifest, productInputs) {
+  if (productInputs.some(Boolean)) {
+    throw new Error(
+      "engineering delivery claim cannot carry product acceptance inputs",
+    );
+  }
+  const policy = assertEngineeringPolicy(manifest);
+  return `declared engineering at protected policy ${policy.policyRevision}; product acceptance not established`;
+}
+
 function verifyDeliveryClaim(manifest) {
   const claim = deliveryClaim(manifest);
   const { productPrd, productTasks, deliveryEvidence } = manifest.options || {};
@@ -565,6 +576,13 @@ function verifyDeliveryClaim(manifest) {
   );
   if (changedFiles === null) {
     throw new Error("delivery claim cannot classify the exact candidate diff");
+  }
+  if (claim === "engineering") {
+    return verifyEngineeringDeliveryClaim(manifest, [
+      productPrd,
+      productTasks,
+      deliveryEvidence,
+    ]);
   }
   if (
     claim === "contract" &&
@@ -650,6 +668,10 @@ function actionRequired(manifestPath, phase, message, manifest, review) {
 function prepareProductAdmission(manifestPath) {
   const manifest = manifestAt(manifestPath);
   if (deliveryClaim(manifest) === "contract") return null;
+  if (deliveryClaim(manifest) === "engineering") {
+    verifyDeliveryClaim(manifest);
+    return null;
+  }
 
   // Validate the candidate-owned receipt before spending gate or provider
   // budget. Protected admission is still authoritative, but its request can
@@ -842,7 +864,7 @@ async function finishWithoutMerge(manifestPath, invoke, manifest, review) {
 }
 
 async function finishWithMerge(context, manifestPath, manifest, review) {
-  if (deliveryClaim(manifest) !== "contract") {
+  if (!["contract", "engineering"].includes(deliveryClaim(manifest))) {
     try {
       verifyProtectedProductAdmission(manifest);
     } catch (error) {

@@ -97,6 +97,9 @@ review, break-glass, CI) without waiting for a failure:
 The quality command hands that exact manifest to one deterministic runner. It
 reuses completed exact-head evidence and reports any required operator
 capability as a typed pause.
+The `engineering` delivery claim reads its authority from the exact current
+protected base and still requires all normal gates, review, CI, freshness, and
+merge authority. It explicitly leaves product acceptance not established.
 For product delivery claims, it also binds the evidence index and verifies
 signed protected-producer receipts bound to the numeric repository ID, exact
 HEAD, requirements, and artifact. Admission verification runs on a fresh

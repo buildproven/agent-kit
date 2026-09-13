@@ -314,6 +314,24 @@ fs.writeFileSync(file, JSON.stringify(manifest));
 if (step === "quality-run-review.sh" && manifest.behavior?.holdReview) fs.writeFileSync(file + ".review-finished", "done");
 `;
 
+function installEngineeringPolicyFixture(runtime, behavior) {
+  if (behavior.deliveryClaim === "engineering") {
+    writeFileSync(
+      path.join(runtime, "engineering-delivery-policy.js"),
+      `"use strict"; module.exports = { assertEngineeringPolicy() { ${
+        behavior.policyReject
+          ? `throw new Error(${JSON.stringify(behavior.policyReject)});`
+          : 'return { policyRevision: "base123", productAcceptance: "not-established" };'
+      } } };\n`,
+    );
+  } else {
+    copyFileSync(
+      path.resolve(__dirname, "..", "engineering-delivery-policy.js"),
+      path.join(runtime, "engineering-delivery-policy.js"),
+    );
+  }
+}
+
 function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "quality-run-"));
   const runtime = path.join(root, "scripts");
@@ -327,6 +345,7 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
     path.resolve(__dirname, "..", "product-evidence.js"),
     path.join(runtime, "product-evidence.js"),
   );
+  installEngineeringPolicyFixture(runtime, behavior);
   writeFileSync(
     path.join(runtime, "product-admission.js"),
     behavior.productAdmission
@@ -387,7 +406,12 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
             productTasks: path.join(root, "tasks.md"),
             deliveryEvidence: path.join(root, "evidence.json"),
           }
-        : { merge },
+        : {
+            merge,
+            ...(behavior.deliveryClaim
+              ? { deliveryClaim: behavior.deliveryClaim }
+              : {}),
+          },
       ...(merge
         ? { merge: { repositoryLease: { token: "fixture-token" } } }
         : {}),
@@ -686,6 +710,38 @@ describe("quality-run public orchestration", () => {
     expect(after.terminalState.state).toBe("verified-unmerged");
     expect(after.reviews).toHaveLength(1);
     expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+  });
+
+  it("merges engineering work without claiming product acceptance", () => {
+    const result = run(
+      fixture({ deliveryClaim: "engineering" }, { merge: true, tier: "low" }),
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "complete",
+      state: "merged",
+    });
+    expect(
+      result.manifest.orchestration.steps["delivery-claim"].detail,
+    ).toContain("product acceptance not established");
+  });
+
+  it("blocks engineering work when protected policy validation fails", () => {
+    const result = run(
+      fixture({
+        deliveryClaim: "engineering",
+        policyReject: "protected engineering policy is revoked",
+      }),
+    );
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      message: "protected engineering policy is revoked",
+    });
+    expect(result.manifest.calls).toBeUndefined();
   });
 
   it("pauses for identity-bound lead verification before merge", () => {

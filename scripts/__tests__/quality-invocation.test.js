@@ -755,6 +755,20 @@ describe("required gate reuse", () => {
 });
 
 describe("quality invocation manifest", () => {
+  it("persists the engineering claim without product evidence inputs", () => {
+    const root = repo("engineering-delivery-claim");
+    const manifestPath = create(root, ["--delivery-claim", "engineering"]);
+
+    expect(
+      invocation.loadManifest(manifestPath).manifest.options,
+    ).toMatchObject({
+      deliveryClaim: "engineering",
+      productPrd: null,
+      productTasks: null,
+      deliveryEvidence: null,
+    });
+  });
+
   it("binds the exact delivery-evidence index digest to the current HEAD", () => {
     const root = repo("delivery-evidence-digest");
     const evidence = path.join(root, "evidence.json");
