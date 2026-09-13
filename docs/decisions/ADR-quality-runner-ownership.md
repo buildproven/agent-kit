@@ -39,11 +39,15 @@ malformed, symlinked, foreign-host, or inaccessible ownership fails closed as
 busy. A PID that responds or fails with anything other than ESRCH remains busy.
 
 A dead idle owner's lock may be reclaimed only after positive same-host ESRCH under
-an exclusive recovery fence. Re-read and compare the observed owner and file
-identity under the fence, then check ESRCH again before unlinking. A competing
-recovery that sees a replacement must leave it alone. Only the fence creator
-removes its exact fence. A crashed recovery fence remains blocked for explicit
-inspection; this change does not introduce recursive stale-fence recovery.
+an exclusive recovery fence. Every acquisition path must hold that same fence,
+including ordinary creation when no owner lock exists. Re-read and compare the
+observed owner and file identity under the fence, then check ESRCH again before
+unlinking. The fence holder creates its replacement owner lock before releasing
+the fence, so another public runner cannot enter between validation and replacement.
+A competing acquisition that sees the fence must leave it and the owner lock alone.
+Only the fence creator removes its exact fence. A crashed recovery fence remains
+blocked for explicit inspection; this change does not introduce recursive
+stale-fence recovery.
 A dead owner with `childInFlight` set is always busy, even if an execution
 deadline has passed. This prevents admission while an orphan child may still
 write. Automatic recovery of that case requires child provenance and belongs
@@ -97,7 +101,7 @@ then allow the owner to finish. Kill a fixture parent while its controlled child
 is alive; verify refusal even with an expired execution timestamp. Test orphan
 nonexpired and expired execution refusal, positive dead-idle-owner reclamation,
 same-host live PID refusal, foreign-host and malformed locks, held recovery
-fences, directory aliases, and owner-only cleanup.
+fences with and without an owner lock, directory aliases, and owner-only cleanup.
 Assert original budget and terminal history values survive every rejected run.
 Run the repository test-impact selected tests and required source checks.
 
