@@ -373,7 +373,8 @@ else
     ENSURE_JSON="$(node "$SCRIPT_DIR/quality-required-checks.js" ensure \
       --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
       --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD" \
-      --head-ref "$EXPECTED_HEAD_REF")" || exit 1
+      --head-ref "$EXPECTED_HEAD_REF" --manifest "$MANIFEST" \
+      --timeout "$CI_TIMEOUT")" || exit 1
     if [ "$(printf '%s' "$ENSURE_JSON" | jq '.deferred | length')" -gt 0 ]; then
       printf '%s' "$ENSURE_JSON" | jq -r \
         '.deferred[] | "[quality] exact-head workflow registered; required check remains deferred: \(.context) workflow=\(.workflowId) run=\(.runId) status=\(.status)"' >&2
@@ -382,7 +383,8 @@ else
   bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$CI_TIMEOUT" -- \
     node "$SCRIPT_DIR/quality-required-checks.js" wait \
       --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
-      --head "$MERGE_HEAD" --timeout "$CI_TIMEOUT" --interval 10 || RC=$?
+      --head "$MERGE_HEAD" --timeout "$CI_TIMEOUT" --interval 10 \
+      --manifest "$MANIFEST" || RC=$?
 fi
 if [ "$RC" -ne 0 ]; then
   if node "$SCRIPT_DIR/quality-ci-billing-waiver.js" \

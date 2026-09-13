@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const dispatchKey = generateKeyPairSync("ed25519")
@@ -113,6 +113,60 @@ function run(root, args, fixture) {
 }
 
 describe("quality-required-checks", () => {
+  it("keeps accepted registration pending beyond 30 seconds within the head deadline", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-delayed-"));
+    const source = [
+      {
+        id: 1,
+        name: "quality",
+        status: "completed",
+        conclusion: "success",
+        app: { id: 15368 },
+        details_url: "https://github.com/owner/repo/actions/runs/123",
+      },
+    ];
+    const fixture = fakeGh(root, source, [], []);
+    const executable = path.join(fixture.bin, "gh");
+    const original = fs.readFileSync(executable, "utf8");
+    let now = 0;
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${fixture.bin}:${previousPath}`;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(Atomics, "wait").mockImplementation(
+      (_array, _index, _value, duration) => {
+        now += duration;
+        if (now >= 70000) {
+          fs.writeFileSync(
+            executable,
+            original.replace(
+              JSON.stringify({ check_runs: [] }),
+              JSON.stringify({ check_runs: source }),
+            ),
+          );
+        }
+        return "timed-out";
+      },
+    );
+    try {
+      const result = ensureChecks({
+        repository: "owner/repo",
+        base: "main",
+        sourceHead: "a".repeat(40),
+        targetHead: "b".repeat(40),
+        headRef: "feature/fix",
+        timeoutSeconds: 900,
+      });
+      expect(result.dispatched).toHaveLength(1);
+      expect(now).toBeGreaterThan(60000);
+      expect(
+        fs.readFileSync(fixture.log, "utf8").trim().split("\n"),
+      ).toHaveLength(1);
+    } finally {
+      process.env.PATH = previousPath;
+      vi.restoreAllMocks();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("prepares protected dispatches without mutating GitHub", () => {
     const originalPath = process.env.PATH;
     const originalKey = process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY;
