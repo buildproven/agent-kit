@@ -1750,6 +1750,12 @@ describe("required-check transport failures", () => {
         stderr: "gh: upstream timed out (HTTP 504)",
       }),
     ).toBe(true);
+    expect(
+      isWriteTransportFailure(args, {
+        status: 1,
+        stderr: "proxy closed the response stream after request upload",
+      }),
+    ).toBe(true);
     for (const stderr of [
       "gh: Bad credentials (HTTP 401)",
       "gh: Resource not accessible (HTTP 403)",
@@ -1863,6 +1869,98 @@ describe("required-check transport failures", () => {
       ]);
     } finally {
       process.env.PATH = originalPath;
+      withManifestLock.mockRestore();
+      validateIdentity.mockRestore();
+    }
+  });
+
+  it("reconciles an unknown protected POST failure without replacing its nonce", () => {
+    const root = activeClaimDirectory;
+    const sourceRuns = [
+      {
+        id: 1,
+        name: "harness-summary",
+        status: "completed",
+        conclusion: "success",
+        app: { id: 15368 },
+        details_url: "https://github.com/o/r/actions/runs/123",
+      },
+    ];
+    const fixture = fakeGh(root, sourceRuns, [], [], "harness-summary");
+    const executable = path.join(fixture.bin, "gh");
+    const attempts = path.join(root, "post-attempts");
+    fs.writeFileSync(
+      executable,
+      fs.readFileSync(executable, "utf8").replace(
+        `*repos/owner/repo/dispatches*)`,
+        `*repos/owner/repo/dispatches*)
+    printf 'attempt\\n' >> '${attempts}'
+    echo 'proxy closed the response stream after request upload' >&2
+    exit 1
+    ;;
+  *unused-repository-dispatch*)`,
+      ),
+    );
+    const manifest = {
+      repo: {
+        realpath: root,
+        githubRepository: "owner/repo",
+        headRefName: "feature/fix",
+      },
+      revisions: {
+        currentHead: "a".repeat(40),
+        baseRef: "origin/main",
+      },
+      merge: { stampHead: "b".repeat(40) },
+    };
+    const withManifestLock = vi
+      .spyOn(quality, "withManifestLock")
+      .mockImplementation((_manifestPath, callback) => {
+        callback(manifest);
+        return structuredClone(manifest);
+      });
+    const validateIdentity = vi
+      .spyOn(quality, "validateIdentity")
+      .mockImplementation(() => {});
+    const originalPath = process.env.PATH;
+    const originalSigningKey = process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY;
+    process.env.PATH = `${fixture.bin}:${originalPath}`;
+    process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY = dispatchKey;
+    const request = {
+      repository: "owner/repo",
+      base: "main",
+      sourceHead: "a".repeat(40),
+      targetHead: "b".repeat(40),
+      headRef: "feature/fix",
+      registrationSeconds: 0,
+      registrationIntervalSeconds: 0,
+      manifestPath: "fixture-manifest",
+      timeoutSeconds: 1,
+    };
+    try {
+      expect(() => ensureChecks(request)).toThrow(/deadline expired/);
+      const [intent] = manifest.merge.requiredChecksMonitor.dispatches;
+      expect(intent).toMatchObject({
+        status: "intended",
+        transport: "repository_dispatch",
+        requirement: {
+          context: "harness-summary",
+          appId: 15368,
+          externalId: expect.stringMatching(
+            new RegExp(`^harness-summary:${"b".repeat(40)}:${"c".repeat(40)}:`),
+          ),
+        },
+      });
+      expect(intent.nonce).toMatch(/^[0-9a-f]{32}$/);
+
+      expect(() => ensureChecks(request)).toThrow(/deadline expired/);
+      expect(manifest.merge.requiredChecksMonitor.dispatches).toEqual([intent]);
+      expect(fs.readFileSync(attempts, "utf8").trim()).toBe("attempt");
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalSigningKey === undefined)
+        delete process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY;
+      else process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY = originalSigningKey;
       withManifestLock.mockRestore();
       validateIdentity.mockRestore();
     }

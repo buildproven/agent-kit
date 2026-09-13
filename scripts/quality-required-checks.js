@@ -122,9 +122,20 @@ function isReadTransportFailure(args, result, input) {
 }
 
 function isWriteTransportFailure(args, result) {
-  return (
-    args[0] === "api" && isApiMethod(args, "POST") && isTransportFailure(result)
-  );
+  if (args[0] !== "api" || !isApiMethod(args, "POST") || result.status === 0)
+    return false;
+  const stderr = result.stderr || "";
+  const httpStatus = stderr.match(/HTTP\s+(\d{3})/i);
+  if (httpStatus) {
+    const status = Number(httpStatus[1]);
+    if (status >= 400 && status < 500 && status !== 408) return false;
+  }
+  if (/bad credentials|authentication|rate limit/i.test(stderr)) return false;
+  // A POST may have reached GitHub before an unfamiliar client, proxy, or
+  // transport failure was reported. Treat that outcome as uncertain unless
+  // the response proves a definite rejection, so the persisted intent is
+  // reconciled instead of being replaced with a new dispatch nonce.
+  return true;
 }
 
 function runGh(args, input = undefined, retryAvailable = true) {
