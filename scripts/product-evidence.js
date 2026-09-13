@@ -13,11 +13,23 @@ const RECEIPT_KINDS = new Set([
   "realUserEvidence",
 ]);
 
-const TRUST_ROOTS = Object.freeze({
-  darwin: "/Library/Application Support/claude-kit/product-evidence-public-key",
-  linux: "/etc/claude-kit/product-evidence-public-key",
-  win32: "C:\\ProgramData\\claude-kit\\product-evidence-public-key",
+const LEGACY_TRUST_ROOTS = Object.freeze({
+  producer: Object.freeze({
+    darwin:
+      "/Library/Application Support/claude-kit/product-evidence-public-key",
+    linux: "/etc/claude-kit/product-evidence-public-key",
+    win32: "C:\\ProgramData\\claude-kit\\product-evidence-public-key",
+  }),
+  admission: Object.freeze({
+    darwin:
+      "/Library/Application Support/claude-kit/product-admission-public-key",
+    linux: "/etc/claude-kit/product-admission-public-key",
+    win32: "C:\\ProgramData\\claude-kit\\product-admission-public-key",
+  }),
 });
+
+const PRODUCT_TRUST_FILE = "product-trust.json";
+const PRODUCT_TRUST_PURPOSES = new Set(["producer", "admission"]);
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -107,33 +119,253 @@ function containedRealFile(root, relativePath, label) {
   return resolved;
 }
 
-function decodeBase64(value, label, url = false) {
+function decodeBase64(value, label, url = false, allowUnpadded = false) {
   if (!nonEmptyString(value)) throw new Error(`${label} is not valid base64`);
   if (url && value.includes("=")) {
     throw new Error(`${label} must be unpadded base64url`);
   }
   const bytes = Buffer.from(value, url ? "base64url" : "base64");
   const encoded = bytes.toString(url ? "base64url" : "base64");
-  const unpadded = (input) => {
-    let end = input.length;
-    while (end > 0 && input[end - 1] === "=") end -= 1;
-    return input.slice(0, end);
-  };
-  if ((url ? encoded : unpadded(encoded)) !== unpadded(value)) {
+  const compatibleUnpadded =
+    allowUnpadded && encoded.replace(/=+$/, "") === value;
+  if (encoded !== value && !compatibleUnpadded) {
     throw new Error(`${label} is not canonical base64`);
   }
   return bytes;
 }
 
-function trustKey(trustedPublicKey) {
-  if (trustedPublicKey) return trustedPublicKey;
-  const trustRoot = TRUST_ROOTS[process.platform];
+function fixedTrustPath(platform = process.platform) {
+  const legacy = LEGACY_TRUST_ROOTS.producer[platform];
+  return legacy && path.join(path.dirname(legacy), PRODUCT_TRUST_FILE);
+}
+
+function sameFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function validateRootOwnedPath(stat, label) {
+  if (stat.uid !== 0) throw new Error(`${label} must be root-owned`);
+  if (stat.mode & 0o022) {
+    throw new Error(`${label} must not be group or other writable`);
+  }
+}
+
+function assertSafeRegistryFile(stat, label) {
+  if (stat.isSymbolicLink()) {
+    throw new Error("product trust registry must not be a symbolic link");
+  }
+  if (!stat.isFile()) {
+    throw new Error("product trust registry must be a regular file");
+  }
+  validateRootOwnedPath(stat, label);
+}
+
+function assertSafeRegistryDirectory(directory, fsImpl) {
+  const parent = fsImpl.lstatSync(directory);
+  if (parent.isSymbolicLink() || !parent.isDirectory()) {
+    throw new Error(
+      "product trust registry directory must be a real directory",
+    );
+  }
+  validateRootOwnedPath(parent, "product trust registry directory");
+}
+
+function readSafeRegistryFile(
+  file,
+  { fsImpl = fs, platform = process.platform } = {},
+) {
+  const noFollow = fsImpl.constants?.O_NOFOLLOW;
+  if (!noFollow) {
+    throw new Error(
+      "repository product trust needs O_NOFOLLOW support on this platform",
+    );
+  }
+  let descriptor;
+  try {
+    descriptor = fsImpl.openSync(
+      file,
+      fsImpl.constants.O_RDONLY | noFollow | fsImpl.constants.O_NONBLOCK,
+    );
+    if (platform === "win32") {
+      throw new Error(
+        "repository product trust needs a native ownership verifier on this platform",
+      );
+    }
+    assertSafeRegistryDirectory(path.dirname(file), fsImpl);
+    const opened = fsImpl.fstatSync(descriptor);
+    assertSafeRegistryFile(opened, "opened product trust registry");
+    const after = fsImpl.lstatSync(file);
+    if (!sameFile(opened, after)) {
+      throw new Error("product trust registry changed while it was opened");
+    }
+    assertSafeRegistryFile(after, "product trust registry");
+    return fsImpl.readFileSync(descriptor);
+  } catch (error) {
+    if (descriptor === undefined && error.code === "ENOENT") return null;
+    if (error.code === "ELOOP") {
+      throw new Error("product trust registry must not be a symbolic link", {
+        cause: error,
+      });
+    }
+    if (
+      error.message === "product trust registry changed while it was opened"
+    ) {
+      throw error;
+    }
+    throw new Error(`product trust registry cannot be read: ${error.message}`, {
+      cause: error,
+    });
+  } finally {
+    if (descriptor !== undefined) fsImpl.closeSync(descriptor);
+  }
+}
+
+function publicKeyFromSpki(encoded, label, { allowUnpadded = false } = {}) {
+  const der = decodeBase64(encoded, label, false, allowUnpadded);
+  let key;
+  try {
+    key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+  } catch (error) {
+    throw new Error(
+      `${label} is not a valid SPKI public key: ${error.message}`,
+      {
+        cause: error,
+      },
+    );
+  }
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error(`${label} is not an Ed25519 public key`);
+  }
+  const canonicalDer = key.export({ format: "der", type: "spki" });
+  if (
+    der.length !== canonicalDer.length ||
+    !crypto.timingSafeEqual(der, canonicalDer)
+  ) {
+    throw new Error(`${label} is not canonical Ed25519 SPKI`);
+  }
+  return key;
+}
+
+function validateRepositoryIdentity(repository, repositoryId, label) {
+  if (
+    typeof repository !== "string" ||
+    !/^[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9._-]*$/.test(repository) ||
+    !/^[1-9][0-9]*$/.test(repositoryId || "")
+  ) {
+    throw new Error(`${label} has a non-canonical repository identity`);
+  }
+}
+
+function parseProductTrust(bytes) {
+  let registry;
+  try {
+    registry = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch (error) {
+    throw new Error(
+      `product trust registry is not valid JSON: ${error.message}`,
+      {
+        cause: error,
+      },
+    );
+  }
+  if (
+    !exactKeys(registry, ["schemaVersion", "repositories"]) ||
+    registry.schemaVersion !== 1 ||
+    !Array.isArray(registry.repositories)
+  ) {
+    throw new Error("product trust registry has an invalid schema");
+  }
+  const repositoryIds = new Set();
+  const repositories = new Set();
+  const fingerprints = new Set();
+  const entries = registry.repositories.map((entry) => {
+    if (
+      !exactKeys(entry, [
+        "repository",
+        "repositoryId",
+        "producerPublicKey",
+        "admissionPublicKey",
+      ])
+    ) {
+      throw new Error("product trust registry entry has an invalid schema");
+    }
+    validateRepositoryIdentity(
+      entry.repository,
+      entry.repositoryId,
+      "product trust registry entry",
+    );
+    if (
+      repositoryIds.has(entry.repositoryId) ||
+      repositories.has(entry.repository)
+    ) {
+      throw new Error("product trust registry repeats a repository identity");
+    }
+    repositoryIds.add(entry.repositoryId);
+    repositories.add(entry.repository);
+    const producer = publicKeyFromSpki(
+      entry.producerPublicKey,
+      "product trust producer key",
+    );
+    const admission = publicKeyFromSpki(
+      entry.admissionPublicKey,
+      "product trust admission key",
+    );
+    for (const key of [producer, admission]) {
+      const fingerprint = sha256(key.export({ format: "der", type: "spki" }));
+      if (fingerprints.has(fingerprint)) {
+        throw new Error("product trust registry key fingerprint is reused");
+      }
+      fingerprints.add(fingerprint);
+    }
+    return { ...entry, producer, admission };
+  });
+  return { registry, entries };
+}
+
+function repositoryTrustKey(expected, purpose, options) {
+  if (!PRODUCT_TRUST_PURPOSES.has(purpose)) {
+    throw new Error(`unsupported product trust purpose '${purpose}'`);
+  }
+  validateRepositoryIdentity(
+    expected?.repository,
+    expected?.repositoryId,
+    "expected product trust",
+  );
+  const trustFile = options.trustRoot || fixedTrustPath(options.platform);
+  if (!trustFile) {
+    throw new Error(
+      `product evidence is unsupported on ${options.platform || process.platform}`,
+    );
+  }
+  const bytes = readSafeRegistryFile(trustFile, options);
+  if (bytes === null) return null;
+  const { entries } = parseProductTrust(bytes);
+  const entry = entries.find(
+    (candidate) =>
+      candidate.repositoryId === expected.repositoryId &&
+      candidate.repository === expected.repository,
+  );
+  if (!entry) {
+    throw new Error("expected repository has no trusted entry");
+  }
+  return entry[purpose];
+}
+
+function legacyTrustKey(
+  purpose,
+  {
+    fsImpl = fs,
+    platform = process.platform,
+    legacyTrustRoots = LEGACY_TRUST_ROOTS,
+  } = {},
+) {
+  const trustRoot = legacyTrustRoots[purpose]?.[platform];
   if (!trustRoot) {
-    throw new Error(`product evidence is unsupported on ${process.platform}`);
+    throw new Error(`product evidence is unsupported on ${platform}`);
   }
   let encoded;
   try {
-    encoded = fs.readFileSync(trustRoot, "utf8").trim();
+    encoded = fsImpl.readFileSync(trustRoot, "utf8").trim();
   } catch (error) {
     throw new Error(
       `product evidence trust root cannot be read: ${error.message}`,
@@ -142,12 +374,15 @@ function trustKey(trustedPublicKey) {
       },
     );
   }
-  const der = decodeBase64(encoded, "product evidence trust root");
-  const key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
-  if (key.asymmetricKeyType !== "ed25519") {
-    throw new Error("product evidence trust root is not an Ed25519 public key");
-  }
-  return key;
+  return publicKeyFromSpki(encoded, "product evidence trust root", {
+    allowUnpadded: true,
+  });
+}
+
+function trustKey(trustedPublicKey, expected, purpose, options = {}) {
+  if (trustedPublicKey) return trustedPublicKey;
+  const repositoryKey = repositoryTrustKey(expected, purpose, options);
+  return repositoryKey || legacyTrustKey(purpose, options);
 }
 
 function trustedPublicKeyFingerprint(trustedPublicKey) {
@@ -161,8 +396,14 @@ function trustedPublicKeyFingerprint(trustedPublicKey) {
 function verifyAdmissionEnvelope(
   envelope,
   expected,
-  { trustedPublicKey } = {},
+  { trustedPublicKey, trustRoot, fsImpl, platform, legacyTrustRoots } = {},
 ) {
+  const key = trustKey(trustedPublicKey, expected, "admission", {
+    trustRoot,
+    fsImpl,
+    platform,
+    legacyTrustRoots,
+  });
   if (!exactKeys(envelope, ["payload", "signature"])) {
     throw new Error("product admission envelope has unexpected fields");
   }
@@ -199,7 +440,6 @@ function verifyAdmissionEnvelope(
       "product admission has the wrong identity or malformed fields",
     );
   }
-  const key = trustKey(trustedPublicKey);
   if (payload.keyFingerprint !== trustedPublicKeyFingerprint(key)) {
     throw new Error(
       "product admission was made with a rotated or untrusted key",
@@ -366,7 +606,14 @@ function validatePayload(payload, expected) {
 function verifyReceipt(
   reference,
   expected,
-  { evidencePath, trustedPublicKey } = {},
+  {
+    evidencePath,
+    trustedPublicKey,
+    trustRoot,
+    fsImpl,
+    platform,
+    legacyTrustRoots,
+  } = {},
 ) {
   if (
     !exactKeys(reference, ["receipt", "sha256"]) ||
@@ -375,6 +622,12 @@ function verifyReceipt(
   ) {
     throw new Error(`${expected.kind} needs receipt and sha256`);
   }
+  const key = trustKey(trustedPublicKey, expected, "producer", {
+    trustRoot,
+    fsImpl,
+    platform,
+    legacyTrustRoots,
+  });
   const evidenceRoot = path.dirname(path.resolve(evidencePath || ""));
   const receipt = containedRealFile(
     evidenceRoot,
@@ -412,7 +665,7 @@ function verifyReceipt(
     !crypto.verify(
       null,
       Buffer.from(canonicalJson(envelope.payload)),
-      trustKey(trustedPublicKey),
+      key,
       signature,
     )
   ) {
@@ -431,6 +684,8 @@ function verifyReceipt(
 
 module.exports = {
   canonicalJson,
+  fixedTrustPath,
+  parseProductTrust,
   sha256,
   trustedPublicKeyFingerprint,
   verifyAdmissionEnvelope,
