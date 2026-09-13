@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { canonicalJson, verifyAdmissionEnvelope } from "../product-evidence.js";
+import {
+  canonicalJson,
+  verifyAdmissionEnvelope,
+  verifyReceipt,
+} from "../product-evidence.js";
 import { produce, validateRequest } from "../product-evidence-producer.js";
+import { makeTempDir } from "./helpers/tmp.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -64,6 +69,115 @@ function admission(privateKey, publicKey, changes = {}) {
 }
 
 describe("protected product admission", () => {
+  it("verifies both receipt kinds emitted by the protected producer", () => {
+    const root = makeTempDir("producer-verifier-contract-");
+    const sourceDirectory = path.join(root, "source");
+    const outputDirectory = path.join(root, "produced");
+    fs.mkdirSync(sourceDirectory);
+    const request = {
+      schemaVersion: 1,
+      repository: expected.repository,
+      repositoryId: expected.repositoryId,
+      pullRequest: 7,
+      base: "e".repeat(40),
+      head: expected.head,
+      nonce: "f".repeat(32),
+      behavioralCommand: "npm test",
+      acceptanceCommand: "npm run test:patterns",
+    };
+    const documents = {
+      "prd.md": "# Protected producer receipt compatibility\n",
+      "tasks.md":
+        "- [x] 1.0 Produce valid receipts\n  - Phase: implementation\n  - Delivers: Verifiable receipts.\n  - Evidence: Producer-to-verifier test.\n",
+      "changed-files.json": JSON.stringify([
+        "scripts/product-evidence-producer.js",
+      ]),
+      "behavioral-tests.log": "behavioral tests passed\n",
+      "acceptance-evidence.log": "acceptance passed\n",
+      "request.json": JSON.stringify(request),
+    };
+    for (const [name, contents] of Object.entries(documents)) {
+      fs.writeFileSync(path.join(sourceDirectory, name), contents);
+    }
+    const sourceRun = {
+      id: 100,
+      name: "Product Evidence Source",
+      path: ".github/workflows/product-evidence-source.yml",
+      event: "repository_dispatch",
+      status: "completed",
+      conclusion: "success",
+      run_attempt: 1,
+      head_branch: "main",
+      updated_at: "2026-09-13T01:00:00Z",
+    };
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    produce({
+      event: {
+        action: "completed",
+        workflow_run: sourceRun,
+        repository: {
+          id: 123456,
+          full_name: expected.repository,
+          default_branch: "main",
+        },
+      },
+      sourceRun,
+      sourceJobs: {
+        jobs: [
+          {
+            name: "collect-product-evidence",
+            conclusion: "success",
+            run_id: 100,
+          },
+        ],
+      },
+      pullRequest: {
+        number: 7,
+        state: "open",
+        head: { sha: expected.head, repo: { id: 123456 } },
+        base: { ref: "main", repo: { id: 123456 } },
+      },
+      runtime: {
+        githubActions: "true",
+        eventName: "workflow_run",
+        runAttempt: "1",
+        workflowRef: ".github/workflows/product-evidence-producer.yml",
+        repository: expected.repository,
+        repositoryId: expected.repositoryId,
+        runId: "101",
+      },
+      sourceDirectory,
+      outputDirectory,
+      encodedPrivateKey: privateKey
+        .export({ format: "der", type: "pkcs8" })
+        .toString("base64"),
+    });
+    const evidencePath = path.join(outputDirectory, "evidence.json");
+    const index = JSON.parse(fs.readFileSync(evidencePath, "utf8"));
+    const hash = (value) => createHash("sha256").update(value).digest("hex");
+    const requirementsDigest = hash(
+      JSON.stringify({
+        prdSha256: hash(documents["prd.md"]),
+        tasksSha256: hash(documents["tasks.md"]),
+      }),
+    );
+    for (const kind of ["behavioralTests", "acceptanceEvidence"]) {
+      expect(() =>
+        verifyReceipt(
+          index[kind],
+          {
+            repository: expected.repository,
+            repositoryId: expected.repositoryId,
+            head: expected.head,
+            requirementsDigest,
+            kind,
+          },
+          { evidencePath, trustedPublicKey: publicKey },
+        ),
+      ).not.toThrow();
+    }
+  });
+
   it("accepts an exact-head admission signed by the admission key", () => {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     expect(
