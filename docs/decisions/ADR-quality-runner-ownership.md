@@ -50,8 +50,8 @@ blocked for explicit inspection; this change does not introduce recursive
 stale-fence recovery.
 A dead owner with `childInFlight` set is always busy, even if an execution
 deadline has passed. This prevents admission while an orphan child may still
-write. Automatic recovery of that case requires child provenance and belongs
-in a separate change; it is not inferred from elapsed time.
+write. Automatic recovery of that case requires child provenance and is defined
+by `ADR-quality-runner-reconciliation.md`; it is not inferred from elapsed time.
 
 Before dead-owner reclamation and after acquiring ownership, re-read the
 manifest. Any `governor.activeExecution` returns busy without campaign mutation,

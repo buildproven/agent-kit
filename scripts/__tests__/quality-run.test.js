@@ -340,6 +340,14 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   mkdirSync(runtime);
   copyFileSync(SOURCE_RUNNER, path.join(runtime, "quality-run.js"));
   copyFileSync(
+    path.resolve(__dirname, "..", "quality-runner-ownership.js"),
+    path.join(runtime, "quality-runner-ownership.js"),
+  );
+  copyFileSync(
+    path.resolve(__dirname, "..", "quality-runner-reconcile.js"),
+    path.join(runtime, "quality-runner-reconcile.js"),
+  );
+  copyFileSync(
     path.resolve(__dirname, "..", "product-completion.js"),
     path.join(runtime, "product-completion.js"),
   );
@@ -441,7 +449,11 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
       writeFileSync(path.join(root, name), "fixture\n");
     }
   }
-  return { manifestPath, runner: path.join(runtime, "quality-run.js") };
+  return {
+    manifestPath,
+    runner: path.join(runtime, "quality-run.js"),
+    reconciler: path.join(runtime, "quality-runner-reconcile.js"),
+  };
 }
 
 function run(entry) {
@@ -464,6 +476,27 @@ function run(entry) {
     manifest: JSON.parse(readFileSync(entry.manifestPath, "utf8")),
     output: result.stdout.trim().split("\n").at(-1),
   };
+}
+
+function reconcile(entry, record, extra = []) {
+  return spawnSync(
+    process.execPath,
+    [
+      entry.reconciler,
+      "--manifest",
+      entry.manifestPath,
+      "--head",
+      "abc123",
+      "--owner-host",
+      record.hostname,
+      "--owner-pid",
+      String(record.pid),
+      "--owner-nonce",
+      record.nonce,
+      ...extra,
+    ],
+    { encoding: "utf8" },
+  );
 }
 
 function recordDisposition(entry, blockingCount, label = "judge") {
@@ -643,15 +676,44 @@ describe("quality-run public orchestration", () => {
     ).toBe("held fence");
   });
 
-  it("keeps a failed child's quarantine through successful terminal recording", () => {
+  it("releases a failed child after its dedicated process group is quiescent", () => {
     const entry = fixture({ failRisk: true });
     expect(run(entry).status).toBe(1);
-    const lock = readFileSync(entry.manifestPath + ".runner-lock", "utf8");
-    expect(JSON.parse(lock).childInFlight).toBe(true);
-    expectBusyUnchanged(entry, "runner-owned");
-    expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
-      lock,
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(run(entry).status).toBe(1);
+  });
+
+  it("reconciles a dead legacy quarantine only with exact bindings and confirmation", () => {
+    const entry = fixture();
+    const exited = spawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(String(process.pid))"],
+      { encoding: "utf8" },
     );
+    const record = {
+      schemaVersion: 1,
+      hostname: os.hostname(),
+      pid: Number(exited.stdout),
+      nonce: "legacy-quarantine",
+      acquiredAt: new Date().toISOString(),
+      childInFlight: true,
+    };
+    writeFileSync(entry.manifestPath + ".runner-lock", JSON.stringify(record));
+    const manifestBefore = readFileSync(entry.manifestPath, "utf8");
+
+    expect(reconcile(entry, record).status).toBe(1);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(true);
+    const recovered = reconcile(entry, record, [
+      "--confirm-legacy-child-quiescent",
+    ]);
+    expect(recovered.status).toBe(0);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({
+      status: "reconciled",
+      head: "abc123",
+      legacyConfirmationUsed: true,
+    });
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(readFileSync(entry.manifestPath, "utf8")).toBe(manifestBefore);
   });
 
   it("refuses dead-owner recovery while its orphan child may write", async () => {
