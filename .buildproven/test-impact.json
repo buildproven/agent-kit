@@ -103,6 +103,7 @@
             "run",
             "scripts/__tests__/claude-review-companion.test.js",
             "scripts/__tests__/compute-governor.test.js",
+            "scripts/__tests__/compute-governor-native.test.js",
             "scripts/__tests__/provider-native.test.js",
             "scripts/__tests__/overnight-loop.test.js"
           ]
