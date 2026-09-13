@@ -11,7 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -664,6 +664,29 @@ exit 1
   return bin;
 }
 
+describe("quality changed-file coverage", () => {
+  it("preserves both rename paths for affected-test selection", () => {
+    const root = makeTempDir("quality-renamed-impact-");
+    git(root, ["init", "-q", "-b", "main"]);
+    git(root, ["config", "user.name", "Quality Test"]);
+    git(root, ["config", "user.email", "quality@example.invalid"]);
+    writeFileSync(
+      path.join(root, "old source.js"),
+      "export const value = 1;\n",
+    );
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "base"]);
+    const base = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["mv", "old source.js", "new source.js"]);
+    git(root, ["commit", "-qm", "rename source"]);
+    expect(
+      invocation
+        .changedFiles(root, base, git(root, ["rev-parse", "HEAD"]))
+        .sort(),
+    ).toEqual(["new source.js", "old source.js"]);
+  });
+});
+
 describe("mutationEvidenceValid — BUI-603 #1 fail-closed on unresolved risk", () => {
   it("returns false for an unresolved risk contract by default", () => {
     const manifest = { risk: { resolved: false } };
@@ -956,6 +979,154 @@ describe("quality invocation manifest", () => {
         1,
       ),
     ).toThrow(/zero execution evidence/);
+  });
+
+  it.each(["live", "remote", "malformed", "unavailable", "replaced"])(
+    "preserves an uncertain manifest lock owner: %s",
+    (kind) => {
+      const root = repo(`manifest-lock-${kind}`);
+      const manifestPath = create(root, ["--merge"]);
+      const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+        encoding: "utf8",
+      });
+      expect(child.status).toBe(0);
+      const body =
+        kind === "malformed"
+          ? "incomplete"
+          : JSON.stringify({
+              pid: kind === "live" ? process.pid : child.pid,
+              hostname: kind === "remote" ? "another-host" : hostname(),
+              acquiredAt: "2020-01-01T00:00:00.000Z",
+            });
+      writeFileSync(`${manifestPath}.lock`, body);
+      let expectedBody = body;
+      const inspect = ["unavailable", "replaced"].includes(kind)
+        ? vi.spyOn(process, "kill").mockImplementation((pid) => {
+            expect(pid).toBe(child.pid);
+            if (kind === "replaced") {
+              expectedBody = JSON.stringify({
+                pid: process.pid,
+                hostname: hostname(),
+              });
+              writeFileSync(`${manifestPath}.lock`, expectedBody);
+            }
+            throw Object.assign(new Error("fixture process inspection"), {
+              code: kind === "replaced" ? "ESRCH" : "EPERM",
+            });
+          })
+        : null;
+      try {
+        expect(() =>
+          invocation.withManifestLock(manifestPath, () => {}),
+        ).toThrow(/locked/);
+        expect(readFileSync(`${manifestPath}.lock`, "utf8")).toBe(expectedBody);
+      } finally {
+        inspect?.mockRestore();
+      }
+    },
+  );
+
+  it("recovers a dead manifest writer under the exact repository guard", async () => {
+    const root = repo("dead-manifest-writer");
+    const manifestPath = create(root, ["--merge"]);
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.governor.providerSecondsUsed = 64;
+    });
+    const before = invocation.loadManifest(manifestPath).manifest;
+    const child = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        "require(process.argv[1]).withManifestLockRaw(process.argv[2], () => process.exit(23))",
+        INVOCATION,
+        manifestPath,
+      ],
+      { encoding: "utf8", env: process.env },
+    );
+    expect(child.status).toBe(23);
+    expect(existsSync(`${manifestPath}.lock`)).toBe(true);
+
+    const resume = () =>
+      new Promise((resolve, reject) => {
+        const worker = spawn(
+          process.execPath,
+          [
+            "-e",
+            "require(process.argv[1]).withManifestLock(process.argv[2], m => { m.governor.providerSecondsUsed += 1; m.governor.lastActivityAt = '2026-09-11T00:00:00.000Z'; })",
+            INVOCATION,
+            manifestPath,
+          ],
+          { env: process.env, stdio: ["ignore", "ignore", "pipe"] },
+        );
+        let stderr = "";
+        worker.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        worker.on("error", reject);
+        worker.on("close", (code) =>
+          code === 0
+            ? resolve()
+            : reject(new Error(`resume failed (${code}): ${stderr}`)),
+        );
+      });
+    await Promise.all([resume(), resume()]);
+
+    const after = invocation.loadManifest(manifestPath).manifest;
+    expect(after.governor.providerSecondsUsed).toBe(66);
+    expect(after.reviews).toEqual(before.reviews);
+    expect(after.governor.lastActivityAt).toBe("2026-09-11T00:00:00.000Z");
+    expect(existsSync(`${manifestPath}.lock`)).toBe(false);
+  });
+
+  it("serializes a competing raw manifest writer before dead-lock recovery", async () => {
+    const root = repo("manifest-writer-serialization");
+    const manifestPath = create(root, ["--merge"]);
+    const worker = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require(process.argv[1]).withManifestLockRaw(process.argv[2], m => { m.governor.providerSecondsUsed += 1; process.stdout.write('locked\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); })",
+        INVOCATION,
+        manifestPath,
+      ],
+      { env: process.env, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const workerExit = new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.once("close", (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`raw manifest writer exited ${code}`)),
+      );
+    });
+    await new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.stdout.once("data", resolve);
+    });
+
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.governor.providerSecondsUsed += 1;
+    });
+    await workerExit;
+
+    expect(
+      invocation.loadManifest(manifestPath).manifest.governor
+        .providerSecondsUsed,
+    ).toBe(2);
+  });
+
+  it("persists the engineering claim without product evidence inputs", () => {
+    const root = repo("engineering-delivery-claim");
+    const manifestPath = create(root, ["--delivery-claim", "engineering"]);
+
+    expect(
+      invocation.loadManifest(manifestPath).manifest.options,
+    ).toMatchObject({
+      deliveryClaim: "engineering",
+      productPrd: null,
+      productTasks: null,
+      deliveryEvidence: null,
+    });
   });
 
   it("binds the exact delivery-evidence index digest to the current HEAD", () => {
@@ -8188,6 +8359,55 @@ exit 1
     ]);
   });
 
+  it("BUI-895: funds an audit impact gate from the declared test timeout", () => {
+    const root = repo("audit-impact-gate-timeout");
+    mkdirSync(path.join(root, ".buildproven"));
+    writeFileSync(
+      path.join(root, ".buildproven", "test-impact.json"),
+      JSON.stringify({
+        version: 1,
+        jsRunner: "vitest",
+        audits: [
+          {
+            paths: ["file.js"],
+            reason: "implementation requires the complete suite",
+            commands: [{ executable: "npm", args: ["test"] }],
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      path.join(root, "harness-config.json"),
+      JSON.stringify({
+        checkDefinitions: {
+          test: { timeoutMinutes: 15 },
+        },
+      }),
+    );
+    git(root, ["add", ".buildproven/test-impact.json", "harness-config.json"]);
+    git(root, ["commit", "-q", "-m", "configure audit test selection"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    writeFileSync(path.join(root, "file.js"), "export const value = 3;\n");
+    git(root, ["commit", "-qam", "change implementation"]);
+
+    const manifestPath = create(root);
+    let manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(
+      manifest.requiredGates.find((gate) => gate.name === "test"),
+    ).toMatchObject({
+      source: "test-impact:.buildproven/test-impact.json",
+      testImpactMode: "audit",
+      timeoutSeconds: 900,
+    });
+
+    execFileSync("bash", [RISK, "--manifest", manifestPath], { cwd: root });
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    expect(manifest.risk.runtime.gateTimeoutSeconds).toMatchObject({
+      test: 900,
+    });
+    expect(manifest.risk.runtime.campaignSeconds).toBeGreaterThan(900);
+  });
+
   it("BUI-733: a policy change cannot authorize its own narrower test gate", () => {
     const root = repo("test-impact-policy-bootstrap");
     mkdirSync(path.join(root, ".buildproven"));
@@ -9813,5 +10033,101 @@ describe("human-floor-check command (Phase 0 autonomy relaxation)", () => {
     );
     writeFileSync(path.join(root, "harness-config.json"), "{ not json");
     expect(rc(root, manifest)).not.toBe(0);
+  });
+});
+
+describe("historical merge-read recovery", () => {
+  function readyCampaign() {
+    const root = repo("historical-merge-read");
+    const file = create(root, ["--merge", "--pr", "7"]);
+    execFileSync("bash", [RISK, "--manifest", file], { cwd: root });
+    prepareCodexReview(root, file);
+    recordJudgeArtifact(root, file);
+    invocation.withManifestLock(file, (manifest) => {
+      manifest.orchestration = {
+        head: manifest.revisions.currentHead,
+        phase: "merge",
+        steps: { merge: { status: "running", attempts: 1 } },
+      };
+    });
+    invocation.recordTerminalState(
+      file,
+      "blocked",
+      "merge admission failed with exit 1",
+    );
+    const before = invocation.loadManifest(file).manifest;
+    const dependencies = {
+      readPullRequest: () => ({
+        state: "OPEN",
+        headRefOid: before.revisions.currentHead,
+      }),
+      readChecks: () => [{ state: "SUCCESS" }],
+    };
+    return { file, before, dependencies };
+  }
+
+  it("grants one entrant normal merge re-entry without resetting evidence or budgets", () => {
+    const { file, before, dependencies } = readyCampaign();
+    expect(invocation.resumeMergeReadFailure(file, dependencies)).toMatchObject(
+      { head: before.revisions.currentHead },
+    );
+    const after = invocation.loadManifest(file).manifest;
+    expect(after.terminalState).toMatchObject({
+      state: "recovering",
+      terminalEpoch: 1,
+      recovery: { kind: "merge-read-failure" },
+    });
+    expect(after.governor).toEqual(before.governor);
+    expect(after.gates).toEqual(before.gates);
+    expect(after.reviews).toEqual(before.reviews);
+    expect(after.terminalHistory[0]).toMatchObject({
+      detail: before.terminalState.detail,
+    });
+    expect(invocation.resumeMergeReadFailure(file, dependencies)).toBeNull();
+    expect(invocation.loadManifest(file).manifest.terminalState).toEqual(
+      after.terminalState,
+    );
+  });
+
+  it.each([
+    "red-checks",
+    "changed-head",
+    "stale-gate",
+    "active-execution",
+    "wrong-phase",
+    "second-attempt",
+    "explicit-block",
+  ])("refuses %s without replacing the original terminal", (scenario) => {
+    const { file, before, dependencies } = readyCampaign();
+    if (scenario === "red-checks")
+      dependencies.readChecks = () => [{ state: "FAILURE" }];
+    if (scenario === "changed-head")
+      dependencies.readPullRequest = () => ({
+        state: "OPEN",
+        headRefOid: "f".repeat(40),
+      });
+    invocation.withManifestLock(file, (manifest) => {
+      if (scenario === "stale-gate") manifest.gates = [];
+      if (scenario === "active-execution")
+        manifest.governor.activeExecution = {
+          kind: "provider",
+          pid: process.pid,
+        };
+      if (scenario === "wrong-phase") manifest.orchestration.phase = "review";
+      if (scenario === "second-attempt")
+        manifest.orchestration.steps.merge.attempts = 2;
+      if (scenario === "explicit-block")
+        manifest.merge.admissionBlock = { conditions: ["ci:failed"] };
+    });
+    let result;
+    try {
+      result = invocation.resumeMergeReadFailure(file, dependencies);
+    } catch (error) {
+      expect(error.message).toMatch(/gate|checks|exact-head/);
+    }
+    expect(result || null).toBeNull();
+    expect(invocation.loadManifest(file).manifest.terminalState).toEqual(
+      before.terminalState,
+    );
   });
 });

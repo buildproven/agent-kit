@@ -539,7 +539,7 @@ if [ "$PREFLIGHT" = false ] && [ "${CI_BILLING_WAIVED:-false}" = false ]; then
   else
     node "$SCRIPT_DIR/quality-required-checks.js" assert \
       --repo "$EXPECTED_REPOSITORY" --base "$ACTUAL_BASE_NAME" \
-      --head "$ACTUAL_HEAD" >/dev/null || {
+      --head "$ACTUAL_HEAD" --manifest "$MANIFEST" >/dev/null || {
       echo "❌ MERGE BLOCKED: required CI is not successful." >&2
       exit 1
     }

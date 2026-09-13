@@ -39,9 +39,9 @@ jobs:
           PRODUCT_ADMISSION_WORKFLOW_PATH: .github/workflows/product-evidence-admission.yml
         run: |
           test -n "$PRODUCT_EVIDENCE_PUBLIC_KEY"
-          install -d -m 0755 /etc/claude-kit
-          printf '%s\n' "$PRODUCT_EVIDENCE_PUBLIC_KEY" > /etc/claude-kit/product-evidence-public-key
-          chmod 0644 /etc/claude-kit/product-evidence-public-key
+          sudo install -d -m 0755 /etc/claude-kit
+          printf '%s\n' "$PRODUCT_EVIDENCE_PUBLIC_KEY" | sudo tee /etc/claude-kit/product-evidence-public-key >/dev/null
+          sudo chmod 0644 /etc/claude-kit/product-evidence-public-key
           marker="$(node scripts/product-admission.js create producer admission.json)"
           printf '%s\n' "$marker" > admission-marker.txt
       - name: Publish exact-head admission check
