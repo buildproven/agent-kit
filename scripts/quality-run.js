@@ -32,12 +32,16 @@ function sameRunnerFile(left, right) {
 }
 
 function readRunnerOwner(file) {
+  let descriptor;
   try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
-      return null;
+    descriptor = fs.openSync(
+      file,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.nlink !== 1) return null;
     const record = quality.parseJson(
-      fs.readFileSync(file, "utf8"),
+      fs.readFileSync(descriptor, "utf8"),
       "runner owner",
     );
     if (
@@ -56,6 +60,8 @@ function readRunnerOwner(file) {
     // Unreadable or partially written ownership is not proof of abandonment.
     if (error instanceof Error) return null;
     throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
   }
 }
 
