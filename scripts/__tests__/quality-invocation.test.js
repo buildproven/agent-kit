@@ -11,7 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -778,6 +778,140 @@ describe("required gate reuse", () => {
 });
 
 describe("quality invocation manifest", () => {
+  it.each(["live", "remote", "malformed", "unavailable", "replaced"])(
+    "preserves an uncertain manifest lock owner: %s",
+    (kind) => {
+      const root = repo(`manifest-lock-${kind}`);
+      const manifestPath = create(root, ["--merge"]);
+      const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+        encoding: "utf8",
+      });
+      expect(child.status).toBe(0);
+      const body =
+        kind === "malformed"
+          ? "incomplete"
+          : JSON.stringify({
+              pid: kind === "live" ? process.pid : child.pid,
+              hostname: kind === "remote" ? "another-host" : hostname(),
+              acquiredAt: "2020-01-01T00:00:00.000Z",
+            });
+      writeFileSync(`${manifestPath}.lock`, body);
+      let expectedBody = body;
+      const inspect = ["unavailable", "replaced"].includes(kind)
+        ? vi.spyOn(process, "kill").mockImplementation((pid) => {
+            expect(pid).toBe(child.pid);
+            if (kind === "replaced") {
+              expectedBody = JSON.stringify({
+                pid: process.pid,
+                hostname: hostname(),
+              });
+              writeFileSync(`${manifestPath}.lock`, expectedBody);
+            }
+            throw Object.assign(new Error("fixture process inspection"), {
+              code: kind === "replaced" ? "ESRCH" : "EPERM",
+            });
+          })
+        : null;
+      try {
+        expect(() =>
+          invocation.withManifestLock(manifestPath, () => {}),
+        ).toThrow(/locked/);
+        expect(readFileSync(`${manifestPath}.lock`, "utf8")).toBe(expectedBody);
+      } finally {
+        inspect?.mockRestore();
+      }
+    },
+  );
+
+  it("recovers a dead manifest writer under the exact repository guard", async () => {
+    const root = repo("dead-manifest-writer");
+    const manifestPath = create(root, ["--merge"]);
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.governor.providerSecondsUsed = 64;
+    });
+    const before = invocation.loadManifest(manifestPath).manifest;
+    const child = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        "require(process.argv[1]).withManifestLockRaw(process.argv[2], () => process.exit(23))",
+        INVOCATION,
+        manifestPath,
+      ],
+      { encoding: "utf8", env: process.env },
+    );
+    expect(child.status).toBe(23);
+    expect(existsSync(`${manifestPath}.lock`)).toBe(true);
+
+    const resume = () =>
+      new Promise((resolve, reject) => {
+        const worker = spawn(
+          process.execPath,
+          [
+            "-e",
+            "require(process.argv[1]).withManifestLock(process.argv[2], m => { m.governor.providerSecondsUsed += 1; m.governor.lastActivityAt = '2026-09-11T00:00:00.000Z'; })",
+            INVOCATION,
+            manifestPath,
+          ],
+          { env: process.env, stdio: ["ignore", "ignore", "pipe"] },
+        );
+        let stderr = "";
+        worker.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        worker.on("error", reject);
+        worker.on("close", (code) =>
+          code === 0
+            ? resolve()
+            : reject(new Error(`resume failed (${code}): ${stderr}`)),
+        );
+      });
+    await Promise.all([resume(), resume()]);
+
+    const after = invocation.loadManifest(manifestPath).manifest;
+    expect(after.governor.providerSecondsUsed).toBe(66);
+    expect(after.reviews).toEqual(before.reviews);
+    expect(after.governor.lastActivityAt).toBe("2026-09-11T00:00:00.000Z");
+    expect(existsSync(`${manifestPath}.lock`)).toBe(false);
+  });
+
+  it("serializes a competing raw manifest writer before dead-lock recovery", async () => {
+    const root = repo("manifest-writer-serialization");
+    const manifestPath = create(root, ["--merge"]);
+    const worker = spawn(
+      process.execPath,
+      [
+        "-e",
+        "require(process.argv[1]).withManifestLockRaw(process.argv[2], m => { m.governor.providerSecondsUsed += 1; process.stdout.write('locked\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500); })",
+        INVOCATION,
+        manifestPath,
+      ],
+      { env: process.env, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const workerExit = new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.once("close", (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(`raw manifest writer exited ${code}`)),
+      );
+    });
+    await new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.stdout.once("data", resolve);
+    });
+
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.governor.providerSecondsUsed += 1;
+    });
+    await workerExit;
+
+    expect(
+      invocation.loadManifest(manifestPath).manifest.governor
+        .providerSecondsUsed,
+    ).toBe(2);
+  });
+
   it("persists the engineering claim without product evidence inputs", () => {
     const root = repo("engineering-delivery-claim");
     const manifestPath = create(root, ["--delivery-claim", "engineering"]);
