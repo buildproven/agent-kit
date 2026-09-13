@@ -19,6 +19,7 @@ const SCRIPT = path.resolve(
 );
 const {
   adoptPersistedDispatch,
+  assertChecks,
   checkRuns,
   checkState,
   claimDispatchNonce,
@@ -855,6 +856,73 @@ esac
           baseHead: "c".repeat(40),
         }),
       ).toMatchObject({ state: "success" });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("carries the persisted workflow binding into final check assertion", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const targetHead = "b".repeat(40);
+    const baseHead = "c".repeat(40);
+    const externalId = `secret-history-scan:${targetHead}:${baseHead}:${"a".repeat(32)}`;
+    const workflowRun = {
+      id: 124,
+      workflow_id: 77,
+      event: "repository_dispatch",
+      head_branch: "main",
+      head_sha: baseHead,
+      path: ".github/workflows/secret-history-scan.yml",
+      display_title: externalId,
+      status: "completed",
+      conclusion: "success",
+    };
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *protection/required_status_checks*) printf '%s\\n' '{"checks":[{"context":"secret-history-scan","app_id":15368}]}' ;;
+  *rules/branches/main*) printf '%s\\n' '[]' ;;
+  *git/ref/heads/main*) printf '%s\\n' '{"object":{"sha":"${baseHead}"}}' ;;
+  *commits/${targetHead}/check-runs*) printf '%s\\n' '${JSON.stringify({ check_runs: [{ id: 2, name: "secret-history-scan", status: "completed", conclusion: "success", app: { id: 15368 }, external_id: externalId, details_url: "https://github.com/owner/repo/runs/2" }] })}' ;;
+  *actions/workflows/77/runs*) printf '%s\\n' '${JSON.stringify({ total_count: 1, workflow_runs: [workflowRun] })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    const requirements = [{ context: "secret-history-scan", appId: 15368 }];
+    const monitor = {
+      schemaVersion: 1,
+      repository: "owner/repo",
+      base: "main",
+      sourceHead: targetHead,
+      targetHead,
+      headRef: "feature/fix",
+      baseHead,
+      requirements,
+      startedAt: Date.now(),
+      deadline: Date.now() + 60_000,
+      dispatches: [
+        {
+          requirement: { ...requirements[0], externalId },
+          workflowId: 77,
+          transport: "repository_dispatch",
+          nonce: "a".repeat(32),
+        },
+      ],
+    };
+    try {
+      expect(
+        assertChecks("owner/repo", "main", targetHead, monitor)[0],
+      ).toMatchObject({
+        state: "success",
+      });
     } finally {
       process.env.PATH = originalPath;
     }

@@ -1083,6 +1083,22 @@ function assertMonitorIdentity(manifest, context) {
   }
 }
 
+function monitorForAssertion(manifest, context) {
+  const monitor = manifest.merge?.requiredChecksMonitor || null;
+  if (!monitor) return null;
+  assertMonitorIdentity(manifest, {
+    ...context,
+    sourceHead: manifest.revisions.currentHead,
+    targetHead: context.head,
+    headRef: manifest.repo.headRefName,
+  });
+  if (monitor.targetHead !== context.head) {
+    throw new Error("required-check assertion monitor head mismatch");
+  }
+  assertBeforeDeadline(monitor.deadline);
+  return monitor;
+}
+
 function protectedMonitorLifetimeValid(monitor, requirements) {
   return (
     !requirements.some(protectedCheckConfig) ||
@@ -1618,8 +1634,8 @@ function inspectChecks(repository, base, head, monitor = null) {
   });
 }
 
-function assertChecks(repository, base, head) {
-  const states = inspectChecks(repository, base, head);
+function assertChecks(repository, base, head, monitor = null) {
+  const states = inspectChecks(repository, base, head, monitor);
   const incomplete = states.filter((entry) => entry.state !== "success");
   if (incomplete.length > 0) {
     throw new Error(
@@ -1738,8 +1754,16 @@ function main() {
   }
   if (command === "assert") {
     const context = commandContext(options);
+    let monitor = null;
+    if (options.manifest) {
+      const quality = require("./quality-invocation.js");
+      const manifest = quality.loadManifest(options.manifest).manifest;
+      monitor = monitorForAssertion(manifest, context);
+    }
     process.stdout.write(
-      `${JSON.stringify(assertChecks(context.repository, context.base, context.head))}\n`,
+      `${JSON.stringify(
+        assertChecks(context.repository, context.base, context.head, monitor),
+      )}\n`,
     );
     return;
   }
@@ -1823,6 +1847,7 @@ module.exports = {
   dispatchedRunsForHead,
   ensureChecks,
   matchingRuns,
+  monitorForAssertion,
   newRequiredChecksMonitor,
   inspectChecks,
   prepareChecks,

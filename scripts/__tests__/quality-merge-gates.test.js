@@ -562,6 +562,9 @@ esac
     const adminMerge = AUTHORIZE.lastIndexOf("LEASE_ADMIN=true");
     expect(firstWaiverValidation).toBeGreaterThan(-1);
     expect(requiredChecks).toBeGreaterThan(firstWaiverValidation);
+    expect(AUTHORIZE).toMatch(
+      /quality-required-checks\.js" assert[\s\S]*--manifest "\$MANIFEST"/,
+    );
     expect(finalWaiverValidation).toBeGreaterThan(requiredChecks);
     expect(adminMerge).toBeGreaterThan(finalWaiverValidation);
     expect(AUTHORIZE).toMatch(
