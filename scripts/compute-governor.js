@@ -713,6 +713,7 @@ function nativeTaskValid(task) {
     task.text.trim().length > 0 &&
     task.text === task.text.trim() &&
     Array.isArray(task.plannedPaths) &&
+    task.plannedPaths.length > 0 &&
     task.plannedPaths.every(
       (candidate) =>
         typeof candidate === "string" &&

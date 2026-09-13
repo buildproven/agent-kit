@@ -102,6 +102,41 @@ describe("compute governor", () => {
     });
   });
 
+  it("rejects native advice without at least one planned path", () => {
+    expect(() =>
+      resolve({
+        interface: "native-advisory",
+        schemaVersion: 1,
+        work: "delegation",
+        facts: {
+          provider: "codex",
+          phase: "scan",
+          readOnly: true,
+          localized: true,
+          reversible: true,
+          targetedProof: true,
+          ambiguous: false,
+          changedFiles: 0,
+          protectedSurfaces: [],
+          sameFailureStreak: 0,
+          publicContract: false,
+          crossRepository: false,
+          operatorRoute: null,
+        },
+        task: { text: "Inspect the source", plannedPaths: [] },
+        parent: { model: "gpt-5.6-terra", effort: "medium" },
+        override: null,
+        fork: "bounded",
+        capabilities: {
+          delegation: true,
+          overrides: true,
+          models: [{ model: "gpt-5.6-luna", efforts: ["high"] }],
+          profiles: null,
+        },
+      }),
+    ).toThrow("invalid native identity, context, or task");
+  });
+
   it("makes an eligible localized code change an economy-builder candidate", () => {
     const plan = resolve(base);
     expect(plan).toMatchObject({

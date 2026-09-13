@@ -249,6 +249,9 @@ describe("compute governor native advisory", () => {
       value.task.text = "";
     },
     (value) => {
+      value.task.plannedPaths = [];
+    },
+    (value) => {
       value.work = "local";
     },
     (value) => {
