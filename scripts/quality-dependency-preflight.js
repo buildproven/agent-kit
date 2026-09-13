@@ -2103,6 +2103,99 @@ function recordFailure(root, result, env = process.env) {
   fs.appendFileSync(file, `${JSON.stringify(record)}\n`);
 }
 
+function inspectDeliveryHooks(root) {
+  const git = (args) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  const hookNames = new Set([
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-receive",
+    "update",
+    "proc-receive",
+    "post-receive",
+    "post-update",
+    "reference-transaction",
+    "push-to-checkout",
+    "pre-auto-gc",
+    "post-rewrite",
+    "sendemail-validate",
+    "fsmonitor-watchman",
+    "p4-changelist",
+    "p4-prepare-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
+    "post-index-change",
+  ]);
+  // Let Git resolve worktree/common configuration, relative and absolute paths.
+  const hooksDirectory = path.resolve(
+    root,
+    git(["rev-parse", "--git-path", "hooks"]),
+  );
+  const tracked = git(["ls-files", "-z"]).split("\0").filter(Boolean);
+  const expected = new Set();
+  for (const file of tracked) {
+    const name = path.basename(file);
+    if (!hookNames.has(name)) continue;
+    if (
+      path.dirname(file) === ".husky" ||
+      path.dirname(path.resolve(root, file)) === hooksDirectory
+    ) {
+      expected.add(name);
+    }
+  }
+  if (
+    fs.existsSync(hooksDirectory) &&
+    fs.statSync(hooksDirectory).isDirectory()
+  ) {
+    for (const name of fs.readdirSync(hooksDirectory)) {
+      if (hookNames.has(name)) expected.add(name);
+    }
+  }
+  const failures = [];
+  function requireFile(file, executable) {
+    try {
+      if (!fs.statSync(file).isFile()) throw new Error("not a regular file");
+      fs.accessSync(
+        file,
+        executable ? fs.constants.R_OK | fs.constants.X_OK : fs.constants.R_OK,
+      );
+    } catch (error) {
+      failures.push(
+        `Git hook ${file} is missing or ${executable ? "not executable" : "unreadable"}: ${error.message}`,
+      );
+    }
+  }
+  for (const name of expected)
+    requireFile(path.join(hooksDirectory, name), true);
+  if (expected.size > 0 && hooksDirectory === path.join(root, ".husky", "_")) {
+    requireFile(path.join(hooksDirectory, "h"), false);
+    for (const file of tracked) {
+      if (
+        path.dirname(file) === ".husky" &&
+        hookNames.has(path.basename(file))
+      ) {
+        requireFile(path.join(root, file), false);
+      }
+    }
+  }
+  if (failures.length > 0) {
+    failures.push(
+      "Review the repository's declared prepare script and its local dependencies, run the trusted prepare step (npm run prepare for npm) in this exact worktree, then rerun this preflight before commit or push. Preflight never executes lifecycle scripts.",
+    );
+  }
+  return failures;
+}
+
 async function check(root, env = process.env) {
   let result;
   try {
@@ -2112,6 +2205,11 @@ async function check(root, env = process.env) {
       manager: null,
       failures: [`package inspection failed: ${error.message}`],
     };
+  }
+  try {
+    result.failures.push(...inspectDeliveryHooks(root));
+  } catch (error) {
+    result.failures.push(`Git hook inspection failed: ${error.message}`);
   }
   if (result.failures.length === 0) return result;
   try {

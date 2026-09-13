@@ -252,6 +252,95 @@ function installYarnDirectoryPnpFixture(root) {
 }
 
 describe("quality dependency preflight", () => {
+  it.each(["relative", "absolute"])(
+    "checks executable hooks in a %s custom hooks directory without requiring Husky",
+    (kind) => {
+      const root = fixture();
+      installFixturePackage(root);
+      const directory = path.join(root, "custom-hooks");
+      fs.mkdirSync(directory);
+      const hook = path.join(directory, "pre-push");
+      fs.writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o644 });
+      execFileSync(
+        "git",
+        [
+          "config",
+          "core.hooksPath",
+          kind === "absolute" ? directory : "custom-hooks",
+        ],
+        { cwd: root },
+      );
+      const run = () =>
+        spawnSync("node", [PREFLIGHT, "--repo", root], { encoding: "utf8" });
+      const missingMode = run();
+      expect(missingMode.status, missingMode.stderr).toBe(78);
+      expect(missingMode.stderr).toContain("pre-push");
+      fs.chmodSync(hook, 0o755);
+      const ready = run();
+      expect(ready.status, ready.stderr).toBe(0);
+      fs.unlinkSync(hook);
+      fs.symlinkSync("missing-hook", hook);
+      expect(run().status).toBe(78);
+    },
+  );
+
+  it("rejects tracked Husky hooks when hooksPath was never configured", () => {
+    const root = fixture();
+    installFixturePackage(root);
+    fs.mkdirSync(path.join(root, ".husky"));
+    fs.writeFileSync(path.join(root, ".husky/pre-commit"), "exit 1\n");
+    execFileSync("git", ["add", ".husky"], { cwd: root });
+    const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(78);
+    expect(result.stderr).toContain("pre-commit");
+  });
+
+  it("blocks missing generated hooks in a linked worktree without running prepare", () => {
+    const root = fixture();
+    fs.mkdirSync(path.join(root, ".husky"));
+    fs.writeFileSync(path.join(root, ".husky/pre-commit"), "exit 1\n");
+    execFileSync("git", ["add", ".husky"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "declare hooks"], { cwd: root });
+    execFileSync("git", ["config", "core.hooksPath", ".husky/_"], {
+      cwd: root,
+    });
+    const linked = path.join(makeTempDir("hook-worktree-"), "linked");
+    execFileSync("git", ["worktree", "add", "-qb", "delivery", linked], {
+      cwd: root,
+    });
+    installFixturePackage(linked);
+    const pkgFile = path.join(linked, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+    pkg.scripts.prepare =
+      'node -e \'require("fs").writeFileSync("unsafe-prepare","ran")\'';
+    fs.writeFileSync(pkgFile, JSON.stringify(pkg));
+    const result = spawnSync("node", [PREFLIGHT, "--repo", linked], {
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(78);
+    expect(result.stderr).toContain("pre-commit");
+    expect(result.stderr).toContain("prepare");
+    expect(fs.existsSync(path.join(linked, "unsafe-prepare"))).toBe(false);
+    fs.mkdirSync(path.join(linked, ".husky/_"));
+    fs.writeFileSync(
+      path.join(linked, ".husky/_/pre-commit"),
+      "#!/bin/sh\nexit 0\n",
+      { mode: 0o755 },
+    );
+    const missingDispatcher = spawnSync("node", [PREFLIGHT, "--repo", linked], {
+      encoding: "utf8",
+    });
+    expect(missingDispatcher.status, missingDispatcher.stderr).toBe(78);
+    expect(missingDispatcher.stderr).toContain("/h");
+    fs.writeFileSync(path.join(linked, ".husky/_/h"), "exit 0\n");
+    const repaired = spawnSync("node", [PREFLIGHT, "--repo", linked], {
+      encoding: "utf8",
+    });
+    expect(repaired.status, repaired.stderr).toBe(0);
+  });
+
   it.each([
     ["v1.2.3", "1.2.3", 0],
     ["v1.2.3-rc.1+build.7", "1.2.3-rc.1+build.7", 0],

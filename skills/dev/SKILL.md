@@ -213,6 +213,17 @@ if [ -n "${HUD_SCRIPT:-}" ]; then
 fi
 ```
 
+Before the first commit or push in this exact worktree, inspect the repository's
+declared `prepare` script and its local dependencies. For trusted repository
+code, run that declared step after dependency setup (`npm run prepare` for npm),
+then run `node scripts/generated/quality-dependency-preflight/index.js --repo "$WORKTREE_DIR"`
+from the trusted kit runtime. Resolve the script through the same kit root used
+for `worktree-manager.js` in downstream repositories. This check must pass before
+delivery writes. Dependency binaries alone do not prove generated Git hooks
+exist. Never execute a fork-controlled lifecycle script on the operator host;
+leave that work blocked for a trusted setup path. Do not disable hooks to repair
+missing launchers.
+
 ### Step 3: Gather Requirements
 
 Ask for feature behavior, technical constraints, and dependencies. For a bug,
