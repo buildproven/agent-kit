@@ -1671,24 +1671,32 @@ describe("quality-run public orchestration", () => {
       { merge: true, tier: "medium" },
     );
     const result = run(entry);
-    expect(result.status).toBe(3);
-    const lock = JSON.parse(
-      readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+    const orphanPid = Number(
+      readFileSync(entry.manifestPath + ".merge-orphan-pid", "utf8"),
     );
-    expect(lock).toMatchObject({
-      schemaVersion: 2,
-      childInFlight: true,
-      child: { processGroupId: expect.any(Number) },
-    });
-    expectBusyUnchanged(entry, "runner-owned");
+    let cleanupError;
     try {
-      process.kill(-lock.child.processGroupId, "SIGKILL");
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
+      expect(result.status).toBe(3);
+      const lock = JSON.parse(
+        readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(lock).toMatchObject({
+        schemaVersion: 2,
+        childInFlight: true,
+        child: { processGroupId: expect.any(Number) },
+      });
+      expectBusyUnchanged(entry, "runner-owned");
+    } finally {
+      try {
+        process.kill(orphanPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") cleanupError = error;
+      }
     }
+    if (cleanupError) throw cleanupError;
     await vi.waitFor(
       () =>
-        expect(() => process.kill(-lock.child.processGroupId, 0)).toThrow(
+        expect(() => process.kill(orphanPid, 0)).toThrow(
           expect.objectContaining({ code: "ESRCH" }),
         ),
       { timeout: 10000 },
