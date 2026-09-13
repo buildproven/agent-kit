@@ -84,6 +84,38 @@ function resumeInterruptedTerminal(file) {
   write(file, manifest);
   return { head: manifest.revisions.currentHead, terminalEpoch: epoch };
 }
+function recordPreReviewSelectionFailure(file, detail, exitCode) {
+  const manifest = read(file);
+  if (!manifest.terminalState) {
+    manifest.terminalState = {
+      state: "blocked",
+      failureCode: "pre-review-selection-failed",
+      phase: "panel",
+      selectorExitCode: exitCode,
+      detail,
+      head: manifest.revisions.currentHead,
+      terminalEpoch: terminalEpoch(manifest),
+      selectionRecovery: { selectorRuntimeDigest: "before", remainingRuntimeDigest: "stable" },
+    };
+  }
+  write(file, manifest);
+  return manifest.terminalState;
+}
+function resumePreReviewSelectionFailure(file) {
+  const manifest = read(file);
+  const terminal = manifest.terminalState;
+  if (terminal?.failureCode !== "pre-review-selection-failed" ||
+      !manifest.behavior?.selectorRepaired || manifest.selectionRecovery) return null;
+  const epoch = terminalEpoch(manifest) + 1;
+  manifest.terminalHistory ||= [];
+  manifest.terminalHistory.push({ ...terminal, disposition: "superseded-by-selection-recovery" });
+  manifest.terminalHistory.push({ event: "reopened-by-selection-recovery", terminalEpoch: epoch });
+  manifest.terminalEpoch = epoch;
+  manifest.selectionRecovery = { terminalEpoch: terminal.terminalEpoch };
+  delete manifest.terminalState;
+  write(file, manifest);
+  return { head: manifest.revisions.currentHead, terminalEpoch: epoch };
+}
 function clearMergeAdmissionBlock(file) {
   const manifest = read(file);
   if (!manifest.merge?.admissionBlock) return false;
@@ -199,7 +231,7 @@ if (require.main === module) {
   process.stdout.write(inForce + "\\n");
 }
 module.exports = { advanceHead, incompleteRetryStatus, judgeContext, leadDispositionStatus, loadManifest, mutationEvidenceValid, parseJson, recordTerminalState,
-  advanceManifest, changedFiles, clearMergeAdmissionBlock, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeInterruptedTerminal, resumeMergeReadFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
+  advanceManifest, changedFiles, clearMergeAdmissionBlock, recordPreReviewSelectionFailure, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeInterruptedTerminal, resumeMergeReadFailure, resumePreReviewSelectionFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
 `;
 
 const FAKE_STEP = `
@@ -227,6 +259,10 @@ if (step === "quality-risk-resolve.sh" && manifest.behavior?.failRisk) {
   process.exit(5);
 }
 if (step === "quality-select-agents.sh") {
+  if (manifest.behavior?.failPanel) {
+    fs.writeFileSync(file, JSON.stringify(manifest));
+    process.exit(7);
+  }
   if (manifest.panel) {
     fs.writeFileSync(file, JSON.stringify(manifest));
     process.stderr.write("quality agent selection is immutable once persisted\\n");
@@ -552,6 +588,52 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("re-enters one typed pre-review selector failure after the selector is repaired", () => {
+    const entry = fixture({ failPanel: true }, { merge: true, tier: "medium" });
+    const failed = run(entry);
+
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      message: "panel failed with exit 7",
+    });
+    expect(failed.manifest.terminalState).toMatchObject({
+      failureCode: "pre-review-selection-failed",
+      phase: "panel",
+      selectorExitCode: 7,
+    });
+    expect(failed.manifest.gates).toHaveLength(0);
+    expect(failed.manifest.reviews).toHaveLength(0);
+
+    failed.manifest.behavior.failPanel = false;
+    failed.manifest.behavior.selectorRepaired = true;
+    writeFileSync(entry.manifestPath, JSON.stringify(failed.manifest));
+    const resumed = run(entry);
+
+    expect(resumed.status).toBe(0);
+    expect(JSON.parse(resumed.output)).toMatchObject({
+      status: "complete",
+      state: "merged",
+    });
+    expect(
+      resumed.manifest.calls.filter(
+        (call) => call === "quality-select-agents.sh",
+      ),
+    ).toHaveLength(2);
+    expect(resumed.manifest.terminalHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          disposition: "superseded-by-selection-recovery",
+        }),
+        expect.objectContaining({
+          event: "reopened-by-selection-recovery",
+          terminalEpoch: 1,
+        }),
+      ]),
+    );
+  });
+
   it("uses the explicit-confirmation compatibility schema without POSIX process groups", () => {
     expect(ownershipSchemaVersion("win32")).toBe(1);
     expect(ownershipSchemaVersion("darwin")).toBe(2);

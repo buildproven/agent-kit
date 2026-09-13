@@ -6875,6 +6875,373 @@ function recoveryScope(manifest, terminal) {
   return manifest.approval.scope;
 }
 
+const PRE_REVIEW_SELECTION_FAILURE = "pre-review-selection-failed";
+const SELECTION_RUNTIME_FILES = Object.freeze(["quality-select-agents.sh"]);
+const NON_SELECTION_RUNTIME_FILES = Object.freeze([
+  "quality-run.js",
+  "quality-risk-resolve.sh",
+  "quality-runtime-plan.js",
+  "quality-run-gate.sh",
+  "quality-run-review.sh",
+  "quality-mutation-check.sh",
+  "quality-authorize-review-round.sh",
+  "quality-stamp-and-merge.sh",
+]);
+
+function recoveryDigest(value) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(canonicalJson(value)))
+    .digest("hex");
+}
+
+function sameRuntimeInode(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readCanonicalRuntimeFile(runtimeDir, relative, cohort) {
+  const segments = relative.split("/");
+  const directories = [runtimeDir];
+  for (let index = 1; index < segments.length; index += 1) {
+    directories.push(path.join(runtimeDir, ...segments.slice(0, index)));
+  }
+  const openedDirectories = [];
+  let fileDescriptor = null;
+  try {
+    for (const directory of directories) {
+      const descriptor = fs.openSync(
+        directory,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NOFOLLOW |
+          fs.constants.O_NONBLOCK,
+      );
+      const stat = fs.fstatSync(descriptor);
+      if (!stat.isDirectory() || fs.realpathSync(directory) !== directory) {
+        fs.closeSync(descriptor);
+        throw new Error(`${cohort} runtime ancestry is not canonical`);
+      }
+      openedDirectories.push({ descriptor, directory, stat });
+    }
+    const candidate = path.join(runtimeDir, relative);
+    if (fs.realpathSync(candidate) !== candidate) {
+      throw new Error(`${cohort} runtime dependency is not canonical`);
+    }
+    fileDescriptor = fs.openSync(
+      candidate,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
+    const fileStat = fs.fstatSync(fileDescriptor);
+    if (!fileStat.isFile()) {
+      throw new Error(`${cohort} runtime dependency is not a regular file`);
+    }
+    for (const opened of openedDirectories) {
+      const current = fs.lstatSync(opened.directory);
+      if (!current.isDirectory() || !sameRuntimeInode(current, opened.stat)) {
+        throw new Error(`${cohort} runtime ancestry changed during inspection`);
+      }
+    }
+    const currentFile = fs.lstatSync(candidate);
+    if (!currentFile.isFile() || !sameRuntimeInode(currentFile, fileStat)) {
+      throw new Error(`${cohort} runtime dependency changed during inspection`);
+    }
+    return fs.readFileSync(fileDescriptor);
+  } finally {
+    if (fileDescriptor !== null) fs.closeSync(fileDescriptor);
+    for (const opened of openedDirectories.reverse()) {
+      fs.closeSync(opened.descriptor);
+    }
+  }
+}
+
+// The runner and its shell entrypoint can be upgraded while a terminal
+// manifest exists. Hash each explicitly owned source file by its canonical
+// relative name and bytes. The fixed cohorts are deliberate: an unlisted,
+// missing, linked, or non-regular file fails closed rather than becoming an
+// implicit recovery dependency.
+function runtimeCohortDigest(
+  files,
+  cohort,
+  discoverDependencies = false,
+  runtimeDir = __dirname,
+) {
+  const pending = [...files];
+  const seen = new Set();
+  const entries = [];
+  while (pending.length > 0) {
+    const relative = pending.pop();
+    if (seen.has(relative)) continue;
+    if (
+      !relative
+        .split("/")
+        .every((segment) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment))
+    ) {
+      throw new Error(`${cohort} runtime dependency name is malformed`);
+    }
+    const bytes = readCanonicalRuntimeFile(runtimeDir, relative, cohort);
+    const source = bytes.toString("utf8");
+    seen.add(relative);
+    entries.push([relative, bytes]);
+    if (!discoverDependencies) continue;
+    if (relative.endsWith(".js")) {
+      const calls = source.matchAll(/\brequire\(\s*([^)]*?)\s*\)/g);
+      for (const call of calls) {
+        const argument = call[1];
+        const match = argument.match(/^(["'])(\.\/[^"']+)\1$/);
+        if (!match) {
+          if (/^(["'])(?:node:)?[A-Za-z0-9:_-]+\1$/.test(argument)) {
+            continue;
+          }
+          throw new Error(`${cohort} runtime has an unknown dependency`);
+        }
+        const basename = match[2].slice(2);
+        const resolved = basename.endsWith(".js") ? basename : `${basename}.js`;
+        pending.push(resolved);
+      }
+    } else if (relative.endsWith(".sh")) {
+      const references = source.matchAll(
+        /\$(?:SCRIPT_DIR|script_dir)\/([A-Za-z0-9._/-]+)/g,
+      );
+      for (const reference of references) {
+        // Directory navigation computes KIT_ROOT; it does not read a source
+        // dependency. File references, including nested schemas, are sealed.
+        if (reference[1] === "..") continue;
+        pending.push(reference[1]);
+      }
+    } else if (!relative.endsWith(".json")) {
+      throw new Error(`${cohort} runtime dependency type is unsupported`);
+    }
+  }
+  const hash = crypto.createHash("sha256");
+  for (const [relative, bytes] of entries.sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    hash.update(relative).update("\0").update(bytes).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function selectionRuntimeDigests(runtimeDir = __dirname) {
+  return {
+    selector: runtimeCohortDigest(
+      SELECTION_RUNTIME_FILES,
+      "selector",
+      true,
+      runtimeDir,
+    ),
+    remaining: runtimeCohortDigest(
+      NON_SELECTION_RUNTIME_FILES,
+      "non-selector",
+      true,
+      runtimeDir,
+    ),
+  };
+}
+
+function zeroSelectionExecution(manifest) {
+  const governor = manifest.governor || {};
+  return (
+    manifest.panel == null &&
+    Array.isArray(manifest.gates) &&
+    manifest.gates.length === 0 &&
+    Array.isArray(manifest.reviews) &&
+    manifest.reviews.length === 0 &&
+    !manifest.mutation &&
+    !manifest.judge &&
+    !governor.activeExecution &&
+    governor.gateSecondsUsed === 0 &&
+    governor.providerSecondsUsed === 0 &&
+    governor.activeSecondsUsed === 0 &&
+    governor.roundsUsed === 0 &&
+    Array.isArray(governor.providerAttempts) &&
+    governor.providerAttempts.length === 0 &&
+    Array.isArray(governor.authorizedAttempts) &&
+    governor.authorizedAttempts.length === 0
+  );
+}
+
+function selectionRecoveryCheckpoint(manifest) {
+  const lease = manifest.merge?.repositoryLease;
+  if (
+    manifest.options?.merge !== true ||
+    !Number.isSafeInteger(lease?.generation) ||
+    lease.generation < 1
+  ) {
+    throw new Error("selection recovery requires the exact repository lease");
+  }
+  if (!zeroSelectionExecution(manifest)) {
+    throw new Error("selection recovery requires zero execution evidence");
+  }
+  const runtime = selectionRuntimeDigests();
+  return {
+    schemaVersion: 1,
+    repository: {
+      key: manifest.repo.key,
+      githubRepository: manifest.repo.githubRepository,
+      realpath: manifest.repo.realpath,
+    },
+    revisions: {
+      baseSha: manifest.revisions.baseSha,
+      head: manifest.revisions.currentHead,
+    },
+    terminalEpoch: terminalEpoch(manifest),
+    leaseGeneration: lease.generation,
+    riskDigest: recoveryDigest(manifest.risk),
+    reviewPolicyDigest: manifest.risk?.reviewPolicyDigest || null,
+    requiredGatesDigest: recoveryDigest(manifest.requiredGates),
+    selectorRuntimeDigest: runtime.selector,
+    remainingRuntimeDigest: runtime.remaining,
+    execution: {
+      gateCount: manifest.gates.length,
+      reviewCount: manifest.reviews.length,
+      gateSecondsUsed: manifest.governor.gateSecondsUsed,
+      providerSecondsUsed: manifest.governor.providerSecondsUsed,
+      activeSecondsUsed: manifest.governor.activeSecondsUsed,
+      providerAttempts: manifest.governor.providerAttempts.length,
+      authorizedAttempts: manifest.governor.authorizedAttempts.length,
+      roundsUsed: manifest.governor.roundsUsed,
+    },
+  };
+}
+
+function sameSelectionRecoveryCheckpoint(manifest, checkpoint) {
+  if (!checkpoint || checkpoint.schemaVersion !== 1) return false;
+  const current = selectionRecoveryCheckpoint(manifest);
+  return (
+    checkpoint.repository?.key === current.repository.key &&
+    checkpoint.repository?.githubRepository ===
+      current.repository.githubRepository &&
+    checkpoint.repository?.realpath === current.repository.realpath &&
+    checkpoint.revisions?.baseSha === current.revisions.baseSha &&
+    checkpoint.revisions?.head === current.revisions.head &&
+    checkpoint.terminalEpoch === current.terminalEpoch &&
+    checkpoint.leaseGeneration === current.leaseGeneration &&
+    checkpoint.riskDigest === current.riskDigest &&
+    checkpoint.reviewPolicyDigest === current.reviewPolicyDigest &&
+    checkpoint.requiredGatesDigest === current.requiredGatesDigest &&
+    checkpoint.remainingRuntimeDigest === current.remainingRuntimeDigest &&
+    JSON.stringify(checkpoint.execution) === JSON.stringify(current.execution)
+  );
+}
+
+function recordPreReviewSelectionFailure(manifestPath, detail, exitCode) {
+  if (!Number.isInteger(exitCode) || exitCode === 0) {
+    throw new Error(
+      "selection failure requires an actual nonzero selector exit",
+    );
+  }
+  let terminal;
+  withManifestLock(manifestPath, (manifest) => {
+    validateIdentity(manifest, manifest.repo.realpath);
+    if (manifest.terminalState) {
+      terminal = manifest.terminalState;
+      return;
+    }
+    const checkpoint = selectionRecoveryCheckpoint(manifest);
+    terminal = {
+      state: "blocked",
+      failureCode: PRE_REVIEW_SELECTION_FAILURE,
+      phase: "panel",
+      selectorExitCode: exitCode,
+      detail: String(detail).slice(0, 500),
+      head: manifest.revisions.currentHead,
+      terminalEpoch: terminalEpoch(manifest),
+      selectionRecovery: checkpoint,
+      recordedAt: new Date().toISOString(),
+    };
+    manifest.terminalState = terminal;
+  });
+  return terminal;
+}
+
+function resumePreReviewSelectionFailure(manifestPath) {
+  const initial = loadManifest(manifestPath).manifest;
+  const terminal = initial.terminalState;
+  if (
+    terminal?.state !== "blocked" ||
+    terminal.failureCode !== PRE_REVIEW_SELECTION_FAILURE ||
+    terminal.phase !== "panel" ||
+    terminal.head !== initial.revisions.currentHead ||
+    terminal.terminalEpoch !== terminalEpoch(initial) ||
+    initial.selectionRecovery
+  ) {
+    return null;
+  }
+  let resumed = null;
+  withManifestLock(manifestPath, (manifest) => {
+    const currentTerminal = manifest.terminalState;
+    const checkpointMatches = (() => {
+      try {
+        return sameSelectionRecoveryCheckpoint(
+          manifest,
+          currentTerminal?.selectionRecovery,
+        );
+      } catch {
+        // A malformed or changed runtime/execution cohort is ineligible. Keep
+        // its typed terminal intact so the operator can inspect the failure.
+        return false;
+      }
+    })();
+    if (
+      currentTerminal?.state !== "blocked" ||
+      currentTerminal.failureCode !== PRE_REVIEW_SELECTION_FAILURE ||
+      currentTerminal.phase !== "panel" ||
+      currentTerminal.head !== manifest.revisions.currentHead ||
+      currentTerminal.terminalEpoch !== terminalEpoch(manifest) ||
+      manifest.selectionRecovery ||
+      !checkpointMatches
+    ) {
+      return;
+    }
+    const currentRuntime = selectionRuntimeDigests();
+    if (
+      currentTerminal.selectionRecovery.selectorRuntimeDigest ===
+      currentRuntime.selector
+    ) {
+      return;
+    }
+    if (
+      manifest.terminalHistory !== undefined &&
+      !Array.isArray(manifest.terminalHistory)
+    ) {
+      throw new Error("terminal history is malformed");
+    }
+    const recoveredAt = new Date().toISOString();
+    const nextEpoch = terminalEpoch(manifest) + 1;
+    manifest.terminalHistory ??= [];
+    manifest.terminalHistory.push({
+      ...currentTerminal,
+      disposition: "superseded-by-selection-recovery",
+      recoveredAt,
+      newSelectorRuntimeDigest: currentRuntime.selector,
+    });
+    manifest.terminalHistory.push({
+      event: "reopened-by-selection-recovery",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: nextEpoch,
+      oldSelectorRuntimeDigest:
+        currentTerminal.selectionRecovery.selectorRuntimeDigest,
+      newSelectorRuntimeDigest: currentRuntime.selector,
+      recordedAt: recoveredAt,
+    });
+    manifest.selectionRecovery = {
+      schemaVersion: 1,
+      terminalEpoch: currentTerminal.terminalEpoch,
+      oldSelectorRuntimeDigest:
+        currentTerminal.selectionRecovery.selectorRuntimeDigest,
+      newSelectorRuntimeDigest: currentRuntime.selector,
+      recoveredAt,
+    };
+    manifest.terminalEpoch = nextEpoch;
+    delete manifest.terminalState;
+    delete manifest.panel;
+    resumed = {
+      head: manifest.revisions.currentHead,
+      terminalEpoch: nextEpoch,
+    };
+  });
+  return resumed;
+}
+
 function mergeReadRecoveryEligible(manifest) {
   const terminal = manifest.terminalState;
   const orchestration = manifest.orchestration;
@@ -7793,6 +8160,9 @@ module.exports = {
   clearMergeAdmissionBlock,
   resolveGreenCiAdmissionBlock,
   recoveryScope,
+  selectionRuntimeDigests,
+  recordPreReviewSelectionFailure,
+  resumePreReviewSelectionFailure,
   resumeInterruptedTerminal,
   resumeMergeReadFailure,
   resumeRecoverableTerminal,
