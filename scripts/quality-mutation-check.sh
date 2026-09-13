@@ -403,6 +403,26 @@ done < <(
     '
 )
 
+# A submodule pointer is executable behavior when a changed behavioral test
+# exercises code through that pointer. Promote modified gitlinks only in that
+# case. A pointer-only dependency bump remains an honest gitlink-skip below.
+CHANGED_TEST_COUNT="$(
+  git -C "$ROOT" diff --name-only --diff-filter=AM "$BASE..$HEAD" -- \
+    | awk '/(^|\/)(test|tests|spec|__tests__)(\/|$)/ { print }' \
+    | grep -c . || true
+)"
+if [ "$CHANGED_TEST_COUNT" -gt 0 ]; then
+  while IFS= read -r -d '' RAW_ENTRY; do
+    IFS= read -r -d '' GITLINK_CANDIDATE || break
+    case "$RAW_ENTRY" in
+      ":160000 160000 "*) CANDIDATES+=("$GITLINK_CANDIDATE") ;;
+    esac
+  done < <(
+    git -C "$ROOT" diff --raw --no-abbrev --diff-filter=M -z \
+      "$MUTATION_BASE..$HEAD" --
+  )
+fi
+
 # Prefer candidates with a conventional sibling test. A source file without
 # one falls back to the repository test command, which can be a full suite;
 # trying it first can consume the entire mutation budget before a nearby
@@ -491,6 +511,13 @@ candidate_test_cost() {
   printf '%d\n' $((total + count * 1000))
 }
 
+candidate_is_gitlink() {
+  local candidate="$1" base_mode head_mode
+  base_mode="$(git -C "$ROOT" ls-tree "$MUTATION_BASE" -- "$candidate" | awk '{print $1}')"
+  head_mode="$(git -C "$ROOT" ls-tree "$HEAD" -- "$candidate" | awk '{print $1}')"
+  [ "$base_mode" = 160000 ] && [ "$head_mode" = 160000 ]
+}
+
 if [ "${#CANDIDATES[@]}" -gt 1 ]; then
   ORDERED_CANDIDATES=()
   while IFS=$'\t' read -r _priority _cost CANDIDATE; do
@@ -555,11 +582,6 @@ if [ "${#CANDIDATES[@]}" -eq 0 ]; then
   # source changed) AND at least one changed file is a test. A diff touching
   # only tests, with no config subject, promotes nothing and still fails
   # closed — the BUI-483 review finding stays fixed.
-  CHANGED_TEST_COUNT="$(
-    git -C "$ROOT" diff --name-only --diff-filter=AM "$BASE..$HEAD" -- \
-      | awk '/(^|\/)(test|tests|spec|__tests__)(\/|$)/ { print }' \
-      | grep -c . || true
-  )"
   # Dependency manifests and lockfiles are excluded. Reverting package.json
   # mid-run would change the very test command the sandbox is about to
   # execute, and a routine dependency bump that happens to touch any test file
@@ -837,17 +859,28 @@ for CANDIDATE in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
     fi
     exit 1
   fi
+  LOG="$STATE_ROOT/mutation/${HEAD}.$(basename "$CANDIDATE").log"
+  : > "$LOG"
   if git -C "$ROOT" cat-file -e "$MUTATION_BASE:$CANDIDATE" 2>/dev/null; then
-    git -C "$SANDBOX" restore --source "$MUTATION_BASE" -- "$CANDIDATE"
+    if candidate_is_gitlink "$CANDIDATE"; then
+      git -C "$SANDBOX" restore --source "$MUTATION_BASE" \
+        --staged --worktree -- "$CANDIDATE"
+      if ! git -C "$SANDBOX" submodule update --init --recursive \
+        -- "$CANDIDATE" >> "$LOG" 2>&1; then
+        git -C "$ROOT" worktree remove --force "$SANDBOX" >/dev/null
+        echo "quality-mutation-check: failed to materialize base submodule revision for $CANDIDATE; see $LOG" >&2
+        exit 1
+      fi
+    else
+      git -C "$SANDBOX" restore --source "$MUTATION_BASE" -- "$CANDIDATE"
+    fi
   else
     git -C "$SANDBOX" rm -q -- "$CANDIDATE"
   fi
   ATTEMPTED_PATHS+=("$CANDIDATE")
-  LOG="$STATE_ROOT/mutation/${HEAD}.$(basename "$CANDIDATE").log"
 
   set +e
   cd "$SANDBOX"
-  : > "$LOG"
   run_candidate_tests "$CANDIDATE" "$LOG" "$REMAINING"
   RESULT=$?
   set -e
