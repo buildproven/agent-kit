@@ -1131,7 +1131,11 @@ function discoverRequiredGates(
   const verifyAppGate = discoverVerifyAppGate(options, nativeGates);
   if (verifyAppGate) required.push(verifyAppGate);
   return required.map((gate) => {
-    if (gate.source.startsWith("test-impact:")) return gate;
+    if (
+      gate.source.startsWith("test-impact:") &&
+      gate.testImpactMode !== "audit"
+    )
+      return gate;
     const timeoutSeconds = gateTimeouts.get(gate.name);
     return timeoutSeconds ? { ...gate, timeoutSeconds } : gate;
   });
