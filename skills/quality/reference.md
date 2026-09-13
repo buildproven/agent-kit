@@ -210,67 +210,16 @@ scheduled maintenance process, not from every quality invocation.
   wired as a hard gate in `.github/workflows/quality.yml`) now fails the
   build if any `SKILL.md` in the repo exceeds the budget again.
 
-## Step 1.3: Hard Test Gate — Implementation
+## Test execution
 
-Behavioral test evidence must be reviewed and the suite must pass. This is a
-hard blocker, not advisory (skip with `--skip-tests` for config-only repos).
-SKILL.md Step 1.3 states the rule; the mechanics are here.
+The runner resolves persisted gate commands and invokes `quality-run-gate.sh`.
+Use the repository-owned test-impact plan. Unknown coverage is an actionable
+mapping failure unless the repository explicitly declares an audit fallback.
+Do not manually rerun a failed test command in a shell retry loop. Diagnose the
+failure and resume the exact campaign under its remaining repair budget.
 
-**1.3a — Behavioral test evidence signal.** A source-file-to-test-file mapping
-is not a valid quality target: behavior often crosses several files and should
-be tested once at a stable public seam. Mechanically detect only the strongest
-gap signal—production behavior changed but no test changed—then hand it to the
-test reviewer to inspect existing coverage.
-
-```bash
-bash "$HOME/.claude/scripts/quality-load-root.sh" --manifest "<exact-manifest-path>"
-GIT_ROOT="$(node "$HOME/.claude/scripts/quality-invocation.js" field "<exact-manifest-path>" repo.realpath)"
-cd "$GIT_ROOT"
-
-CHANGED_SRC=$(git diff --name-only main...HEAD | grep -E '\.(ts|tsx|js|jsx|py|rb|go)$' | grep -v -E '\.(test|spec)\.|(^|/)test_.*\.py$|_test\.(py|go)$' || true)
-CHANGED_TESTS=$(git diff --name-only main...HEAD | grep -E '(^|/)(test|tests|spec|__tests__)/|\.(test|spec)\.|(^|/)test_.*\.py$|_test\.(py|go)$' || true)
-
-if [ -n "$CHANGED_SRC" ] && [ -z "$CHANGED_TESTS" ]; then
-  echo "⚠️ Production behavior changed with no test delta."
-  echo "   This is a review signal, not proof of missing coverage: inspect existing"
-  echo "   tests at the public seam before requesting a new test."
-  TEST_GAPS="Production behavior changed with no test delta; verify existing behavioral coverage."
-fi
-```
-
-**1.3b — Run tests (hard gate).**
-
-```bash
-bash "$HOME/.claude/scripts/quality-load-root.sh" --manifest "<exact-manifest-path>"
-GIT_ROOT="$(node "$HOME/.claude/scripts/quality-invocation.js" field "<exact-manifest-path>" repo.realpath)"
-cd "$GIT_ROOT"
-
-npm test 2>&1
-TEST_EXIT=$?
-
-if [ $TEST_EXIT -ne 0 ]; then
-  echo "❌ Tests failed — attempting auto-fix (up to 3 attempts)"
-  for attempt in 1 2 3; do
-    echo "Fix attempt $attempt/3..."
-    npm test 2>&1
-    TEST_EXIT=$?
-    if [ $TEST_EXIT -eq 0 ]; then break; fi
-  done
-  if [ $TEST_EXIT -ne 0 ]; then
-    echo "❌ HARD FAIL: Tests still failing after 3 fix attempts"
-    echo "Cannot proceed to review agents with broken tests."
-    exit 1
-  fi
-fi
-echo "✅ All tests passing"
-```
-
-**1.3c — Test-gap reporting.** There is no `test-generator` review agent (it
-had no agent definition and was removed from the panel on 2026-07-01;
-`pr-test-analyzer` covers test quality). `$TEST_GAPS` is surfaced in the
-review context and the summary as a coverage signal for the human, not
-handed to an auto-generator. If tests are generated or edited as part of the
-auto-fix loop, re-run `npm test` to verify they pass before continuing.
+Working-tree task hooks use the same selector. Their result is local feedback,
+never signed exact-head review or product-completion evidence.
 
 ## Flags
 
@@ -285,6 +234,17 @@ auto-fix loop, re-run `npm test` to verify they pass before continuing.
 | `approve --pr <number> --head <sha>` | -       | Legacy `human-required` policy only: mint signed approval for one exact PR/HEAD              |
 | `--manifest <path>`                  | -       | Resume one exact persisted invocation; accepts no other flags                                |
 | `--target-dir <path>`                | -       | Run against this repo (use when invoking from a forked/agent context with no inherited cwd)  |
+
+### Quarantined runner recovery
+
+A dead runner with `childInFlight: true` stays unavailable until child
+quiescence is proved. Use `scripts/quality-runner-reconcile.js` with the exact
+manifest, current head, owner host, PID, and nonce. Schema-v2 ownership proves
+the recorded process group absent. A legacy schema-v1 record also requires
+`--confirm-legacy-child-quiescent` after explicit process-tree inspection. The
+reconciler removes only the exact fenced ownership file; it does not change the
+manifest, budgets, reviews, or terminal history. See
+`docs/decisions/ADR-quality-runner-reconciliation.md` for the command contract.
 
 ### `--verify-app` gate (BUI-306)
 
@@ -554,36 +514,18 @@ execution semantics.
 
 ## Quality Levels
 
-### Level auto (Default — tier-aware)
+`auto` resolves risk from the exact diff and repository policy. Low risk uses
+zero AI reviewers and a signed policy-exempt record. Medium/high select one
+reviewer; critical selects two Claude reviewer slots when Claude is used. Codex
+uses its tier-specific review depth. Provider counts are not six/ten-agent panels.
 
-When `harness-config.json` exists in the repo root, the skill reads the resolved risk tier and mechanically selects provider-equivalent depth:
+`95` and `98` are supported minimum risk scores (50 and 75 respectively), not
+percentage-quality promises or alternate workflows. See
+`quality-risk-resolve.sh`, `quality-select-agents.sh`, and the persisted plan.
 
-| Tier       | Provider-equivalent depth  | Minimum review |
-| ---------- | -------------------------- | -------------- |
-| `low`      | focused regression         | 75s            |
-| `medium`   | broad correctness/security | 120s           |
-| `high`     | deep adversarial           | 180s           |
-| `critical` | release-veto review        | 540s           |
-
-Workload can raise these limits, but the complete default campaign remains
-bounded at 5–15 minutes of active execution. Gates, mutation, primary review,
-fallback, retry, and verification spend one shared cap. Phase limits and
-reserves prevent fallback or earlier gates from doubling or consuming later
-required capacity. Approval, CI wait, and other idle lifecycle time do not
-spend the active cap.
-
-### Level 95 (Ship-Ready, no tier classification)
-
-- 6 quality agents regardless of changed-file risk
-- For repos without harness-config.json, or to override auto when you want full review on a low-tier change
-- Codex runs as cross-reviewer (legacy default)
-
-### Level 98 (Comprehensive — Production-Perfect)
-
-- 10 agents (Phase 1: 7, Phase 2: 3)
-- Adds: code-simplifier, accessibility-tester, performance-engineer, architect-reviewer
-- Requires at least `--scope branch` (not compatible with changed)
-- For production launches, customer-facing features
+Gates, mutation, review, fallback and repair spend the shared active campaign
+budget. CI/approval wait is distinct from active execution. Resume does not grant
+a fresh budget. Use exact campaign status for the resolved limits.
 
 ## Provider Invocation
 
@@ -653,42 +595,18 @@ Quality-Review-Evidence: <artifact-chain-hash>
   verdict. Medium and above require completed evidence from every selected
   reviewer.
 
-## Deep Review Mode (`--audit --deep`)
-
-Spawns 6 agents in parallel:
-
-| Agent                 | Focus                           | Return Format       |
-| --------------------- | ------------------------------- | ------------------- |
-| code-reviewer         | Bugs, logic errors, code smells | JSON findings array |
-| silent-failure-hunter | Empty catches, swallowed errors | JSON findings array |
-| type-design-analyzer  | Any abuse, weak generics        | JSON findings array |
-| security-auditor      | OWASP top 10, secrets           | JSON findings array |
-| performance-engineer  | N+1, memory leaks               | JSON findings array |
-| architect-reviewer    | Tech debt, patterns             | JSON findings array |
-
-After completion:
-
-1. Display agent summary table
-2. If `--dry-run=false`: create Linear issues for findings via mcp**linear**create_issue
-3. If `--dry-run=true`: preview without modifying
-
-## Teams Mode (`--teams`)
-
-Uses agent teams instead of Task subagents. Provides:
-
-- tmux split-pane visibility
-- Cross-reviewer communication
-- Coordinated retry on failures
-
-Best for a separate advisory workflow; the revision-bound quality engine does
-not expose `--teams`.
-
 ## Merge Flow (`--merge`)
 
-1. Push branch, create PR
-2. Wait for CI (unless `--skip-ci`)
-3. Auto-merge via `gh pr merge --squash`
-4. Manually verify the deployed system using your normal deployment tooling
+The deterministic runner owns the complete path. Only
+`quality-stamp-and-merge.sh` may perform the authorized merge transaction after
+exact-head gate, review, admission and required CI evidence. Verify the
+persisted merged receipt, then use owner-bound worktree cleanup. Never
+substitute a direct merge command, skip CI, or treat review-ready as
+merged/product-done.
+
+Legacy audit, teams and parallel-panel recipes are not executable modes of this
+revision-bound runner. A separate advisory review may inform an operator, but
+it cannot grant merge authority.
 
 ### Worktree lifecycle locks: recovering a stale cross-host lock
 
@@ -726,116 +644,8 @@ shared `.git` dir, not a linked worktree's private gitdir). There is currently
 no CLI flag for this — `worktree-manager.js help` does not mention the lock
 directory, and removal is a manual filesystem operation only.
 
-## Next-Step Suggestions (CS-046)
+## Next action
 
-After quality completes:
-
-- `--merge`: "Run `/clear` then `/bs:dev` for next feature"
-- Failed: "Run `/debug` to investigate"
-- `--audit`: "Run `/bs:quality` to fix issues found"
-
-## Parallel Sub-Review Mode (`--parallel`, acpx)
-
-When invoked with `--parallel`, fire security, coverage, and perf sub-reviews
-as concurrent acpx sessions instead of running them sequentially inside the
-main loop. Requires acpx >= 0.5.3 (commands are agent-scoped, `acpx claude
-…`, in current versions).
-
-1. **Check acpx availability**: `command -v acpx`. If unavailable, fall back
-   to sequential (log a warning) — see Fallback below.
-2. **Create sessions, then fire prompts concurrently**:
-
-```bash
-bash "$HOME/.claude/scripts/quality-load-root.sh" --manifest "<exact-manifest-path>"
-GIT_ROOT="$(node "$HOME/.claude/scripts/quality-invocation.js" field "<exact-manifest-path>" repo.realpath)"
-cd "$GIT_ROOT"
-
-TIMESTAMP=$(date +%s)
-for kind in security coverage perf; do
-  acpx claude sessions new --name "quality-${kind}-${TIMESTAMP}" >/dev/null
-done
-
-acpx claude prompt --no-wait -s "quality-security-${TIMESTAMP}" \
-  "Security review: examine [diff/files] for OWASP top 10, secrets, injection flaws. Output structured findings."
-acpx claude prompt --no-wait -s "quality-coverage-${TIMESTAMP}" \
-  "Coverage review: examine [diff/files] for missing tests, uncovered branches, weak assertions. Output structured findings."
-acpx claude prompt --no-wait -s "quality-perf-${TIMESTAMP}" \
-  "Performance review: examine [diff/files] for N+1 queries, unguarded loops, missing memoization. Output structured findings."
-```
-
-3. **Poll until all sessions complete** (status can stay "running"
-   post-completion, so detect an assistant entry after the latest user entry
-   via history):
-
-```bash
-session_done() {
-  local session="$1"
-  acpx claude sessions read "$session" --tail 4 2>/dev/null \
-    | awk '/^user/{u=NR} /^assistant/{a=NR} END{exit !(a>u)}'
-}
-
-for session in quality-security-${TIMESTAMP} quality-coverage-${TIMESTAMP} quality-perf-${TIMESTAMP}; do
-  for _ in $(seq 1 80); do
-    session_done "$session" && break
-    sleep 3
-  done
-done
-```
-
-4. **Collect outputs** (read session history):
-
-```bash
-SECURITY_OUT=$(acpx claude sessions read "quality-security-${TIMESTAMP}" --tail 1)
-COVERAGE_OUT=$(acpx claude sessions read "quality-coverage-${TIMESTAMP}" --tail 1)
-PERF_OUT=$(acpx claude sessions read "quality-perf-${TIMESTAMP}" --tail 1)
-
-for kind in security coverage perf; do
-  acpx claude sessions close "quality-${kind}-${TIMESTAMP}" >/dev/null 2>&1 || true
-done
-```
-
-5. **Synthesize**: combine all three outputs into the unified quality report
-   (same format as sequential mode). Continue to Step 2 (Agent Result
-   Validation) as normal.
-
-### Fallback
-
-If `acpx` is not installed or any session fails to launch, log:
-
-```
-[quality] acpx unavailable or launch failed — falling back to sequential sub-reviews
-```
-
-Then run security → coverage → perf in order using the standard sequential
-flow.
-
-## Run Governor — Incident History
-
-Two PRs in one night (#529: 128min/6 commits, #532: 167min/13 commits)
-completed with no circuit breaker on 2026-07-03 — `CODEX_ROUNDS` only bounds
-the inner Codex adversarial loop, not the outer cycle of BLOCKING-finding ->
-auto-fix -> re-review across the whole invocation. This led to
-`scripts/quality-run-governor.js`, which tracks a per-invocation JSON
-sentinel (alongside the Step -1 git-root sentinel) with a fix-commit cap, a
-wall-clock cap, and repeated-finding-shape detection (see the script's own
-header comment for the full mechanism).
-
-A follow-up 2026-07-10 finding: the original governor had no _round_
-dimension and was never called on the review leg itself — its three call
-sites were all downstream of the panel. `bump-round` (called immediately
-before every review panel, see SKILL.md Step 2.0) closes that gap: it is the
-governor call that actually terminates the outer fix -> re-review loop, by
-incrementing `rounds_used` and exiting non-zero at `max_review_rounds`
-(default 2). Before that fix, the round cap was a sentence of prose — and
-since the MODEL orchestrates this loop, prose is not a cap.
-
-A further 2026-07-15 finding showed a foreground Codex review could outlive the
-governor entirely. `quality-run-bounded.sh` now owns a hard tier deadline and
-kills the provider process group before a typed timeout can trigger fallback.
-
-**Never make the governor check silently optional.** Every call site fails
-CLOSED when the governor script or its sentinel file is missing or
-unreadable — a bare `if [ -f ... ] && [ -f ... ]; then ... fi` with no `else`
-was independently flagged by 4 review agents across two rounds as
-reintroducing exactly the "circuit breaker quietly stopped breaking" failure
-mode this whole feature exists to prevent.
+For a completed merge, report the exact receipt and next authorized item. For
+a blocked run, report its typed cause and exact manifest resume path. Do not
+restart an exhausted campaign or improvise a new panel to seek approval.

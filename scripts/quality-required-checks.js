@@ -90,7 +90,55 @@ function validateRef(value, name) {
   return value;
 }
 
-function runGh(args, input = undefined) {
+class GhReadTransportError extends GhCommandError {}
+class GhWriteTransportError extends GhCommandError {}
+
+function isApiMethod(args, method) {
+  return args.some(
+    (argument, index) =>
+      (argument === "-X" || argument === "--method") &&
+      args[index + 1] === method,
+  );
+}
+
+function isTransportFailure(result) {
+  if (result.status !== 1) return false;
+  const stderr = result.stderr || "";
+  const httpStatus = stderr.match(/HTTP\s+(\d{3})/i);
+  if (httpStatus) {
+    const status = Number(httpStatus[1]);
+    return status === 408 || status >= 500;
+  }
+  if (/bad credentials|authentication|rate limit/i.test(stderr)) return false;
+  return /error connecting to api\.github\.com|connection reset by peer|(?:Get|GET|Post|POST) "https:\/\/[^"\n]+": unexpected EOF|dial tcp[^\n]*(?:i\/o timeout|no such host|network is unreachable)|TLS handshake timeout/i.test(
+    stderr,
+  );
+}
+
+function isReadTransportFailure(args, result, input) {
+  if (args[0] !== "api" || input !== undefined || !isApiMethod(args, "GET"))
+    return false;
+  return isTransportFailure(result);
+}
+
+function isWriteTransportFailure(args, result) {
+  if (args[0] !== "api" || !isApiMethod(args, "POST") || result.status === 0)
+    return false;
+  const stderr = result.stderr || "";
+  const httpStatus = stderr.match(/HTTP\s+(\d{3})/i);
+  if (httpStatus) {
+    const status = Number(httpStatus[1]);
+    if (status >= 400 && status < 500 && status !== 408) return false;
+  }
+  if (/bad credentials|authentication|rate limit/i.test(stderr)) return false;
+  // A POST may have reached GitHub before an unfamiliar client, proxy, or
+  // transport failure was reported. Treat that outcome as uncertain unless
+  // the response proves a definite rejection, so the persisted intent is
+  // reconciled instead of being replaced with a new dispatch nonce.
+  return true;
+}
+
+function runGh(args, input = undefined, retryAvailable = true) {
   const result = spawnSync("gh", args, {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -98,7 +146,16 @@ function runGh(args, input = undefined) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new GhCommandError(
+    const readTransportFailure = isReadTransportFailure(args, result, input);
+    const writeTransportFailure = isWriteTransportFailure(args, result);
+    if (readTransportFailure && retryAvailable)
+      return runGh(args, input, false);
+    const ErrorType = readTransportFailure
+      ? GhReadTransportError
+      : writeTransportFailure
+        ? GhWriteTransportError
+        : GhCommandError;
+    throw new ErrorType(
       `gh ${args[0]} failed (${result.status}): ${(result.stderr || result.stdout || "").trim()}`,
       result,
     );
@@ -707,12 +764,6 @@ function trustedSecretCheckState({
   if (!latest || typeof latest.details_url !== "string") {
     return { state: "missing", run: null };
   }
-  let workflowRun;
-  try {
-    workflowRun = workflowRunForCheck(repository, latest);
-  } catch {
-    return { state: "missing", run: null };
-  }
   const noncePrefix = `${protectedConfig.runPrefix}${targetHead}:${baseHead}:`;
   const externalId = String(requirement.externalId || latest.external_id || "");
   if (!externalId.startsWith(noncePrefix)) {
@@ -723,6 +774,17 @@ function trustedSecretCheckState({
     return { state: "missing", run: null };
   }
   const expectedRunName = `${noncePrefix}${nonce}`;
+  let workflowRun;
+  try {
+    workflowRun = workflowRunForCheck(repository, latest, {
+      workflowId,
+      base,
+      baseHead,
+      expectedRunName,
+    });
+  } catch {
+    return { state: "missing", run: null };
+  }
   if (
     (workflowId !== null && workflowRun.workflow_id !== workflowId) ||
     workflowRun.event !== "repository_dispatch" ||
@@ -771,16 +833,82 @@ function workflowIdForProtectedController(repository, protectedConfig) {
   return workflow.id;
 }
 
-function workflowRunForCheck(repository, run) {
+function workflowRunForCheck(
+  repository,
+  run,
+  {
+    workflowId = null,
+    base = null,
+    baseHead = null,
+    expectedRunName = null,
+  } = {},
+) {
   const match = String(run.details_url || "").match(/\/actions\/runs\/(\d+)/);
-  if (!match) {
+  if (match) {
+    const workflowRun = apiJson(`repos/${repository}/actions/runs/${match[1]}`);
+    if (!Number.isInteger(workflowRun.workflow_id)) {
+      throw new Error(`required check '${run.name}' has no workflow identity`);
+    }
+    return workflowRun;
+  }
+
+  if (
+    !Number.isInteger(workflowId) ||
+    typeof base !== "string" ||
+    typeof baseHead !== "string" ||
+    typeof expectedRunName !== "string"
+  ) {
     throw new Error(`required check '${run.name}' has no Actions run identity`);
   }
-  const workflowRun = apiJson(`repos/${repository}/actions/runs/${match[1]}`);
-  if (!Number.isInteger(workflowRun.workflow_id)) {
-    throw new Error(`required check '${run.name}' has no workflow identity`);
+
+  const workflowRuns = [];
+  let totalCount = null;
+  for (let page = 1; page <= 10; page += 1) {
+    const query = new URLSearchParams({
+      event: "repository_dispatch",
+      branch: base,
+      head_sha: baseHead,
+      per_page: "100",
+      page: String(page),
+    });
+    const response = apiJson(
+      `repos/${repository}/actions/workflows/${workflowId}/runs?${query}`,
+    );
+    if (!Array.isArray(response.workflow_runs)) {
+      throw new Error("GitHub workflow-runs response is invalid");
+    }
+    if (page === 1) {
+      if (!Number.isInteger(response.total_count) || response.total_count < 0) {
+        throw new Error("GitHub workflow-runs total_count is invalid");
+      }
+      totalCount = response.total_count;
+    }
+    workflowRuns.push(...response.workflow_runs);
+    if (workflowRuns.length >= totalCount) break;
+    if (response.workflow_runs.length === 0) {
+      throw new Error(
+        "GitHub workflow-runs pagination ended before total_count",
+      );
+    }
+    if (page === 10) {
+      throw new Error("GitHub workflow-runs pagination exceeded 10 pages");
+    }
   }
-  return workflowRun;
+
+  const exact = workflowRuns.filter(
+    (workflowRun) =>
+      workflowRun.workflow_id === workflowId &&
+      workflowRun.event === "repository_dispatch" &&
+      workflowRun.head_branch === base &&
+      workflowRun.head_sha === baseHead &&
+      workflowRun.display_title === expectedRunName,
+  );
+  if (exact.length !== 1) {
+    throw new Error(
+      `required check '${run.name}' has ${exact.length} matching Actions run identities`,
+    );
+  }
+  return exact[0];
 }
 
 function sourceRunForRequirement(
@@ -844,28 +972,20 @@ function workflowIdForRequirement({
 }
 
 function dispatchWorkflow(repository, workflowId, ref) {
-  let failure = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      runGh([
-        "api",
-        "--method",
-        "POST",
-        `repos/${repository}/actions/workflows/${workflowId}/dispatches`,
-        "-f",
-        `ref=${ref}`,
-      ]);
-      return;
-    } catch (error) {
-      failure = error;
-      if (attempt < 3) sleep(attempt * 1000);
-    }
-  }
-  throw failure;
+  // A failed response does not prove the dispatch was rejected. Never repeat
+  // this mutation without reconciling its exact remote execution first.
+  runGh([
+    "api",
+    "--method",
+    "POST",
+    `repos/${repository}/actions/workflows/${workflowId}/dispatches`,
+    "-f",
+    `ref=${ref}`,
+  ]);
 }
 
-function dispatchRepositoryEvent(repository, eventType, payload) {
-  const issuedAt = new Date();
+function dispatchRepositoryEvent(repository, eventType, payload, deadline) {
+  const issuedAt = new Date(Date.now());
   const authorization = signDispatchAuthorization(
     {
       schemaVersion: 1,
@@ -875,7 +995,9 @@ function dispatchRepositoryEvent(repository, eventType, payload) {
       base: payload.base_sha,
       nonce: payload.nonce,
       issuedAt: issuedAt.toISOString(),
-      expiresAt: new Date(issuedAt.getTime() + 10 * 60 * 1000).toISOString(),
+      expiresAt: new Date(
+        deadline ?? issuedAt.getTime() + 10 * 60 * 1000,
+      ).toISOString(),
     },
     signingKeyFromEnvironment(),
   );
@@ -959,19 +1081,260 @@ function waitForRegistration({
   targetRuns,
   timeoutSeconds,
   intervalSeconds,
+  deadline: fixedDeadline,
+  stateFor = checkState,
 }) {
-  const deadline = Date.now() + timeoutSeconds * 1000;
+  const deadline = fixedDeadline ?? Date.now() + timeoutSeconds * 1000;
   let runs = targetRuns;
   while (
     requirements.some(
-      (requirement) => checkState(runs, requirement).state === "missing",
+      (requirement) => stateFor(runs, requirement).state === "missing",
     ) &&
     Date.now() < deadline
   ) {
-    sleep(intervalSeconds * 1000);
+    sleep(Math.min(intervalSeconds * 1000, Math.max(0, deadline - Date.now())));
     runs = checkRuns(repository, targetHead);
   }
   return runs;
+}
+
+function assertMonitorIdentity(manifest, context) {
+  const quality = require("./quality-invocation.js");
+  quality.validateIdentity(manifest, manifest.repo.realpath);
+  if (
+    manifest.repo.githubRepository !== context.repository ||
+    manifest.revisions.currentHead !== context.sourceHead ||
+    ![manifest.revisions.currentHead, manifest.merge?.stampHead].includes(
+      context.targetHead,
+    ) ||
+    manifest.repo.headRefName !== context.headRef ||
+    manifest.revisions.baseRef.replace(/^(?:refs\/heads\/|origin\/)/, "") !==
+      context.base
+  ) {
+    throw new Error("required-check monitor campaign identity mismatch");
+  }
+}
+
+function monitorForAssertion(manifest, context) {
+  const monitor = manifest.merge?.requiredChecksMonitor || null;
+  if (!monitor) return null;
+  assertMonitorIdentity(manifest, {
+    ...context,
+    sourceHead: manifest.revisions.currentHead,
+    targetHead: context.head,
+    headRef: manifest.repo.headRefName,
+  });
+  if (monitor.targetHead !== context.head) {
+    throw new Error("required-check assertion monitor head mismatch");
+  }
+  assertBeforeDeadline(monitor.deadline);
+  return monitor;
+}
+
+function protectedMonitorLifetimeValid(monitor, requirements) {
+  return (
+    !requirements.some(protectedCheckConfig) ||
+    monitor.deadline - monitor.startedAt <= 900 * 1000
+  );
+}
+
+function newRequiredChecksMonitor(
+  context,
+  requirements,
+  baseHead,
+  timeoutSeconds,
+) {
+  const startedAt = Date.now();
+  return {
+    schemaVersion: 1,
+    ...context,
+    baseHead,
+    requirements,
+    startedAt,
+    deadline: startedAt + timeoutSeconds * 1000,
+    dispatches: [],
+  };
+}
+
+function monitorFor(
+  manifestPath,
+  context,
+  requirements,
+  baseHead,
+  timeoutSeconds,
+) {
+  if (!manifestPath) return null;
+  if (
+    !Number.isInteger(timeoutSeconds) ||
+    timeoutSeconds < 1 ||
+    (requirements.some(protectedCheckConfig) && timeoutSeconds > 900)
+  ) {
+    throw new Error(
+      "required-check monitor timeout must be positive and protected dispatch is limited to 900 seconds",
+    );
+  }
+  const quality = require("./quality-invocation.js");
+  const updated = quality.withManifestLock(manifestPath, (manifest) => {
+    assertMonitorIdentity(manifest, context);
+    const previous = manifest.merge.requiredChecksMonitor;
+    if (previous && previous.targetHead !== context.targetHead) {
+      manifest.merge.requiredChecksHistory ??= [];
+      manifest.merge.requiredChecksHistory.push(previous);
+      delete manifest.merge.requiredChecksMonitor;
+    }
+    if (!manifest.merge.requiredChecksMonitor) {
+      manifest.merge.requiredChecksMonitor = newRequiredChecksMonitor(
+        context,
+        requirements,
+        baseHead,
+        timeoutSeconds,
+      );
+    }
+    const monitor = manifest.merge.requiredChecksMonitor;
+    if (
+      monitor.schemaVersion !== 1 ||
+      Object.entries(context).some(([key, value]) => monitor[key] !== value) ||
+      monitor.baseHead !== baseHead ||
+      JSON.stringify(monitor.requirements) !== JSON.stringify(requirements) ||
+      !Array.isArray(monitor.dispatches) ||
+      !Number.isFinite(monitor.startedAt) ||
+      !Number.isFinite(monitor.deadline) ||
+      monitor.deadline <= monitor.startedAt ||
+      !protectedMonitorLifetimeValid(monitor, requirements)
+    ) {
+      throw new Error(
+        "required-check monitor bindings changed or are malformed",
+      );
+    }
+  });
+  return updated.merge.requiredChecksMonitor;
+}
+
+function dispatchKey(workflowId, transport) {
+  return `${workflowId}:${transport}`;
+}
+
+function rememberPersistedDispatch(dispatchedWorkflowIds, persisted) {
+  if (
+    !Number.isInteger(persisted.workflowId) ||
+    !["repository_dispatch", "workflow_dispatch"].includes(persisted.transport)
+  ) {
+    throw new Error("persisted required-check dispatch is malformed");
+  }
+  dispatchedWorkflowIds.add(
+    dispatchKey(persisted.workflowId, persisted.transport),
+  );
+}
+
+function adoptPersistedDispatch(existing, entry) {
+  if (
+    existing.workflowId !== entry.workflowId ||
+    existing.transport !== entry.transport ||
+    existing.requirement.context !== entry.requirement.context ||
+    existing.requirement.appId !== entry.requirement.appId
+  ) {
+    throw new Error("required-check persisted dispatch identity mismatch");
+  }
+  return existing;
+}
+
+function assertBeforeDeadline(deadline) {
+  if (deadline !== undefined && Date.now() >= deadline) {
+    throw new Error(
+      "timed out waiting for exact-head required checks: persisted head deadline expired",
+    );
+  }
+}
+
+function persistDispatch(manifestPath, monitor, entry, accepted = false) {
+  const quality = require("./quality-invocation.js");
+  let created = false;
+  let persistedEntry;
+  const updated = quality.withManifestLock(manifestPath, (manifest) => {
+    assertMonitorIdentity(manifest, monitor);
+    const current = manifest.merge.requiredChecksMonitor;
+    if (
+      !current ||
+      current.targetHead !== monitor.targetHead ||
+      current.deadline !== monitor.deadline ||
+      current.baseHead !== monitor.baseHead
+    )
+      throw new Error("required-check monitor changed during dispatch");
+    const existing = current.dispatches.find(
+      (item) => item.requirement.context === entry.requirement.context,
+    );
+    if (accepted) {
+      if (
+        !existing ||
+        JSON.stringify(existing.requirement) !==
+          JSON.stringify(entry.requirement) ||
+        existing.workflowId !== entry.workflowId ||
+        existing.nonce !== entry.nonce
+      ) {
+        throw new Error("required-check dispatch acceptance identity mismatch");
+      }
+      existing.status = "accepted";
+      existing.acceptedAt = Date.now();
+      persistedEntry = existing;
+    } else if (!existing) {
+      assertBeforeDeadline(current.deadline);
+      current.dispatches.push(entry);
+      created = true;
+      persistedEntry = entry;
+    } else {
+      persistedEntry = adoptPersistedDispatch(existing, entry);
+    }
+  });
+  return {
+    created,
+    entry: persistedEntry,
+    monitor: updated.merge.requiredChecksMonitor,
+  };
+}
+
+function removeRejectedDispatch(monitor, entry) {
+  const index = monitor.dispatches.findIndex(
+    (item) =>
+      item.status === "intended" &&
+      item.workflowId === entry.workflowId &&
+      item.transport === entry.transport &&
+      item.nonce === entry.nonce &&
+      item.issuedAt === entry.issuedAt &&
+      item.expiresAt === entry.expiresAt &&
+      JSON.stringify(item.requirement) === JSON.stringify(entry.requirement),
+  );
+  if (index === -1) {
+    throw new Error("required-check rejected dispatch intent changed");
+  }
+  monitor.dispatches.splice(index, 1);
+}
+
+function discardRejectedDispatch(manifestPath, monitor, entry) {
+  const quality = require("./quality-invocation.js");
+  const updated = quality.withManifestLock(manifestPath, (manifest) => {
+    assertMonitorIdentity(manifest, monitor);
+    const current = manifest.merge.requiredChecksMonitor;
+    if (
+      !current ||
+      current.targetHead !== monitor.targetHead ||
+      current.deadline !== monitor.deadline ||
+      current.baseHead !== monitor.baseHead
+    )
+      throw new Error(
+        "required-check monitor changed during dispatch rejection",
+      );
+    removeRejectedDispatch(current, entry);
+  });
+  return updated.merge.requiredChecksMonitor;
+}
+
+function dispatchCommandError(error) {
+  let current = error;
+  while (current instanceof Error) {
+    if (current instanceof GhCommandError) return current;
+    current = current.cause;
+  }
+  return null;
 }
 
 function prepareChecks({ repository, base, sourceHead, targetHead }) {
@@ -1031,6 +1394,8 @@ function ensureChecks({
   registrationSeconds = 30,
   registrationIntervalSeconds = 2,
   baseRevisionRetry = false,
+  manifestPath,
+  timeoutSeconds,
 }) {
   const requirements = requiredChecks(repository, base);
   const sourceRuns = checkRuns(repository, sourceHead);
@@ -1039,6 +1404,19 @@ function ensureChecks({
   const baseHead = protectedCheckRequired
     ? branchHeadSha(repository, base)
     : null;
+  let monitor = monitorFor(
+    manifestPath,
+    { repository, base, sourceHead, targetHead, headRef },
+    requirements,
+    baseHead,
+    timeoutSeconds ?? 900,
+  );
+  const deadline =
+    monitor?.deadline ??
+    (timeoutSeconds === undefined
+      ? undefined
+      : Date.now() + timeoutSeconds * 1000);
+  assertBeforeDeadline(deadline);
   targetRuns = waitForRegistration({
     repository,
     targetHead,
@@ -1046,13 +1424,30 @@ function ensureChecks({
     targetRuns,
     timeoutSeconds: registrationSeconds,
     intervalSeconds: registrationIntervalSeconds,
+    deadline:
+      deadline === undefined
+        ? undefined
+        : Math.min(deadline, Date.now() + registrationSeconds * 1000),
   });
   const dispatched = [];
   const dispatchedRequirements = [];
   const dispatchedWorkflowIds = new Set();
   const historicalRuns = new Map();
   for (const requirement of requirements) {
+    assertBeforeDeadline(deadline);
     const protectedConfig = protectedCheckConfig(requirement);
+    const persisted = monitor?.dispatches.find(
+      (entry) => entry.requirement.context === requirement.context,
+    );
+    if (persisted) {
+      rememberPersistedDispatch(dispatchedWorkflowIds, persisted);
+      dispatched.push({
+        context: requirement.context,
+        workflowId: persisted.workflowId,
+      });
+      dispatchedRequirements.push(persisted);
+      continue;
+    }
     if (!protectedConfig) {
       const target = checkState(targetRuns, requirement);
       if (["pending", "success"].includes(target.state)) continue;
@@ -1077,32 +1472,77 @@ function ensureChecks({
       });
       if (["pending", "success"].includes(target.state)) continue;
     }
-    const dispatchKey = `${workflowId}:${protectedConfig ? "repository_dispatch" : "workflow_dispatch"}`;
+    const currentDispatchKey = dispatchKey(
+      workflowId,
+      protectedConfig ? "repository_dispatch" : "workflow_dispatch",
+    );
     let dispatchedRequirement = requirement;
-    if (!dispatchedWorkflowIds.has(dispatchKey)) {
+    if (!dispatchedWorkflowIds.has(currentDispatchKey)) {
+      const nonce = protectedConfig
+        ? crypto.randomBytes(16).toString("hex")
+        : null;
+      if (protectedConfig)
+        dispatchedRequirement = {
+          ...requirement,
+          externalId: `${protectedConfig.runPrefix}${targetHead}:${baseHead}:${nonce}`,
+        };
+      let entry = {
+        requirement: dispatchedRequirement,
+        workflowId,
+        transport: protectedConfig
+          ? "repository_dispatch"
+          : "workflow_dispatch",
+        nonce,
+        status: "intended",
+        issuedAt: Date.now(),
+        expiresAt: deadline ?? null,
+      };
+      let shouldDispatch = true;
+      if (monitor) {
+        const persistedIntent = persistDispatch(manifestPath, monitor, entry);
+        monitor = persistedIntent.monitor;
+        entry = persistedIntent.entry;
+        dispatchedRequirement = entry.requirement;
+        shouldDispatch = persistedIntent.created;
+      }
       try {
-        if (protectedConfig) {
-          const nonce = crypto.randomBytes(16).toString("hex");
-          dispatchRepositoryEvent(repository, protectedConfig.eventType, {
-            head_sha: targetHead,
-            base_sha: baseHead,
-            nonce,
-          });
-          dispatchedRequirement = {
-            ...requirement,
-            externalId: `${protectedConfig.runPrefix}${targetHead}:${baseHead}:${nonce}`,
-          };
-        } else {
+        if (shouldDispatch && protectedConfig) {
+          dispatchRepositoryEvent(
+            repository,
+            protectedConfig.eventType,
+            {
+              head_sha: targetHead,
+              base_sha: baseHead,
+              nonce: entry.nonce,
+            },
+            deadline,
+          );
+        } else if (shouldDispatch) {
           dispatchWorkflow(repository, workflowId, headRef);
         }
+        if (monitor && shouldDispatch)
+          monitor = persistDispatch(manifestPath, monitor, entry, true).monitor;
       } catch (error) {
+        const commandError = dispatchCommandError(error);
+        if (monitor && commandError instanceof GhWriteTransportError) {
+          process.stderr.write(
+            `[quality] dispatch outcome uncertain; reconciling persisted intent for ${requirement.context}\n`,
+          );
+          dispatchedWorkflowIds.add(currentDispatchKey);
+          dispatched.push({ context: requirement.context, workflowId });
+          dispatchedRequirements.push(entry);
+          continue;
+        }
+        if (monitor && shouldDispatch && commandError) {
+          monitor = discardRejectedDispatch(manifestPath, monitor, entry);
+        }
         targetRuns = checkRuns(repository, targetHead);
         const refreshed = protectedConfig
           ? { state: "missing" }
           : checkState(targetRuns, requirement);
         if (!["pending", "success"].includes(refreshed.state)) throw error;
       }
-      dispatchedWorkflowIds.add(dispatchKey);
+      dispatchedWorkflowIds.add(currentDispatchKey);
     }
     dispatched.push({ context: requirement.context, workflowId });
     dispatchedRequirements.push({
@@ -1120,7 +1560,23 @@ function ensureChecks({
       targetRuns,
       timeoutSeconds: registrationSeconds,
       intervalSeconds: registrationIntervalSeconds,
+      deadline,
+      stateFor: (runs, requirement) =>
+        protectedCheckConfig(requirement)
+          ? trustedSecretCheckState({
+              repository,
+              runs,
+              requirement,
+              workflowId: dispatchedRequirements.find(
+                (entry) => entry.requirement.context === requirement.context,
+              ).workflowId,
+              base,
+              targetHead,
+              baseHead,
+            })
+          : checkState(runs, requirement),
     });
+    assertBeforeDeadline(deadline);
     const missing = dispatchedRequirements.filter((entry) => {
       const state = protectedCheckConfig(entry.requirement)
         ? trustedSecretCheckState({
@@ -1193,6 +1649,10 @@ function ensureChecks({
   if (protectedCheckRequired) {
     const currentBaseHead = branchHeadSha(repository, base);
     if (currentBaseHead !== baseHead) {
+      if (monitor)
+        throw new Error(
+          "protected base changed during required-check monitoring; persisted deadline is not renewed",
+        );
       if (baseRevisionRetry) {
         throw new Error(
           `protected scan base branch '${base}' changed during preparation from ${baseHead} to ${currentBaseHead}; retry after the base settles`,
@@ -1207,36 +1667,56 @@ function ensureChecks({
         registrationSeconds,
         registrationIntervalSeconds,
         baseRevisionRetry: true,
+        manifestPath,
+        timeoutSeconds,
       });
     }
   }
   return { requirements, dispatched, deferred };
 }
 
-function inspectChecks(repository, base, head) {
+function inspectChecks(repository, base, head, monitor = null) {
   const requirements = requiredChecks(repository, base);
   const runs = checkRuns(repository, head);
   const baseHead = requirements.some(protectedCheckConfig)
     ? branchHeadSha(repository, base)
     : null;
-  return requirements.map((requirement) => ({
-    ...requirement,
-    ...(protectedCheckConfig(requirement)
-      ? trustedSecretCheckState({
-          repository,
-          runs,
-          requirement,
-          workflowId: null,
-          base,
-          targetHead: head,
-          baseHead,
-        })
-      : checkState(runs, requirement)),
-  }));
+  if (
+    monitor &&
+    (monitor.targetHead !== head ||
+      monitor.base !== base ||
+      monitor.baseHead !== baseHead ||
+      JSON.stringify(monitor.requirements) !== JSON.stringify(requirements) ||
+      !protectedMonitorLifetimeValid(monitor, requirements))
+  ) {
+    throw new Error(
+      "required-check completion monitor bindings changed or are stale",
+    );
+  }
+  return requirements.map((requirement) => {
+    const persisted = monitor?.dispatches.find(
+      (entry) => entry.requirement.context === requirement.context,
+    );
+    const boundRequirement = persisted?.requirement || requirement;
+    return {
+      ...requirement,
+      ...(protectedCheckConfig(requirement)
+        ? trustedSecretCheckState({
+            repository,
+            runs,
+            requirement: boundRequirement,
+            workflowId: persisted?.workflowId ?? null,
+            base,
+            targetHead: head,
+            baseHead,
+          })
+        : checkState(runs, requirement)),
+    };
+  });
 }
 
-function assertChecks(repository, base, head) {
-  const states = inspectChecks(repository, base, head);
+function assertChecks(repository, base, head, monitor = null) {
+  const states = inspectChecks(repository, base, head, monitor);
   const incomplete = states.filter((entry) => entry.state !== "success");
   if (incomplete.length > 0) {
     throw new Error(
@@ -1259,12 +1739,14 @@ function waitForChecks({
   timeoutSeconds,
   intervalSeconds,
   failureGraceSeconds = 90,
+  deadline: fixedDeadline,
+  monitor = null,
 }) {
   const startedAt = Date.now();
-  const deadline = Date.now() + timeoutSeconds * 1000;
+  const deadline = fixedDeadline ?? Date.now() + timeoutSeconds * 1000;
   let states = [];
   while (Date.now() < deadline) {
-    states = inspectChecks(repository, base, head);
+    states = inspectChecks(repository, base, head, monitor);
     if (states.every((entry) => entry.state === "success")) return states;
     const failed = states.filter((entry) => entry.state === "failed");
     if (
@@ -1283,7 +1765,7 @@ function waitForChecks({
         .map((entry) => `${entry.context}=${entry.state}`)
         .join(", ")}\n`,
     );
-    sleep(intervalSeconds * 1000);
+    sleep(Math.min(intervalSeconds * 1000, Math.max(0, deadline - Date.now())));
   }
   throw new Error(
     `timed out waiting for exact-head required checks: ${states
@@ -1329,20 +1811,40 @@ function main() {
     if (!Number.isInteger(registrationSeconds) || registrationSeconds < 0) {
       throw new Error("--registration-timeout must be non-negative seconds");
     }
+    const timeoutSeconds =
+      options.timeout === undefined
+        ? undefined
+        : Number.parseInt(options.timeout, 10);
+    if (
+      timeoutSeconds !== undefined &&
+      (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1)
+    ) {
+      throw new Error("--timeout must be positive seconds");
+    }
     const result = ensureChecks({
       ...context,
       sourceHead,
       targetHead: context.head,
       headRef: validateRef(requiredOption(options, "head-ref"), "head-ref"),
       registrationSeconds,
+      manifestPath: options.manifest,
+      timeoutSeconds,
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
   if (command === "assert") {
     const context = commandContext(options);
+    let monitor = null;
+    if (options.manifest) {
+      const quality = require("./quality-invocation.js");
+      const manifest = quality.loadManifest(options.manifest).manifest;
+      monitor = monitorForAssertion(manifest, context);
+    }
     process.stdout.write(
-      `${JSON.stringify(assertChecks(context.repository, context.base, context.head))}\n`,
+      `${JSON.stringify(
+        assertChecks(context.repository, context.base, context.head, monitor),
+      )}\n`,
     );
     return;
   }
@@ -1360,6 +1862,27 @@ function main() {
     if (!Number.isInteger(failureGrace) || failureGrace < 0) {
       throw new Error("--failure-grace must be non-negative seconds");
     }
+    let deadline;
+    let monitor = null;
+    if (options.manifest) {
+      const quality = require("./quality-invocation.js");
+      const manifest = quality.loadManifest(options.manifest).manifest;
+      monitor = manifest.merge?.requiredChecksMonitor || null;
+      if (monitor) {
+        assertMonitorIdentity(manifest, {
+          repository: context.repository,
+          base: context.base,
+          sourceHead: manifest.revisions.currentHead,
+          targetHead: context.head,
+          headRef: manifest.repo.headRefName,
+        });
+        if (monitor.targetHead !== context.head) {
+          throw new Error("required-check wait monitor head mismatch");
+        }
+        deadline = monitor.deadline;
+        assertBeforeDeadline(deadline);
+      }
+    }
     process.stdout.write(
       `${JSON.stringify(
         waitForChecks({
@@ -1369,6 +1892,8 @@ function main() {
           timeoutSeconds: timeout,
           intervalSeconds: interval,
           failureGraceSeconds: failureGrace,
+          deadline,
+          monitor,
         }),
       )}\n`,
     );
@@ -1388,11 +1913,12 @@ if (require.main === module) {
     main();
   } catch (error) {
     process.stderr.write(`quality required checks: ${error.message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof GhReadTransportError ? 75 : 1;
   }
 }
 
 module.exports = {
+  adoptPersistedDispatch,
   assertChecks,
   checkRuns,
   checkState,
@@ -1402,7 +1928,14 @@ module.exports = {
   dispatchedRunsForHead,
   ensureChecks,
   matchingRuns,
+  monitorForAssertion,
+  newRequiredChecksMonitor,
+  inspectChecks,
+  isWriteTransportFailure,
   prepareChecks,
+  protectedMonitorLifetimeValid,
+  removeRejectedDispatch,
+  rememberPersistedDispatch,
   requiredChecks,
   graphqlRequirements,
   trustedSecretCheckState,

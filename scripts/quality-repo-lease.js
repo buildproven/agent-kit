@@ -753,7 +753,12 @@ function recover(manifestPath, ownerToken, options = {}) {
   });
 }
 
-function withManifestMutation(manifestPath, presentedToken, mutation) {
+function withManifestMutation(
+  manifestPath,
+  presentedToken,
+  mutation,
+  options = {},
+) {
   const loaded = loadManifest(manifestPath);
   if (loaded.manifest.options?.merge !== true) {
     return require("./quality-invocation").withManifestLockRaw(
@@ -777,6 +782,14 @@ function withManifestMutation(manifestPath, presentedToken, mutation) {
     ) {
       throw new Error(
         "repository merge lease credential is stale at manifest mutation",
+      );
+    }
+    if (
+      options.requireIdle &&
+      (fs.existsSync(paths.mergeGuard) || record.mergeIntent)
+    ) {
+      throw new Error(
+        "merge recovery requires an idle repository with no merge operation",
       );
     }
     return require("./quality-invocation").withManifestLockRaw(
@@ -1077,10 +1090,17 @@ function resolveProtectedNonstrictMode(manifest, options, head) {
     });
   const authorization = invocation.reviewAuthorization(manifest);
   const basePolicy = protectedNonstrictBasePolicy(manifest);
-  const checkStates = require("./quality-required-checks.js").assertChecks(
-    manifest.repo.githubRepository,
-    branch,
+  const requiredChecks = require("./quality-required-checks.js");
+  const checkContext = {
+    repository: manifest.repo.githubRepository,
+    base: branch,
     head,
+  };
+  const checkStates = requiredChecks.assertChecks(
+    checkContext.repository,
+    checkContext.base,
+    checkContext.head,
+    requiredChecks.monitorForAssertion(manifest, checkContext),
   );
   return autonomousRefCasAuthority(manifest, options, head, {
     inspection,

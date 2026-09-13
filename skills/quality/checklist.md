@@ -15,70 +15,25 @@ Review depth scales with the resolved risk tier (see `reference.md` §Quality Le
 | AI lead/status evidence is signed           |     | ✓      | ✓    | ✓        |
 | `Reviewed-By: quality` signed authorization | ✓   | ✓      | ✓    | ✓        |
 
-## Level 95 Exit Criteria (legacy, full panel)
+## Required execution evidence
 
-- [ ] **Tests pass**: `npm test` exits 0 (HARD GATE — blocks everything)
-- [ ] **Behavior is tested**: Changed behavior has evidence at the highest useful public seam; file-per-source tests are not required
-- [ ] **Changed tests pass**: Any tests added during fixes must pass before continuing
-- [ ] ESLint: 0 errors, 0 warnings
-- [ ] TypeScript: strict mode, no `any`, 0 errors
-- [ ] Build: successful with 0 errors
-- [ ] No silent failures (empty catches, swallowed errors)
-- [ ] No type safety issues (proper types, no assertions)
-- [ ] Security: No secrets exposed, no critical OWASP issues, dependency audit
-- [ ] Test quality: Tests validated for meaningful coverage (not trivial)
-- [ ] AI leads: verified against source and deterministic repository evidence
-- [ ] Documentation: Help/README updated if commands/API changed
+Levels 95 and 98 raise the minimum risk score; they do not start separate full
+panels or guarantee percentage-quality scores. The persisted manifest chooses
+the required gates and reviewer coverage.
 
-## Level 98 Exit Criteria (beyond 95%)
+- Tests: the selected affected plan passes; full audits run only when selected.
+- Lint, types, build, patterns and security: all applicable persisted gates pass.
+- Review: exact-head signed coverage and truthful complete/incomplete status.
+- Remediation: verified defects, one bounded batch and permitted delta review.
+- Merge: required CI, authority, product admission and exact-head proof.
+- Completion: report the actual outcome. A review or score cannot mark Linear
+  Done without the required delivery evidence.
 
-- [ ] Accessibility: WCAG 2.1 AA compliant
-- [ ] Performance: Lighthouse > 90, Core Web Vitals green
-- [ ] Architecture: No tech debt, scalable patterns
-- [ ] Code simplification: No unnecessary complexity
-- [ ] Linear: Mark issue Done via mcp**linear**update_issue (if branch references PROJ-123)
-
-## Agent Validation (CS-079)
-
-### Expected Sections by Agent
-
-| Agent                 | Required Sections                                    |
-| --------------------- | ---------------------------------------------------- |
-| code-reviewer         | findings, summary, severity_breakdown                |
-| silent-failure-hunter | findings, patterns_checked, risk_level               |
-| type-design-analyzer  | findings, type_coverage, any_usage_count             |
-| security-auditor      | findings, vulnerabilities, secrets_scan, owasp_check |
-| pr-test-analyzer      | findings, coverage_gaps, test_quality_score          |
-| accessibility-tester  | findings, wcag_violations, a11y_score                |
-| performance-engineer  | findings, lighthouse_scores, web_vitals              |
-| architect-reviewer    | findings, pattern_violations, tech_debt_items        |
-| code-simplifier       | findings, complexity_reduced, files_simplified       |
-
-### Minimum Content Length
-
-- code-reviewer: 50 chars
-- security-auditor: 50 chars
-- performance-engineer: 50 chars
-- architect-reviewer: 50 chars
-- All others: 30 chars
-
-### Generic Phrases (reject when used alone)
-
-- "No issues found"
-- "All checks passed"
-- "Everything looks good"
-- "No problems detected"
-- "Code is clean"
-- "LGTM"
-
-### Validation Logic
-
-1. Check expected sections exist in output
-2. Verify minimum content length
-3. Flag generic phrases without substantive context
-4. Verify findings have file:line references
-5. Validate JSON is well-formed
-6. Retry failed agents once; if still failing, mark as failed
+Provider output is validated by the runtime's schemas and identity checks.
+Do not add manual minimum-character checks, fixed section templates or another
+provider retry outside the shared ledger. Accessibility/performance requirements
+belong to the task's acceptance criteria and applicable gates, not an unrelated
+mandatory panel for every repository.
 
 ## AI Lead Validation
 

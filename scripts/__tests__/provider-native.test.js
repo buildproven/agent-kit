@@ -1965,6 +1965,8 @@ describe("provider-native platform", () => {
         prompt,
         "--execution-plan",
         plan,
+        "--provider",
+        "not-a-provider",
         "--target-dir",
         dir,
         "--output-dir",
