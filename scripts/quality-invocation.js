@@ -6034,28 +6034,40 @@ function validMutationArtifact(manifest, artifact) {
   const candidateBase = artifact.candidateBase || artifact.base;
   if (candidateBase !== artifact.base) {
     const carry = manifest.mutationCarry;
+    const rebaseCarry = manifest.revisions.baseRebaseCarry;
+    const freshRebaseProof = Boolean(
+      rebaseCarry &&
+      rebaseCarry.head === artifact.head &&
+      rebaseCarry.baseSha === candidateBase &&
+      carry?.priorHead === rebaseCarry.priorHead &&
+      artifact.reusedArtifactSha256 === null &&
+      artifact.avoidedSeconds === 0,
+    );
     if (
-      !carry ||
-      carry.priorHead !== candidateBase ||
-      carry.artifactSha256 !== artifact.reusedArtifactSha256 ||
-      !fs.existsSync(carry.artifactPath) ||
-      sha256File(carry.artifactPath) !== carry.artifactSha256
+      !freshRebaseProof &&
+      (!carry ||
+        carry.priorHead !== candidateBase ||
+        carry.artifactSha256 !== artifact.reusedArtifactSha256 ||
+        !fs.existsSync(carry.artifactPath) ||
+        sha256File(carry.artifactPath) !== carry.artifactSha256)
     ) {
       return false;
     }
-    const prior = parseJson(
-      fs.readFileSync(carry.artifactPath, "utf8"),
-      "prior mutation evidence artifact",
-    );
-    if (
-      prior.invocationId !== manifest.invocationId ||
-      prior.base !== manifest.revisions.baseSha ||
-      prior.head !== candidateBase ||
-      prior.tier !== manifest.risk.tier ||
-      !validMutationPaths(prior.mutatedPaths) ||
-      prior.testFailureObserved !== true
-    ) {
-      return false;
+    if (!freshRebaseProof) {
+      const prior = parseJson(
+        fs.readFileSync(carry.artifactPath, "utf8"),
+        "prior mutation evidence artifact",
+      );
+      if (
+        prior.invocationId !== manifest.invocationId ||
+        prior.base !== manifest.revisions.baseSha ||
+        prior.head !== candidateBase ||
+        prior.tier !== manifest.risk.tier ||
+        !validMutationPaths(prior.mutatedPaths) ||
+        prior.testFailureObserved !== true
+      ) {
+        return false;
+      }
     }
   }
   if (["gitlink-skip", "no-mutable-source"].includes(artifact.method)) {

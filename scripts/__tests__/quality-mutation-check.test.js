@@ -1293,6 +1293,50 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     expect(state.mutationCarry.priorHead).toBe(priorHead);
   });
 
+  it("excludes protected-base paths from an exact rebase-carry mutation", () => {
+    const { root, manifest } = fixture(
+      "rebase-live-patch",
+      "const { isAllowed } = require('./logic');\nif (!isAllowed('admin')) process.exit(1);\n",
+    );
+    runMutation(root, manifest);
+    const priorState = JSON.parse(readFileSync(manifest, "utf8"));
+    const priorHead = priorState.revisions.currentHead;
+
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "upstream-only.js"),
+      "exports.protectedBase = true;\n",
+    );
+    git(root, ["add", "upstream-only.js"]);
+    git(root, ["commit", "-qm", "fix: protected base change"]);
+    const freshBase = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", freshBase]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["rebase", "origin/main"]);
+    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+
+    const advanced = JSON.parse(readFileSync(manifest, "utf8"));
+    expect(advanced.revisions.baseRebaseCarry).toMatchObject({
+      priorHead,
+      baseSha: freshBase,
+      head: advanced.revisions.currentHead,
+    });
+    expect(runMutation(root, manifest)).toMatch(
+      /mutation evidence: revert-diff caught by logic\.js/,
+    );
+    const state = JSON.parse(readFileSync(manifest, "utf8"));
+    const artifact = JSON.parse(
+      readFileSync(state.mutation.artifactPath, "utf8"),
+    );
+    expect(artifact).toMatchObject({
+      candidateBase: freshBase,
+      reusedArtifactSha256: null,
+      avoidedSeconds: 0,
+      mutatedPaths: ["logic.js"],
+      testFailureObserved: true,
+    });
+  });
+
   it("proves a submodule pointer change when a changed behavioral test observes it", () => {
     const submodule = makeTempDir(
       "quality-mutation-observed-gitlink-submodule-",
