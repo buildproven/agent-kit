@@ -276,9 +276,13 @@
       "paths": [
         "scripts/engineering-delivery-policy.js",
         "scripts/quality-run.js",
+        "scripts/quality-runner-ownership.js",
+        "scripts/quality-runner-reconcile.js",
         "scripts/__tests__/quality-run.test.js",
         "scripts/__tests__/engineering-delivery-policy.test.js",
         "docs/quality-run-orchestrator.md",
+        "docs/decisions/ADR-quality-runner-ownership.md",
+        "docs/decisions/ADR-quality-runner-reconciliation.md",
         "skills/quality/SKILL.md",
         "skills/quality/reference.md"
       ],

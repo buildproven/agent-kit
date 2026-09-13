@@ -14,6 +14,7 @@ const { createHash } = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const SOURCE_RUNNER = path.resolve(__dirname, "..", "quality-run.js");
 const { writeAllSync } = require(SOURCE_RUNNER);
+const { ownershipSchemaVersion } = require("../quality-runner-ownership");
 
 const FAKE_INVOCATION = `
 "use strict";
@@ -205,6 +206,7 @@ const FAKE_STEP = `
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const [step, ...args] = process.argv.slice(2);
 const index = args.indexOf("--manifest");
 const file = index >= 0 ? args[index + 1] :
@@ -213,6 +215,13 @@ let manifest = JSON.parse(fs.readFileSync(file, "utf8"));
 manifest.calls ||= [];
 manifest.calls.push(step);
 if (step === "quality-risk-resolve.sh") manifest.risk.resolved = true;
+if (step === "quality-risk-resolve.sh" && manifest.behavior?.orphanSuccessfulChild) {
+  const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+  orphan.unref();
+  fs.writeFileSync(file + ".successful-orphan-pid", String(orphan.pid));
+}
 if (step === "quality-risk-resolve.sh" && manifest.behavior?.failRisk) {
   fs.writeFileSync(file, JSON.stringify(manifest));
   process.exit(5);
@@ -271,6 +280,13 @@ if (step === "quality-run-review.sh") manifest.reviews.push({
 });
 if (step === "quality-stamp-and-merge.sh") {
   if (manifest.behavior?.externalMergeRequirement) {
+    if (manifest.behavior?.orphanMergeDescendant) {
+      const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+      });
+      orphan.unref();
+      fs.writeFileSync(file + ".merge-orphan-pid", String(orphan.pid));
+    }
     const terminalEpoch = manifest.terminalEpoch || 0;
     const mergeAttemptId = "fixture-merge-attempt";
     manifest.merge ||= {};
@@ -339,6 +355,14 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   const runtime = path.join(root, "scripts");
   mkdirSync(runtime);
   copyFileSync(SOURCE_RUNNER, path.join(runtime, "quality-run.js"));
+  copyFileSync(
+    path.resolve(__dirname, "..", "quality-runner-ownership.js"),
+    path.join(runtime, "quality-runner-ownership.js"),
+  );
+  copyFileSync(
+    path.resolve(__dirname, "..", "quality-runner-reconcile.js"),
+    path.join(runtime, "quality-runner-reconcile.js"),
+  );
   copyFileSync(
     path.resolve(__dirname, "..", "product-completion.js"),
     path.join(runtime, "product-completion.js"),
@@ -441,7 +465,11 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
       writeFileSync(path.join(root, name), "fixture\n");
     }
   }
-  return { manifestPath, runner: path.join(runtime, "quality-run.js") };
+  return {
+    manifestPath,
+    runner: path.join(runtime, "quality-run.js"),
+    reconciler: path.join(runtime, "quality-runner-reconcile.js"),
+  };
 }
 
 function run(entry) {
@@ -464,6 +492,27 @@ function run(entry) {
     manifest: JSON.parse(readFileSync(entry.manifestPath, "utf8")),
     output: result.stdout.trim().split("\n").at(-1),
   };
+}
+
+function reconcile(entry, record, extra = []) {
+  return spawnSync(
+    process.execPath,
+    [
+      entry.reconciler,
+      "--manifest",
+      entry.manifestPath,
+      "--head",
+      "abc123",
+      "--owner-host",
+      record.hostname,
+      "--owner-pid",
+      String(record.pid),
+      "--owner-nonce",
+      record.nonce,
+      ...extra,
+    ],
+    { encoding: "utf8" },
+  );
 }
 
 function recordDisposition(entry, blockingCount, label = "judge") {
@@ -503,6 +552,12 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("uses the explicit-confirmation compatibility schema without POSIX process groups", () => {
+    expect(ownershipSchemaVersion("win32")).toBe(1);
+    expect(ownershipSchemaVersion("darwin")).toBe(2);
+    expect(ownershipSchemaVersion("linux")).toBe(2);
+  });
+
   it("completes short ownership writes before returning", () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "quality-run-write-"));
     const file = path.join(root, "owner");
@@ -643,15 +698,85 @@ describe("quality-run public orchestration", () => {
     ).toBe("held fence");
   });
 
-  it("keeps a failed child's quarantine through successful terminal recording", () => {
+  it("releases a failed child after its dedicated process group is quiescent", () => {
     const entry = fixture({ failRisk: true });
     expect(run(entry).status).toBe(1);
-    const lock = readFileSync(entry.manifestPath + ".runner-lock", "utf8");
-    expect(JSON.parse(lock).childInFlight).toBe(true);
-    expectBusyUnchanged(entry, "runner-owned");
-    expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
-      lock,
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(run(entry).status).toBe(1);
+  });
+
+  it("retains ownership when a successful child leaves its process group live", async () => {
+    const entry = fixture({ orphanSuccessfulChild: true });
+    const result = run(entry);
+    const orphanPid = Number(
+      readFileSync(entry.manifestPath + ".successful-orphan-pid", "utf8"),
     );
+    let cleanupError;
+    try {
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "quality foreground child process group is not quiescent",
+      );
+      const lock = JSON.parse(
+        readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(lock).toMatchObject({
+        schemaVersion: 2,
+        childInFlight: true,
+        child: { processGroupId: expect.any(Number) },
+      });
+      expect(
+        JSON.parse(readFileSync(entry.manifestPath, "utf8")),
+      ).not.toHaveProperty("terminalState");
+      expectBusyUnchanged(entry, "runner-owned");
+    } finally {
+      try {
+        process.kill(orphanPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") cleanupError = error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(orphanPid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 10000 },
+    );
+  });
+
+  it("reconciles a dead legacy quarantine only with exact bindings and confirmation", () => {
+    const entry = fixture();
+    const exited = spawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(String(process.pid))"],
+      { encoding: "utf8" },
+    );
+    const record = {
+      schemaVersion: 1,
+      hostname: os.hostname(),
+      pid: Number(exited.stdout),
+      nonce: "legacy-quarantine",
+      acquiredAt: new Date().toISOString(),
+      childInFlight: true,
+    };
+    writeFileSync(entry.manifestPath + ".runner-lock", JSON.stringify(record));
+    const manifestBefore = readFileSync(entry.manifestPath, "utf8");
+
+    expect(reconcile(entry, record).status).toBe(1);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(true);
+    const recovered = reconcile(entry, record, [
+      "--confirm-legacy-child-quiescent",
+    ]);
+    expect(recovered.status).toBe(0);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({
+      status: "reconciled",
+      head: "abc123",
+      legacyConfirmationUsed: true,
+    });
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(readFileSync(entry.manifestPath, "utf8")).toBe(manifestBefore);
   });
 
   it("refuses dead-owner recovery while its orphan child may write", async () => {
@@ -1586,6 +1711,44 @@ describe("quality-run public orchestration", () => {
       detail: expect.stringContaining("signed capability"),
     });
     expect(result.manifest.telemetryWrites).toBe(1);
+  });
+
+  it("retains typed-pause ownership while its process group is not quiescent", async () => {
+    const entry = fixture(
+      { externalMergeRequirement: true, orphanMergeDescendant: true },
+      { merge: true, tier: "medium" },
+    );
+    const result = run(entry);
+    const orphanPid = Number(
+      readFileSync(entry.manifestPath + ".merge-orphan-pid", "utf8"),
+    );
+    let cleanupError;
+    try {
+      expect(result.status).toBe(3);
+      const lock = JSON.parse(
+        readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(lock).toMatchObject({
+        schemaVersion: 2,
+        childInFlight: true,
+        child: { processGroupId: expect.any(Number) },
+      });
+      expectBusyUnchanged(entry, "runner-owned");
+    } finally {
+      try {
+        process.kill(orphanPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") cleanupError = error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(orphanPid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 10000 },
+    );
   });
 
   it("resumes a structured merge requirement without replaying immutable phases", () => {

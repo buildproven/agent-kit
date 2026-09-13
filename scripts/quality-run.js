@@ -4,9 +4,9 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
-const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 const quality = require("./quality-invocation");
+const runnerOwnership = require("./quality-runner-ownership");
 const { productionCodeChange } = require("./product-completion");
 const { assertEngineeringPolicy } = require("./engineering-delivery-policy");
 
@@ -25,210 +25,6 @@ function parseArgs(argv) {
 
 function manifestAt(manifestPath) {
   return quality.loadManifest(manifestPath).manifest;
-}
-
-function sameRunnerFile(left, right) {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function readRunnerOwner(file) {
-  let descriptor;
-  try {
-    descriptor = fs.openSync(
-      file,
-      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
-    );
-    const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile() || stat.nlink !== 1) return null;
-    const record = quality.parseJson(
-      fs.readFileSync(descriptor, "utf8"),
-      "runner owner",
-    );
-    if (
-      record.schemaVersion !== 1 ||
-      !Number.isInteger(record.pid) ||
-      record.pid < 1 ||
-      typeof record.hostname !== "string" ||
-      typeof record.nonce !== "string" ||
-      !record.nonce ||
-      !Number.isFinite(Date.parse(record.acquiredAt)) ||
-      typeof record.childInFlight !== "boolean"
-    )
-      return null;
-    return { stat, record };
-  } catch (error) {
-    // Unreadable or partially written ownership is not proof of abandonment.
-    if (error instanceof Error) return null;
-    throw error;
-  } finally {
-    if (descriptor !== undefined) fs.closeSync(descriptor);
-  }
-}
-
-function deadIdleRunner(owner) {
-  if (
-    !owner ||
-    owner.record.hostname !== os.hostname() ||
-    owner.record.childInFlight
-  )
-    return false;
-  try {
-    process.kill(owner.record.pid, 0);
-    return false;
-  } catch (error) {
-    return error.code === "ESRCH";
-  }
-}
-
-function writeAllSync(descriptor, data) {
-  let offset = 0;
-  while (offset < data.length) {
-    const written = fs.writeSync(
-      descriptor,
-      data,
-      offset,
-      data.length - offset,
-      offset,
-    );
-    if (written <= 0)
-      throw new Error("runner ownership write made no progress");
-    offset += written;
-  }
-}
-
-function createRunnerFile(file) {
-  let descriptor;
-  try {
-    descriptor = fs.openSync(file, "wx", 0o600);
-  } catch (error) {
-    if (["EEXIST", "EACCES", "EPERM"].includes(error.code)) return null;
-    throw error;
-  }
-  const stat = fs.fstatSync(descriptor);
-  const record = {
-    schemaVersion: 1,
-    hostname: os.hostname(),
-    pid: process.pid,
-    nonce: crypto.randomBytes(16).toString("hex"),
-    acquiredAt: new Date().toISOString(),
-    childInFlight: false,
-  };
-  const write = () => {
-    if (!sameRunnerFile(fs.lstatSync(file), stat))
-      throw new Error("runner ownership file changed");
-    const data = Buffer.from(`${JSON.stringify(record)}\n`);
-    writeAllSync(descriptor, data);
-    fs.ftruncateSync(descriptor, data.length);
-    fs.fsyncSync(descriptor);
-  };
-  try {
-    write();
-  } catch (error) {
-    fs.closeSync(descriptor);
-    // Retain an incomplete file as evidence; do not guess it safe to reclaim.
-    throw error;
-  }
-  return {
-    record,
-    write,
-    release({ serialize = false } = {}) {
-      let fence = null;
-      if (!record.childInFlight && serialize) {
-        fence = createRunnerFile(`${file}.recovery`);
-      }
-      fs.closeSync(descriptor);
-      if (record.childInFlight || (serialize && !fence)) return;
-      try {
-        const current = readRunnerOwner(file);
-        if (
-          !current ||
-          !sameRunnerFile(current.stat, stat) ||
-          current.record.nonce !== record.nonce
-        )
-          return;
-        fs.unlinkSync(file);
-      } finally {
-        fence?.release();
-      }
-    },
-  };
-}
-
-function recoverDeadRunner(file, manifestPath, observed) {
-  if (!deadIdleRunner(observed)) return null;
-  const current = readRunnerOwner(file);
-  if (
-    !current ||
-    !sameRunnerFile(current.stat, observed.stat) ||
-    current.record.nonce !== observed.record.nonce ||
-    !deadIdleRunner(current) ||
-    manifestAt(manifestPath).governor?.activeExecution
-  )
-    return null;
-  fs.unlinkSync(file);
-  return createRunnerFile(file);
-}
-
-function acquireRunner(manifestPath) {
-  const file = `${manifestPath}.runner-lock`;
-  const fence = createRunnerFile(`${file}.recovery`);
-  if (!fence) return null;
-  let owner;
-  try {
-    owner = createRunnerFile(file);
-    if (!owner) {
-      owner = recoverDeadRunner(file, manifestPath, readRunnerOwner(file));
-    }
-  } finally {
-    // A recovered replacement is created before this fence is released, so
-    // another public runner cannot interleave between validation and unlink.
-    fence.release();
-  }
-  if (!owner) return null;
-  let uncertain = false;
-  let priorUncertain = false;
-  let signalUncertain = false;
-  return {
-    async execute(execute, ...args) {
-      priorUncertain = uncertain;
-      owner.record.childInFlight = true;
-      owner.write();
-      try {
-        const result = await execute(...args);
-        uncertain ||=
-          signalUncertain || result.code !== 0 || Boolean(result.signal);
-        owner.record.childInFlight = uncertain;
-        owner.write();
-        return result;
-      } catch (error) {
-        uncertain = true;
-        throw error;
-      }
-    },
-    acceptTypedPause() {
-      // Called only after matching atomic merge-admission evidence validates
-      // the foreground merge helper's documented, normal exit-3 pause.
-      uncertain = signalUncertain || priorUncertain;
-      owner.record.childInFlight = uncertain;
-      owner.write();
-    },
-    markSignalUncertain() {
-      signalUncertain = true;
-      uncertain = true;
-      owner.record.childInFlight = true;
-      owner.write();
-    },
-    release(checkExecution = true) {
-      if (
-        checkExecution &&
-        manifestAt(manifestPath).governor?.activeExecution
-      ) {
-        owner.record.childInFlight = true;
-        owner.write();
-      }
-      owner.release({ serialize: true });
-    },
-  };
 }
 
 function pinRepositoryLease(manifest) {
@@ -296,6 +92,7 @@ function runProcess(command, args, options = {}) {
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: process.env,
+      detached: process.platform !== "win32",
       stdio: ["inherit", "pipe", "pipe"],
     });
     options.onChild?.(child);
@@ -770,7 +567,16 @@ function invocationRuntime(manifestPath, execute) {
   };
   const onSignal = (signal) => {
     interruptedSignal ||= signal;
-    if (activeChild && !activeChild.killed) activeChild.kill(signal);
+    if (!activeChild || activeChild.killed) return;
+    if (process.platform !== "win32") {
+      try {
+        process.kill(-activeChild.pid, signal);
+        return;
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+    activeChild.kill(signal);
   };
   const assertNotInterrupted = (result) => {
     if (!interruptedSignal && !result.signal) return;
@@ -1268,7 +1074,7 @@ async function runManifest(manifestPath, dependencies = {}) {
   // Validate before canonicalizing: a symlinked manifest remains forbidden.
   const initial = quality.loadManifest(manifestPath);
   manifestPath = fs.realpathSync(initial.manifestPath);
-  const ownership = acquireRunner(manifestPath);
+  const ownership = runnerOwnership.acquireRunner(manifestPath);
   if (!ownership)
     return {
       status: "busy",
@@ -1407,7 +1213,7 @@ module.exports = {
   pinRepositoryLease,
   reviewSummary,
   runManifest,
-  writeAllSync,
+  writeAllSync: runnerOwnership.writeAllSync,
 };
 
 if (require.main === module) main();
