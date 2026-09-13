@@ -60,6 +60,11 @@ normal exact-candidate gate uses the smallest evidence-backed selection. Reuse
 already successful evidence for the identical candidate rather than repeating
 it locally or in CI.
 
+The task-completion hook uses this same selector for staged, unstaged and
+untracked working-tree paths. It reports an unmapped or failed selection early,
+but it is local feedback only; exact-head quality and product-completion evidence
+remain owned by the revision-bound quality runtime.
+
 Example policy:
 
 ```json

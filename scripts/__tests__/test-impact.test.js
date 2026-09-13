@@ -1,4 +1,10 @@
-const { changedPaths, execute, loadPolicy, plan } = require("../test-impact");
+const {
+  changedPaths,
+  execute,
+  loadPolicy,
+  plan,
+  workingTreePaths,
+} = require("../test-impact");
 const {
   mkdtempSync,
   mkdirSync,
@@ -11,6 +17,76 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
+  it.each(["deleted.js", "tests/test_deleted.py"])(
+    "requires explicit coverage for missing %s when repository context is supplied",
+    (file) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "missing-impact-"));
+      expect(plan([file], { version: 1 }, { root })).toMatchObject({
+        mode: "unmapped",
+        uncovered: [file],
+        commands: [],
+      });
+    },
+  );
+
+  it.each(["mappings", "audits"])(
+    "preserves explicit %s for deleted source",
+    (kind) => {
+      const root = mkdtempSync(
+        path.join(os.tmpdir(), "missing-mapped-impact-"),
+      );
+      const command = { executable: "node", args: ["surviving.test.js"] };
+      const policy = {
+        version: 1,
+        [kind]: [
+          {
+            paths: ["deleted.js"],
+            commands: [command],
+            ...(kind === "audits" ? { reason: "source removal audit" } : {}),
+          },
+        ],
+      };
+      expect(plan(["deleted.js"], policy, { root })).toMatchObject({
+        mode: kind === "audits" ? "audit" : "focused",
+        commands: [command],
+      });
+    },
+  );
+
+  it("collects unstaged, staged, untracked, and both sides of a rename", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "working-impact-"));
+    const git = (...args) => execFileSync("git", args, { cwd: root });
+    git("init", "-q");
+    git("config", "user.name", "Fixture");
+    git("config", "user.email", "fixture@example.invalid");
+    writeFileSync(path.join(root, "renamed.js"), "export const value = 1;\n");
+    writeFileSync(path.join(root, "staged.js"), "export const staged = 1;\n");
+    writeFileSync(
+      path.join(root, "unstaged.js"),
+      "export const unstaged = 1;\n",
+    );
+    git("add", ".");
+    git("commit", "-qm", "fixture");
+    git("mv", "renamed.js", "renamed-next.js");
+    writeFileSync(path.join(root, "staged.js"), "export const staged = 2;\n");
+    git("add", "staged.js");
+    writeFileSync(
+      path.join(root, "unstaged.js"),
+      "export const unstaged = 2;\n",
+    );
+    writeFileSync(
+      path.join(root, "untracked.js"),
+      "export const untracked = 1;\n",
+    );
+    expect(workingTreePaths(root)).toEqual([
+      "renamed-next.js",
+      "renamed.js",
+      "staged.js",
+      "unstaged.js",
+      "untracked.js",
+    ]);
+  });
+
   it("uses Vitest dependency-aware related tests for JS and TS", () => {
     expect(plan(["src/a.ts", "lib/b.js"])).toMatchObject({
       mode: "focused",

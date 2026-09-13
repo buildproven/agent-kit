@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const dispatchKey = generateKeyPairSync("ed25519")
@@ -18,14 +18,20 @@ const SCRIPT = path.resolve(
   "../quality-required-checks.js",
 );
 const {
+  adoptPersistedDispatch,
+  assertChecks,
   checkRuns,
   checkState,
   claimDispatchNonce,
   claimRemoteDispatchNonce,
   cleanupRemoteDispatchClaims,
   ensureChecks,
+  inspectChecks,
   matchingRuns,
+  newRequiredChecksMonitor,
   prepareChecks,
+  protectedMonitorLifetimeValid,
+  rememberPersistedDispatch,
   requiredChecks,
   trustedSecretCheckState,
 } = require("../quality-required-checks.js");
@@ -113,6 +119,175 @@ function run(root, args, fixture) {
 }
 
 describe("quality-required-checks", () => {
+  it("adopts the winning persisted nonce after a concurrent intent race", () => {
+    const common = {
+      workflowId: 77,
+      transport: "repository_dispatch",
+      requirement: { context: "harness-summary", appId: 15368 },
+    };
+    const winner = { ...common, nonce: "a".repeat(32) };
+    const loser = { ...common, nonce: "b".repeat(32) };
+
+    expect(adoptPersistedDispatch(winner, loser)).toBe(winner);
+  });
+
+  it("does not let final wait accept a protected run with another nonce", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-bound-wait-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const expectedExternalId = `secret-history-scan:${"b".repeat(40)}:${"c".repeat(40)}:${"a".repeat(32)}`;
+    const otherExternalId = `secret-history-scan:${"b".repeat(40)}:${"c".repeat(40)}:${"b".repeat(32)}`;
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *protection/required_status_checks*) printf '%s\\n' '{"checks":[{"context":"secret-history-scan","app_id":15368}]}' ;;
+  *rules/branches/main*) printf '%s\\n' '[]' ;;
+  *commits/${"b".repeat(40)}/check-runs*) printf '%s\\n' '${JSON.stringify({ check_runs: [{ id: 2, name: "secret-history-scan", status: "completed", conclusion: "success", app: { id: 15368 }, external_id: otherExternalId, details_url: "https://github.com/o/r/actions/runs/124" }] })}' ;;
+  *git/ref/heads/main*) printf '%s\\n' '{"object":{"sha":"${"c".repeat(40)}"}}' ;;
+  *actions/runs/124*) printf '%s\\n' '${JSON.stringify({ workflow_id: 77, event: "repository_dispatch", head_branch: "main", head_sha: "c".repeat(40), path: ".github/workflows/secret-history-scan.yml", display_title: otherExternalId, status: "completed", conclusion: "success" })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    const requirements = [{ context: "secret-history-scan", appId: 15368 }];
+    const monitor = {
+      repository: "owner/repo",
+      base: "main",
+      targetHead: "b".repeat(40),
+      baseHead: "c".repeat(40),
+      requirements,
+      startedAt: 1000,
+      deadline: 1000 + 900 * 1000,
+      dispatches: [
+        {
+          requirement: {
+            ...requirements[0],
+            externalId: expectedExternalId,
+          },
+          workflowId: 77,
+          transport: "repository_dispatch",
+          nonce: "a".repeat(32),
+        },
+      ],
+    };
+    try {
+      expect(inspectChecks("owner/repo", "main", "b".repeat(40))[0].state).toBe(
+        "success",
+      );
+      expect(
+        inspectChecks("owner/repo", "main", "b".repeat(40), monitor)[0].state,
+      ).toBe("missing");
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restores shared-workflow deduplication from a persisted dispatch", () => {
+    const dispatchedWorkflowIds = new Set();
+
+    rememberPersistedDispatch(dispatchedWorkflowIds, {
+      workflowId: 77,
+      transport: "repository_dispatch",
+    });
+
+    expect(dispatchedWorkflowIds).toEqual(new Set(["77:repository_dispatch"]));
+  });
+
+  it("rejects a persisted protected monitor longer than 15 minutes", () => {
+    const requirements = [{ context: "harness-summary", appId: 15368 }];
+
+    expect(
+      protectedMonitorLifetimeValid(
+        { startedAt: 1000, deadline: 1000 + 900 * 1000 },
+        requirements,
+      ),
+    ).toBe(true);
+    expect(
+      protectedMonitorLifetimeValid(
+        { startedAt: 1000, deadline: 1001 + 900 * 1000 },
+        requirements,
+      ),
+    ).toBe(false);
+  });
+
+  it("builds a maximum monitor deadline from one clock reading", () => {
+    const clock = vi
+      .spyOn(Date, "now")
+      .mockReturnValueOnce(1000)
+      .mockReturnValueOnce(1001);
+
+    const monitor = newRequiredChecksMonitor(
+      { targetHead: "b".repeat(40) },
+      [{ context: "harness-summary", appId: 15368 }],
+      "c".repeat(40),
+      900,
+    );
+
+    expect(monitor.deadline - monitor.startedAt).toBe(900 * 1000);
+    expect(clock).toHaveBeenCalledTimes(1);
+    clock.mockRestore();
+  });
+
+  it("keeps accepted registration pending beyond 30 seconds within the head deadline", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-delayed-"));
+    const source = [
+      {
+        id: 1,
+        name: "quality",
+        status: "completed",
+        conclusion: "success",
+        app: { id: 15368 },
+        details_url: "https://github.com/owner/repo/actions/runs/123",
+      },
+    ];
+    const fixture = fakeGh(root, source, [], []);
+    const executable = path.join(fixture.bin, "gh");
+    const original = fs.readFileSync(executable, "utf8");
+    let now = 0;
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${fixture.bin}:${previousPath}`;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(Atomics, "wait").mockImplementation(
+      (_array, _index, _value, duration) => {
+        now += duration;
+        if (now >= 70000) {
+          fs.writeFileSync(
+            executable,
+            original.replace(
+              JSON.stringify({ check_runs: [] }),
+              JSON.stringify({ check_runs: source }),
+            ),
+          );
+        }
+        return "timed-out";
+      },
+    );
+    try {
+      const result = ensureChecks({
+        repository: "owner/repo",
+        base: "main",
+        sourceHead: "a".repeat(40),
+        targetHead: "b".repeat(40),
+        headRef: "feature/fix",
+        timeoutSeconds: 900,
+      });
+      expect(result.dispatched).toHaveLength(1);
+      expect(now).toBeGreaterThan(60000);
+      expect(
+        fs.readFileSync(fixture.log, "utf8").trim().split("\n"),
+      ).toHaveLength(1);
+    } finally {
+      process.env.PATH = previousPath;
+      vi.restoreAllMocks();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("prepares protected dispatches without mutating GitHub", () => {
     const originalPath = process.env.PATH;
     const originalKey = process.env.QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY;
@@ -631,6 +806,189 @@ esac
           baseHead: "cccccccccccccccccccccccccccccccccccccccc",
         }),
       ).toMatchObject({ state: "success" });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("resolves a GitHub-rewritten check URL through one exact workflow run", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const externalId =
+      "secret-history-scan:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:cccccccccccccccccccccccccccccccccccccccc:0123456789abcdef0123456789abcdef";
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *actions/workflows/77/runs*) printf '%s\\n' '${JSON.stringify({ total_count: 1, workflow_runs: [{ id: 124, workflow_id: 77, event: "repository_dispatch", head_branch: "main", head_sha: "c".repeat(40), path: ".github/workflows/secret-history-scan.yml", display_title: externalId, status: "completed", conclusion: "success" }] })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    try {
+      expect(
+        trustedSecretCheckState({
+          repository: "owner/repo",
+          runs: [
+            {
+              id: 2,
+              name: "secret-history-scan",
+              status: "completed",
+              conclusion: "success",
+              app: { id: 15368 },
+              external_id: externalId,
+              details_url: "https://github.com/owner/repo/runs/2",
+            },
+          ],
+          requirement: {
+            context: "secret-history-scan",
+            appId: 15368,
+            externalId,
+          },
+          workflowId: 77,
+          base: "main",
+          targetHead: "b".repeat(40),
+          baseHead: "c".repeat(40),
+        }),
+      ).toMatchObject({ state: "success" });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("carries the persisted workflow binding into final check assertion", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const targetHead = "b".repeat(40);
+    const baseHead = "c".repeat(40);
+    const externalId = `secret-history-scan:${targetHead}:${baseHead}:${"a".repeat(32)}`;
+    const workflowRun = {
+      id: 124,
+      workflow_id: 77,
+      event: "repository_dispatch",
+      head_branch: "main",
+      head_sha: baseHead,
+      path: ".github/workflows/secret-history-scan.yml",
+      display_title: externalId,
+      status: "completed",
+      conclusion: "success",
+    };
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *protection/required_status_checks*) printf '%s\\n' '{"checks":[{"context":"secret-history-scan","app_id":15368}]}' ;;
+  *rules/branches/main*) printf '%s\\n' '[]' ;;
+  *git/ref/heads/main*) printf '%s\\n' '{"object":{"sha":"${baseHead}"}}' ;;
+  *commits/${targetHead}/check-runs*) printf '%s\\n' '${JSON.stringify({ check_runs: [{ id: 2, name: "secret-history-scan", status: "completed", conclusion: "success", app: { id: 15368 }, external_id: externalId, details_url: "https://github.com/owner/repo/runs/2" }] })}' ;;
+  *actions/workflows/77/runs*) printf '%s\\n' '${JSON.stringify({ total_count: 1, workflow_runs: [workflowRun] })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    const requirements = [{ context: "secret-history-scan", appId: 15368 }];
+    const monitor = {
+      schemaVersion: 1,
+      repository: "owner/repo",
+      base: "main",
+      sourceHead: targetHead,
+      targetHead,
+      headRef: "feature/fix",
+      baseHead,
+      requirements,
+      startedAt: Date.now(),
+      deadline: Date.now() + 60_000,
+      dispatches: [
+        {
+          requirement: { ...requirements[0], externalId },
+          workflowId: 77,
+          transport: "repository_dispatch",
+          nonce: "a".repeat(32),
+        },
+      ],
+    };
+    try {
+      expect(
+        assertChecks("owner/repo", "main", targetHead, monitor)[0],
+      ).toMatchObject({
+        state: "success",
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("rejects rewritten check URLs with ambiguous workflow-run matches", () => {
+    const originalPath = process.env.PATH;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "quality-checks-"));
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    const externalId =
+      "secret-history-scan:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:cccccccccccccccccccccccccccccccccccccccc:0123456789abcdef0123456789abcdef";
+    const workflowRun = {
+      workflow_id: 77,
+      event: "repository_dispatch",
+      head_branch: "main",
+      head_sha: "c".repeat(40),
+      path: ".github/workflows/secret-history-scan.yml",
+      display_title: externalId,
+      status: "completed",
+      conclusion: "success",
+    };
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env bash
+set -eu
+case "$*" in
+  *actions/workflows/77/runs*) printf '%s\\n' '${JSON.stringify({
+    total_count: 2,
+    workflow_runs: [
+      { ...workflowRun, id: 124 },
+      { ...workflowRun, id: 125 },
+    ],
+  })}' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${bin}:${originalPath}`;
+    try {
+      expect(
+        trustedSecretCheckState({
+          repository: "owner/repo",
+          runs: [
+            {
+              id: 2,
+              name: "secret-history-scan",
+              status: "completed",
+              conclusion: "success",
+              app: { id: 15368 },
+              external_id: externalId,
+              details_url: "https://github.com/owner/repo/runs/2",
+            },
+          ],
+          requirement: {
+            context: "secret-history-scan",
+            appId: 15368,
+            externalId,
+          },
+          workflowId: 77,
+          base: "main",
+          targetHead: "b".repeat(40),
+          baseHead: "c".repeat(40),
+        }),
+      ).toMatchObject({ state: "missing" });
     } finally {
       process.env.PATH = originalPath;
     }
@@ -1371,5 +1729,171 @@ esac
       appId: 15368,
       state: "success",
     });
+  });
+});
+
+describe("required-check transport failures", () => {
+  it.each([
+    ["error connecting to api.github.com", 75, 2],
+    ["read tcp: connection reset by peer", 75, 2],
+    ['Get "https://api.github.com/repos/owner/repo": unexpected EOF', 75, 2],
+    ["internal parser failure: unexpected EOF", 1, 1],
+    ["gh: Bad credentials (HTTP 401)", 1, 1],
+    ["gh: API rate limit exceeded (HTTP 403)", 1, 1],
+    ["internal parser failure", 1, 1],
+  ])(
+    "classifies %s without retrying authority errors",
+    (message, status, attempts) => {
+      const root = activeClaimDirectory;
+      const bin = path.join(root, "bin");
+      fs.mkdirSync(bin);
+      const log = path.join(root, "calls");
+      fs.writeFileSync(
+        path.join(bin, "gh"),
+        `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");
+process.stderr.write(${JSON.stringify(message)});
+process.exit(1);
+`,
+        { mode: 0o755 },
+      );
+      const result = run(
+        root,
+        [
+          "prepare",
+          "--repo",
+          "owner/repo",
+          "--base",
+          "main",
+          "--source-head",
+          "a".repeat(40),
+          "--head",
+          "b".repeat(40),
+        ],
+        { bin },
+      );
+      expect(result.status, result.stderr).toBe(status);
+      expect(
+        fs
+          .readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .filter((call) => call.includes("protection/required_status_checks")),
+      ).toHaveLength(attempts);
+    },
+  );
+
+  it("completes the same GET after one transport failure", () => {
+    const root = activeClaimDirectory;
+    const fixture = fakeGh(
+      root,
+      [],
+      [
+        {
+          id: 2,
+          name: "quality",
+          status: "completed",
+          conclusion: "success",
+          app: { id: 15368 },
+        },
+      ],
+    );
+    const executable = path.join(fixture.bin, "gh");
+    const attempts = path.join(root, "read-attempts");
+    fs.writeFileSync(
+      executable,
+      fs.readFileSync(executable, "utf8").replace(
+        "set -eu",
+        `set -eu
+case "$*" in
+  *protection/required_status_checks*)
+    if [ ! -f '${attempts}' ]; then
+      printf 'first\n' > '${attempts}'
+      echo 'error connecting to api.github.com' >&2
+      exit 1
+    fi
+    printf 'retry\n' >> '${attempts}'
+    ;;
+esac`,
+      ),
+    );
+    const result = run(
+      root,
+      [
+        "assert",
+        "--repo",
+        "owner/repo",
+        "--base",
+        "main",
+        "--head",
+        "b".repeat(40),
+      ],
+      fixture,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)[0].state).toBe("success");
+    expect(fs.readFileSync(attempts, "utf8").trim().split("\n")).toEqual([
+      "first",
+      "retry",
+    ]);
+  });
+
+  it("does not retry an ambiguous workflow POST transport failure", () => {
+    const root = activeClaimDirectory;
+    const fixture = fakeGh(
+      root,
+      [
+        {
+          id: 1,
+          name: "quality",
+          status: "completed",
+          conclusion: "success",
+          app: { id: 15368 },
+          details_url: "https://github.com/o/r/actions/runs/123",
+        },
+      ],
+      [],
+    );
+    const executable = path.join(fixture.bin, "gh");
+    const attempts = path.join(root, "post-attempts");
+    fs.writeFileSync(
+      executable,
+      fs.readFileSync(executable, "utf8").replace(
+        "set -eu",
+        `set -eu
+case "$*" in
+  *actions/workflows/77/dispatches*)
+    printf 'attempt\n' >> '${attempts}'
+    echo 'error connecting to api.github.com' >&2
+    exit 1
+    ;;
+esac`,
+      ),
+    );
+    const result = run(
+      root,
+      [
+        "ensure",
+        "--repo",
+        "owner/repo",
+        "--base",
+        "main",
+        "--source-head",
+        "a".repeat(40),
+        "--head",
+        "b".repeat(40),
+        "--head-ref",
+        "feature/fix",
+        "--registration-timeout",
+        "0",
+      ],
+      fixture,
+    );
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("error connecting to api.github.com");
+    expect(fs.readFileSync(attempts, "utf8").trim().split("\n")).toEqual([
+      "attempt",
+    ]);
   });
 });
