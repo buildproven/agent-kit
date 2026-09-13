@@ -206,6 +206,7 @@ const FAKE_STEP = `
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const [step, ...args] = process.argv.slice(2);
 const index = args.indexOf("--manifest");
 const file = index >= 0 ? args[index + 1] :
@@ -272,6 +273,13 @@ if (step === "quality-run-review.sh") manifest.reviews.push({
 });
 if (step === "quality-stamp-and-merge.sh") {
   if (manifest.behavior?.externalMergeRequirement) {
+    if (manifest.behavior?.orphanMergeDescendant) {
+      const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+      });
+      orphan.unref();
+      fs.writeFileSync(file + ".merge-orphan-pid", String(orphan.pid));
+    }
     const terminalEpoch = manifest.terminalEpoch || 0;
     const mergeAttemptId = "fixture-merge-attempt";
     manifest.merge ||= {};
@@ -1655,6 +1663,36 @@ describe("quality-run public orchestration", () => {
       detail: expect.stringContaining("signed capability"),
     });
     expect(result.manifest.telemetryWrites).toBe(1);
+  });
+
+  it("retains typed-pause ownership while its process group is not quiescent", async () => {
+    const entry = fixture(
+      { externalMergeRequirement: true, orphanMergeDescendant: true },
+      { merge: true, tier: "medium" },
+    );
+    const result = run(entry);
+    expect(result.status).toBe(3);
+    const lock = JSON.parse(
+      readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+    );
+    expect(lock).toMatchObject({
+      schemaVersion: 2,
+      childInFlight: true,
+      child: { processGroupId: expect.any(Number) },
+    });
+    expectBusyUnchanged(entry, "runner-owned");
+    try {
+      process.kill(-lock.child.processGroupId, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(-lock.child.processGroupId, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 10000 },
+    );
   });
 
   it("resumes a structured merge requirement without replaying immutable phases", () => {

@@ -194,6 +194,7 @@ function acquireRunner(manifestPath) {
   let uncertain = false;
   let priorUncertain = false;
   let signalUncertain = false;
+  let lastChildQuiescent = false;
   return {
     async execute(execute, command, args, options = {}) {
       priorUncertain = uncertain;
@@ -217,6 +218,7 @@ function acquireRunner(manifestPath) {
           owner.record.child &&
           processAbsent(owner.record.child.pid) &&
           processGroupAbsent(owner.record.child.processGroupId);
+        lastChildQuiescent = Boolean(childQuiescent);
         uncertain ||=
           signalUncertain ||
           ((result.code !== 0 || Boolean(result.signal)) && !childQuiescent);
@@ -231,7 +233,7 @@ function acquireRunner(manifestPath) {
       }
     },
     acceptTypedPause() {
-      uncertain = signalUncertain || priorUncertain;
+      uncertain = signalUncertain || priorUncertain || !lastChildQuiescent;
       owner.record.childInFlight = uncertain;
       if (!uncertain && owner.record.schemaVersion === 2)
         owner.record.child = null;
