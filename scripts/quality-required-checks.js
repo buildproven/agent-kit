@@ -91,24 +91,39 @@ function validateRef(value, name) {
 }
 
 class GhReadTransportError extends GhCommandError {}
+class GhWriteTransportError extends GhCommandError {}
+
+function isApiMethod(args, method) {
+  return args.some(
+    (argument, index) =>
+      (argument === "-X" || argument === "--method") &&
+      args[index + 1] === method,
+  );
+}
+
+function isTransportFailure(result) {
+  if (result.status !== 1) return false;
+  const stderr = result.stderr || "";
+  const httpStatus = stderr.match(/HTTP\s+(\d{3})/i);
+  if (httpStatus) {
+    const status = Number(httpStatus[1]);
+    return status === 408 || status >= 500;
+  }
+  if (/bad credentials|authentication|rate limit/i.test(stderr)) return false;
+  return /error connecting to api\.github\.com|connection reset by peer|(?:Get|GET|Post|POST) "https:\/\/[^"\n]+": unexpected EOF|dial tcp[^\n]*(?:i\/o timeout|no such host|network is unreachable)|TLS handshake timeout/i.test(
+    stderr,
+  );
+}
 
 function isReadTransportFailure(args, result, input) {
-  if (
-    args[0] !== "api" ||
-    input !== undefined ||
-    result.status !== 1 ||
-    !args.some(
-      (argument, index) =>
-        (argument === "-X" || argument === "--method") &&
-        args[index + 1] === "GET",
-    )
-  )
+  if (args[0] !== "api" || input !== undefined || !isApiMethod(args, "GET"))
     return false;
-  const stderr = result.stderr || "";
-  if (/HTTP\s+\d{3}|bad credentials|authentication|rate limit/i.test(stderr))
-    return false;
-  return /error connecting to api\.github\.com|connection reset by peer|(?:Get|GET) "https:\/\/[^"\n]+": unexpected EOF|dial tcp[^\n]*(?:i\/o timeout|no such host|network is unreachable)|TLS handshake timeout/i.test(
-    stderr,
+  return isTransportFailure(result);
+}
+
+function isWriteTransportFailure(args, result) {
+  return (
+    args[0] === "api" && isApiMethod(args, "POST") && isTransportFailure(result)
   );
 }
 
@@ -120,9 +135,15 @@ function runGh(args, input = undefined, retryAvailable = true) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    const transportFailure = isReadTransportFailure(args, result, input);
-    if (transportFailure && retryAvailable) return runGh(args, input, false);
-    const ErrorType = transportFailure ? GhReadTransportError : GhCommandError;
+    const readTransportFailure = isReadTransportFailure(args, result, input);
+    const writeTransportFailure = isWriteTransportFailure(args, result);
+    if (readTransportFailure && retryAvailable)
+      return runGh(args, input, false);
+    const ErrorType = readTransportFailure
+      ? GhReadTransportError
+      : writeTransportFailure
+        ? GhWriteTransportError
+        : GhCommandError;
     throw new ErrorType(
       `gh ${args[0]} failed (${result.status}): ${(result.stderr || result.stdout || "").trim()}`,
       result,
@@ -1260,6 +1281,50 @@ function persistDispatch(manifestPath, monitor, entry, accepted = false) {
   };
 }
 
+function removeRejectedDispatch(monitor, entry) {
+  const index = monitor.dispatches.findIndex(
+    (item) =>
+      item.status === "intended" &&
+      item.workflowId === entry.workflowId &&
+      item.transport === entry.transport &&
+      item.nonce === entry.nonce &&
+      item.issuedAt === entry.issuedAt &&
+      JSON.stringify(item.requirement) === JSON.stringify(entry.requirement),
+  );
+  if (index === -1) {
+    throw new Error("required-check rejected dispatch intent changed");
+  }
+  monitor.dispatches.splice(index, 1);
+}
+
+function discardRejectedDispatch(manifestPath, monitor, entry) {
+  const quality = require("./quality-invocation.js");
+  const updated = quality.withManifestLock(manifestPath, (manifest) => {
+    assertMonitorIdentity(manifest, monitor);
+    const current = manifest.merge.requiredChecksMonitor;
+    if (
+      !current ||
+      current.targetHead !== monitor.targetHead ||
+      current.deadline !== monitor.deadline ||
+      current.baseHead !== monitor.baseHead
+    )
+      throw new Error(
+        "required-check monitor changed during dispatch rejection",
+      );
+    removeRejectedDispatch(current, entry);
+  });
+  return updated.merge.requiredChecksMonitor;
+}
+
+function dispatchCommandError(error) {
+  let current = error;
+  while (current instanceof Error) {
+    if (current instanceof GhCommandError) return current;
+    current = current.cause;
+  }
+  return null;
+}
+
 function prepareChecks({ repository, base, sourceHead, targetHead }) {
   const requirements = requiredChecks(repository, base);
   const sourceRuns = checkRuns(repository, sourceHead);
@@ -1446,7 +1511,8 @@ function ensureChecks({
         if (monitor && shouldDispatch)
           monitor = persistDispatch(manifestPath, monitor, entry, true).monitor;
       } catch (error) {
-        if (monitor && error instanceof GhCommandError) {
+        const commandError = dispatchCommandError(error);
+        if (monitor && commandError instanceof GhWriteTransportError) {
           process.stderr.write(
             `[quality] dispatch outcome uncertain; reconciling persisted intent for ${requirement.context}\n`,
           );
@@ -1454,6 +1520,9 @@ function ensureChecks({
           dispatched.push({ context: requirement.context, workflowId });
           dispatchedRequirements.push(entry);
           continue;
+        }
+        if (monitor && shouldDispatch && commandError) {
+          monitor = discardRejectedDispatch(manifestPath, monitor, entry);
         }
         targetRuns = checkRuns(repository, targetHead);
         const refreshed = protectedConfig
@@ -1850,8 +1919,10 @@ module.exports = {
   monitorForAssertion,
   newRequiredChecksMonitor,
   inspectChecks,
+  isWriteTransportFailure,
   prepareChecks,
   protectedMonitorLifetimeValid,
+  removeRejectedDispatch,
   rememberPersistedDispatch,
   requiredChecks,
   graphqlRequirements,
