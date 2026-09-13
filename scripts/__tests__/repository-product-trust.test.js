@@ -363,6 +363,35 @@ describe("repository-scoped product trust", () => {
       ),
     ).toMatchObject({ repository: identity.repository });
   });
+
+  it("preserves unpadded legacy singleton keys when no registry exists", () => {
+    const keys = crypto.generateKeyPairSync("ed25519");
+    const identity = expected("buildproven/claude-kit", "1175614110");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-trust-"));
+    const trustRoot = path.join(dir, "product-admission-public-key");
+    fs.writeFileSync(
+      trustRoot,
+      keys.publicKey
+        .export({ format: "der", type: "spki" })
+        .toString("base64")
+        .replace(/=+$/, ""),
+    );
+    try {
+      expect(
+        verifyAdmissionEnvelope(
+          admission(keys.privateKey, keys.publicKey, identity),
+          identity,
+          {
+            platform: "fixture",
+            trustRoot: path.join(dir, "absent-product-trust.json"),
+            legacyTrustRoots: { admission: { fixture: trustRoot } },
+          },
+        ),
+      ).toMatchObject({ repository: identity.repository });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("privileged product-trust installation", () => {

@@ -119,14 +119,16 @@ function containedRealFile(root, relativePath, label) {
   return resolved;
 }
 
-function decodeBase64(value, label, url = false) {
+function decodeBase64(value, label, url = false, allowUnpadded = false) {
   if (!nonEmptyString(value)) throw new Error(`${label} is not valid base64`);
   if (url && value.includes("=")) {
     throw new Error(`${label} must be unpadded base64url`);
   }
   const bytes = Buffer.from(value, url ? "base64url" : "base64");
   const encoded = bytes.toString(url ? "base64url" : "base64");
-  if (encoded !== value) {
+  const compatibleUnpadded =
+    allowUnpadded && encoded.replace(/=+$/, "") === value;
+  if (encoded !== value && !compatibleUnpadded) {
     throw new Error(`${label} is not canonical base64`);
   }
   return bytes;
@@ -218,8 +220,8 @@ function readSafeRegistryFile(
   }
 }
 
-function publicKeyFromSpki(encoded, label) {
-  const der = decodeBase64(encoded, label);
+function publicKeyFromSpki(encoded, label, { allowUnpadded = false } = {}) {
+  const der = decodeBase64(encoded, label, false, allowUnpadded);
   let key;
   try {
     key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
@@ -349,14 +351,21 @@ function repositoryTrustKey(expected, purpose, options) {
   return entry[purpose];
 }
 
-function legacyTrustKey(purpose) {
-  const trustRoot = LEGACY_TRUST_ROOTS[purpose]?.[process.platform];
+function legacyTrustKey(
+  purpose,
+  {
+    fsImpl = fs,
+    platform = process.platform,
+    legacyTrustRoots = LEGACY_TRUST_ROOTS,
+  } = {},
+) {
+  const trustRoot = legacyTrustRoots[purpose]?.[platform];
   if (!trustRoot) {
-    throw new Error(`product evidence is unsupported on ${process.platform}`);
+    throw new Error(`product evidence is unsupported on ${platform}`);
   }
   let encoded;
   try {
-    encoded = fs.readFileSync(trustRoot, "utf8").trim();
+    encoded = fsImpl.readFileSync(trustRoot, "utf8").trim();
   } catch (error) {
     throw new Error(
       `product evidence trust root cannot be read: ${error.message}`,
@@ -365,13 +374,15 @@ function legacyTrustKey(purpose) {
       },
     );
   }
-  return publicKeyFromSpki(encoded, "product evidence trust root");
+  return publicKeyFromSpki(encoded, "product evidence trust root", {
+    allowUnpadded: true,
+  });
 }
 
 function trustKey(trustedPublicKey, expected, purpose, options = {}) {
   if (trustedPublicKey) return trustedPublicKey;
   const repositoryKey = repositoryTrustKey(expected, purpose, options);
-  return repositoryKey || legacyTrustKey(purpose);
+  return repositoryKey || legacyTrustKey(purpose, options);
 }
 
 function trustedPublicKeyFingerprint(trustedPublicKey) {
@@ -385,12 +396,13 @@ function trustedPublicKeyFingerprint(trustedPublicKey) {
 function verifyAdmissionEnvelope(
   envelope,
   expected,
-  { trustedPublicKey, trustRoot, fsImpl, platform } = {},
+  { trustedPublicKey, trustRoot, fsImpl, platform, legacyTrustRoots } = {},
 ) {
   const key = trustKey(trustedPublicKey, expected, "admission", {
     trustRoot,
     fsImpl,
     platform,
+    legacyTrustRoots,
   });
   if (!exactKeys(envelope, ["payload", "signature"])) {
     throw new Error("product admission envelope has unexpected fields");
@@ -594,7 +606,14 @@ function validatePayload(payload, expected) {
 function verifyReceipt(
   reference,
   expected,
-  { evidencePath, trustedPublicKey, trustRoot, fsImpl, platform } = {},
+  {
+    evidencePath,
+    trustedPublicKey,
+    trustRoot,
+    fsImpl,
+    platform,
+    legacyTrustRoots,
+  } = {},
 ) {
   if (
     !exactKeys(reference, ["receipt", "sha256"]) ||
@@ -607,6 +626,7 @@ function verifyReceipt(
     trustRoot,
     fsImpl,
     platform,
+    legacyTrustRoots,
   });
   const evidenceRoot = path.dirname(path.resolve(evidencePath || ""));
   const receipt = containedRealFile(
