@@ -11,6 +11,16 @@ model: haiku
 
 ## Model routing
 
+Native delegation uses the shared `compute-governor` native-advisory decision.
+It preserves the active coordinator. A ready decision returns model arguments
+only when the current native client reports matching capability. A blocked
+result never falls back silently to the runtime default; safe local work can
+continue.
+
+For Codex, use the ready `spawn_agent` model and effort arguments. For Claude,
+use the ready Task profile and model alias. The profile supplies effort; check
+`/tasks` for its effective model and effort. Do not change global settings.
+
 Daily commands inherit the configured runtime default (Sonnet/medium in Claude
 Code; the normal Codex profile/medium in Codex). `/bs:quality` and a triggered
 ADR review may escalate a bounded adversarial pass; no command pin is a standing
@@ -155,6 +165,8 @@ Invoked naturally — Claude Code or Codex picks the right skill from context.
 
 `/bs:quality` uses one exact-manifest deterministic runner for gates, bounded
 review, resume, optional protected merge, and terminal telemetry.
+The `engineering` claim requires protected-base policy and proves only the
+normal engineering controls. It never marks product acceptance complete.
 Product delivery claims also require protected-producer receipts bound to the
 numeric repository ID, exact HEAD, requirements, and artifact. Caller-authored
 digests and candidate-worker verification are not admission evidence.

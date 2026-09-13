@@ -65,6 +65,30 @@ const FACT_KEYS = new Set([
   "crossRepository",
   "operatorRoute",
 ]);
+const NATIVE_FACT_KEYS = [
+  "provider",
+  "phase",
+  "readOnly",
+  "localized",
+  "reversible",
+  "targetedProof",
+  "ambiguous",
+  "changedFiles",
+  "protectedSurfaces",
+  "sameFailureStreak",
+  "publicContract",
+  "crossRepository",
+  "operatorRoute",
+];
+const CLAUDE_TASK_MODEL_ALIASES = {
+  "claude-haiku-4-5": "haiku",
+  "claude-sonnet-5": "sonnet",
+};
+const CLAUDE_TASK_PROFILES = {
+  low: "native-task-low",
+  medium: "native-task-medium",
+  high: "native-task-high",
+};
 const BOOLEAN_FACT_KEYS = new Set([
   "readOnly",
   "localized",
@@ -257,6 +281,19 @@ function classifiedProtectedSurfaces(prompt, policy) {
       );
       return patterns.some((pattern) => new RegExp(pattern, "iu").test(prompt));
     })
+    .map(([surface]) => surface)
+    .sort();
+}
+
+function classifiedProtectedPaths(plannedPaths, policy = loadPolicyV2()) {
+  return Object.entries(policy.protectedPathRules)
+    .filter(([, prefixes]) =>
+      plannedPaths.some((plannedPath) =>
+        prefixes.some((prefix) =>
+          pathMatchesProtectedPrefix(plannedPath, prefix),
+        ),
+      ),
+    )
     .map(([surface]) => surface)
     .sort();
 }
@@ -623,13 +660,23 @@ function workTier(facts) {
   return { route: "standard", reasons: [standardReason(facts)] };
 }
 
-function resolve(facts, policy = loadPolicy()) {
+function resolveFacts(facts, policy = loadPolicy(), selectWorkTier = workTier) {
   assertFacts(facts, policy);
   const boundFacts = canonicalFacts(facts);
   const floor = safetyFloor(facts, policy);
-  const work = workTier(facts);
+  const work = selectWorkTier(facts);
   const route = atLeast(floor.route, work.route);
   const mapping = policy.routes[route].providers[facts.provider];
+  return { boundFacts, floor, work, route, mapping };
+}
+
+function resolve(facts, policy = loadPolicy()) {
+  if (facts?.interface === "native-advisory")
+    return resolveNative(facts, policy);
+  const { boundFacts, floor, work, route, mapping } = resolveFacts(
+    facts,
+    policy,
+  );
   return {
     schemaVersion: 1,
     policyVersion: policy.policyVersion,
@@ -645,6 +692,353 @@ function resolve(facts, policy = loadPolicy()) {
     promotion: route.startsWith("economy")
       ? "candidate-requires-calibration"
       : "not-applicable",
+  };
+}
+
+function nativeIdentityValid(identity) {
+  return Boolean(
+    identity &&
+    typeof identity.model === "string" &&
+    identity.model.trim().length > 0 &&
+    identity.model === identity.model.trim() &&
+    (identity.effort === null ||
+      (typeof identity.effort === "string" && identity.effort.length > 0)),
+  );
+}
+
+function nativeTaskValid(task) {
+  return Boolean(
+    task &&
+    typeof task.text === "string" &&
+    task.text.trim().length > 0 &&
+    task.text === task.text.trim() &&
+    Array.isArray(task.plannedPaths) &&
+    task.plannedPaths.length > 0 &&
+    task.plannedPaths.every(
+      (candidate) =>
+        typeof candidate === "string" &&
+        candidate.length > 0 &&
+        candidate === candidate.trim() &&
+        (candidate === "**" ||
+          (!path.isAbsolute(candidate) &&
+            !candidate.includes("\\") &&
+            !candidate
+              .split("/")
+              .some((part) => ["", ".", ".."].includes(part)))),
+    ) &&
+    new Set(task.plannedPaths).size === task.plannedPaths.length,
+  );
+}
+
+function nativeFacts(facts, policy) {
+  requireCondition(
+    facts && typeof facts === "object" && !Array.isArray(facts),
+    "compute-governor: native consequence facts are incomplete or invalid",
+  );
+  assertExactKeys(facts, NATIVE_FACT_KEYS, "native advisory facts");
+  requireCondition(
+    [
+      "readOnly",
+      "localized",
+      "reversible",
+      "targetedProof",
+      "ambiguous",
+      "publicContract",
+      "crossRepository",
+    ].every((key) => typeof facts[key] === "boolean") &&
+      Number.isInteger(facts.changedFiles) &&
+      facts.changedFiles >= 0 &&
+      Number.isInteger(facts.sameFailureStreak) &&
+      facts.sameFailureStreak >= 0 &&
+      Array.isArray(facts.protectedSurfaces),
+    "compute-governor: native consequence facts are incomplete or invalid",
+  );
+  requireCondition(
+    facts.operatorRoute === null || ROUTES.includes(facts.operatorRoute),
+    "compute-governor: native operator route is invalid",
+  );
+  const normalized = { ...facts };
+  if (normalized.operatorRoute === null) delete normalized.operatorRoute;
+  assertFacts(normalized, policy);
+  return normalized;
+}
+
+function nativeModelCapabilityValid(model) {
+  return Boolean(
+    typeof model?.model === "string" &&
+    model.model.trim().length > 0 &&
+    Array.isArray(model.efforts) &&
+    model.efforts.every(
+      (effort) => effort === null || typeof effort === "string",
+    ) &&
+    new Set(model.efforts).size === model.efforts.length,
+  );
+}
+
+function nativeProfileCapabilityValid(profile) {
+  return Boolean(
+    typeof profile?.subagent_type === "string" &&
+    profile.subagent_type.trim().length > 0 &&
+    (profile.effort === null || typeof profile.effort === "string"),
+  );
+}
+
+function nativeProfilesValid(profiles) {
+  return Boolean(
+    profiles === null ||
+    (Array.isArray(profiles) &&
+      profiles.every(nativeProfileCapabilityValid) &&
+      new Set(
+        profiles.map((profile) => `${profile.subagent_type}:${profile.effort}`),
+      ).size === profiles.length),
+  );
+}
+
+function nativeCapabilitiesValid(capabilities) {
+  return Boolean(
+    capabilities &&
+    [true, false, null].includes(capabilities.delegation) &&
+    [true, false, null].includes(capabilities.overrides) &&
+    (capabilities.models === null ||
+      (Array.isArray(capabilities.models) &&
+        capabilities.models.every(nativeModelCapabilityValid))) &&
+    nativeProfilesValid(capabilities.profiles),
+  );
+}
+
+function assertNativeRequest(request, policy) {
+  requireCondition(
+    request?.interface === "native-advisory" &&
+      request.schemaVersion === 1 &&
+      request.work === "delegation",
+    "compute-governor: invalid native advisory request",
+  );
+  assertExactKeys(
+    request,
+    [
+      "interface",
+      "schemaVersion",
+      "work",
+      "facts",
+      "task",
+      "parent",
+      "override",
+      "fork",
+      "capabilities",
+    ],
+    "native advisory request",
+  );
+  requireCondition(
+    request.facts &&
+      typeof request.facts === "object" &&
+      !Array.isArray(request.facts),
+    "compute-governor: native consequence facts are incomplete or invalid",
+  );
+  requireCondition(
+    nativeIdentityValid(request.parent) &&
+      (request.override === null || nativeIdentityValid(request.override)) &&
+      ["all", "bounded", "none"].includes(request.fork) &&
+      nativeTaskValid(request.task),
+    "compute-governor: invalid native identity, context, or task",
+  );
+  for (const identity of [request.parent, request.override].filter(Boolean)) {
+    assertExactKeys(identity, ["model", "effort"], "native identity");
+  }
+  const capabilities = request.capabilities;
+  requireCondition(
+    nativeCapabilitiesValid(capabilities),
+    "compute-governor: invalid native capabilities",
+  );
+  assertExactKeys(
+    capabilities,
+    ["delegation", "overrides", "models", "profiles"],
+    "native capabilities",
+  );
+  for (const model of capabilities.models || []) {
+    assertExactKeys(model, ["model", "efforts"], "native model capability");
+  }
+  for (const profile of capabilities.profiles || []) {
+    assertExactKeys(
+      profile,
+      ["subagent_type", "effort"],
+      "native task profile capability",
+    );
+  }
+  return nativeFacts(request.facts, policy);
+}
+
+function nativeWorkTier(facts) {
+  const work = workTier(facts);
+  if (facts.ambiguous === true && rank(work.route) < rank("standard")) {
+    return { route: "standard", reasons: ["ambiguous behavior"] };
+  }
+  return work;
+}
+
+function routeForIdentity(identity, provider, minimumRoute, policy) {
+  return ROUTES.find((route) => {
+    const mapping = policy.routes[route].providers[provider];
+    return (
+      rank(route) >= rank(minimumRoute) &&
+      mapping.model === identity.model &&
+      mapping.effort === identity.effort
+    );
+  });
+}
+
+function profileForIdentity(capabilities, identity) {
+  const expectedProfile =
+    identity.effort === null
+      ? "general-purpose"
+      : CLAUDE_TASK_PROFILES[identity.effort];
+  if (!expectedProfile) return undefined;
+  return capabilities.profiles?.find(
+    (profile) =>
+      profile.subagent_type === expectedProfile &&
+      profile.effort === identity.effort,
+  );
+}
+
+function capabilitySupportsIdentity(capabilities, identity, provider) {
+  const modelSupported = capabilities.models?.some(
+    (model) =>
+      model.model === identity.model && model.efforts.includes(identity.effort),
+  );
+  return Boolean(
+    modelSupported &&
+    (provider !== "claude" ||
+      (CLAUDE_TASK_MODEL_ALIASES[identity.model] &&
+        profileForIdentity(capabilities, identity))),
+  );
+}
+
+function nativeModelArguments(provider, identity, capabilities) {
+  if (provider === "codex") {
+    return { model: identity.model, reasoning_effort: identity.effort };
+  }
+  const profile = profileForIdentity(capabilities, identity);
+  if (!profile) return null;
+  return {
+    subagent_type: profile.subagent_type,
+    model: CLAUDE_TASK_MODEL_ALIASES[identity.model],
+  };
+}
+
+function nativeBlocks(request, inherited, requested, requestedRoute, provider) {
+  const blocks = [];
+  if (request.capabilities.delegation !== true) {
+    blocks.push("native delegation unavailable or unknown");
+  }
+  if (inherited && request.override !== null) {
+    blocks.push(
+      "full-history forks inherit model and effort; overrides are unsupported",
+    );
+  }
+  if (!inherited && request.capabilities.overrides !== true) {
+    blocks.push(
+      "bounded or fresh model override support unavailable or unknown",
+    );
+  }
+  if (!capabilitySupportsIdentity(request.capabilities, requested, provider)) {
+    blocks.push("requested model and effort unavailable or unknown");
+  }
+  if (!requestedRoute) {
+    blocks.push("requested identity is below the native task safety floor");
+  }
+  return blocks;
+}
+
+function resolveNative(request, policy = loadPolicy()) {
+  const facts = assertNativeRequest(request, policy);
+  const textSurfaces = classifiedProtectedSurfaces(request.task.text, policy);
+  const pathSurfaces = classifiedProtectedPaths(request.task.plannedPaths);
+  const taskProtectedSurfaces = [
+    ...new Set([...facts.protectedSurfaces, ...textSurfaces, ...pathSurfaces]),
+  ].sort();
+  const classifiedFacts = {
+    ...facts,
+    protectedSurfaces: taskProtectedSurfaces,
+  };
+  const classification = resolveFacts(classifiedFacts, policy, nativeWorkTier);
+  const safetyFloor = atLeast(
+    classification.floor.route,
+    facts.operatorRoute || classification.floor.route,
+  );
+  const recommendationRoute = atLeast(classification.route, safetyFloor);
+  const recommendationMapping =
+    policy.routes[recommendationRoute].providers[classifiedFacts.provider];
+  const recommendation = {
+    route: recommendationRoute,
+    model: recommendationMapping.model,
+    effort: recommendationMapping.effort,
+    reasons: [classification.floor.reason, ...classification.work.reasons],
+  };
+  const inherited = request.fork === "all";
+  const requested =
+    request.override || (inherited ? request.parent : recommendation);
+  const requestedRoute = routeForIdentity(
+    requested,
+    classifiedFacts.provider,
+    safetyFloor,
+    policy,
+  );
+  const blocks = nativeBlocks(
+    request,
+    inherited,
+    requested,
+    requestedRoute,
+    classifiedFacts.provider,
+  );
+  const overrideBelowRecommendation = Boolean(
+    request.override &&
+    requestedRoute &&
+    rank(requestedRoute) < rank(recommendation.route),
+  );
+  const reasons = [
+    ...recommendation.reasons,
+    ...(overrideBelowRecommendation
+      ? ["explicit override is below the advisory recommendation"]
+      : []),
+    ...blocks,
+  ];
+  return {
+    interface: "native-advisory",
+    schemaVersion: 1,
+    policyVersion: policy.policyVersion,
+    status: blocks.length > 0 ? "blocked" : "ready",
+    advisoryOnly: true,
+    work: request.work,
+    provider: facts.provider,
+    role: facts.phase,
+    parent: { ...request.parent },
+    safetyFloor,
+    recommendation,
+    requested,
+    requestedRoute,
+    overrideBelowRecommendation,
+    modelArguments:
+      !inherited && blocks.length === 0
+        ? nativeModelArguments(
+            classifiedFacts.provider,
+            requested,
+            request.capabilities,
+          )
+        : null,
+    task: {
+      sha256: sha256(canonicalJsonString(request.task)),
+      classifiedProtectedSurfaces: taskProtectedSurfaces,
+    },
+    observed: null,
+    usage: null,
+    reasons,
+    constraints: {
+      preserveParentSelection: true,
+      preservePermissions: true,
+      preserveRequiredContext: true,
+      launches: 0,
+      executionReceipt: false,
+      grantsAuthority: false,
+    },
   };
 }
 

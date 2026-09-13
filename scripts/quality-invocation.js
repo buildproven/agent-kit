@@ -27,6 +27,7 @@ const REQUIRED_GATES_POLICY_VERSION = 3;
 const MAX_AGENT_TARGET = 9;
 const DELIVERY_CLAIMS = new Set([
   "contract",
+  "engineering",
   "local-product",
   "hosted",
   "validated",
@@ -645,7 +646,13 @@ function changedFiles(root, baseSha, head) {
     // containing non-ASCII bytes (core.quotePath's default), which would
     // otherwise break a suffix check like .endsWith(".py") on a path such
     // as "café.py".
-    return git(root, ["diff", "-z", "--name-only", `${baseSha}..${head}`])
+    return git(root, [
+      "diff",
+      "-z",
+      "--name-only",
+      "--no-renames",
+      `${baseSha}..${head}`,
+    ])
       .split("\0")
       .filter(Boolean);
   } catch {
@@ -1130,7 +1137,11 @@ function discoverRequiredGates(
   const verifyAppGate = discoverVerifyAppGate(options, nativeGates);
   if (verifyAppGate) required.push(verifyAppGate);
   return required.map((gate) => {
-    if (gate.source.startsWith("test-impact:")) return gate;
+    if (
+      gate.source.startsWith("test-impact:") &&
+      gate.testImpactMode !== "audit"
+    )
+      return gate;
     const timeoutSeconds = gateTimeouts.get(gate.name);
     return timeoutSeconds ? { ...gate, timeoutSeconds } : gate;
   });
@@ -6023,28 +6034,40 @@ function validMutationArtifact(manifest, artifact) {
   const candidateBase = artifact.candidateBase || artifact.base;
   if (candidateBase !== artifact.base) {
     const carry = manifest.mutationCarry;
+    const rebaseCarry = manifest.revisions.baseRebaseCarry;
+    const freshRebaseProof = Boolean(
+      rebaseCarry &&
+      rebaseCarry.head === artifact.head &&
+      rebaseCarry.baseSha === candidateBase &&
+      carry?.priorHead === rebaseCarry.priorHead &&
+      artifact.reusedArtifactSha256 === null &&
+      artifact.avoidedSeconds === 0,
+    );
     if (
-      !carry ||
-      carry.priorHead !== candidateBase ||
-      carry.artifactSha256 !== artifact.reusedArtifactSha256 ||
-      !fs.existsSync(carry.artifactPath) ||
-      sha256File(carry.artifactPath) !== carry.artifactSha256
+      !freshRebaseProof &&
+      (!carry ||
+        carry.priorHead !== candidateBase ||
+        carry.artifactSha256 !== artifact.reusedArtifactSha256 ||
+        !fs.existsSync(carry.artifactPath) ||
+        sha256File(carry.artifactPath) !== carry.artifactSha256)
     ) {
       return false;
     }
-    const prior = parseJson(
-      fs.readFileSync(carry.artifactPath, "utf8"),
-      "prior mutation evidence artifact",
-    );
-    if (
-      prior.invocationId !== manifest.invocationId ||
-      prior.base !== manifest.revisions.baseSha ||
-      prior.head !== candidateBase ||
-      prior.tier !== manifest.risk.tier ||
-      !validMutationPaths(prior.mutatedPaths) ||
-      prior.testFailureObserved !== true
-    ) {
-      return false;
+    if (!freshRebaseProof) {
+      const prior = parseJson(
+        fs.readFileSync(carry.artifactPath, "utf8"),
+        "prior mutation evidence artifact",
+      );
+      if (
+        prior.invocationId !== manifest.invocationId ||
+        prior.base !== manifest.revisions.baseSha ||
+        prior.head !== candidateBase ||
+        prior.tier !== manifest.risk.tier ||
+        !validMutationPaths(prior.mutatedPaths) ||
+        prior.testFailureObserved !== true
+      ) {
+        return false;
+      }
     }
   }
   if (["gitlink-skip", "no-mutable-source"].includes(artifact.method)) {
@@ -6770,6 +6793,135 @@ function recoveryScope(manifest, terminal) {
   // accepted-condition shape; recovery only requires that its blocked
   // admission conditions remain covered by that signed capability.
   return manifest.approval.scope;
+}
+
+function mergeReadRecoveryEligible(manifest) {
+  const terminal = manifest.terminalState;
+  const orchestration = manifest.orchestration;
+  const failure = manifest.merge?.readFailure;
+  const historical = terminal?.detail === "merge admission failed with exit 1";
+  const typed =
+    terminal?.detail === "ci-admission-read-failed" &&
+    failure?.kind === "ci-admission-read-failed" &&
+    failure.exitCode === 75 &&
+    failure.head === manifest.revisions.currentHead;
+  return Boolean(
+    manifest.options?.merge === true &&
+    manifest.merge?.repositoryLease &&
+    terminal?.state === "blocked" &&
+    terminal.head === manifest.revisions.currentHead &&
+    (historical || typed) &&
+    !manifest.merge.readRecovery &&
+    !manifest.merge.admissionBlock &&
+    !terminal.mergeAdmissionConditions &&
+    !manifest.governor?.activeExecution &&
+    orchestration?.head === terminal.head &&
+    orchestration.phase === "merge" &&
+    orchestration.steps?.merge?.status === "running" &&
+    orchestration.steps.merge.attempts === 1,
+  );
+}
+
+// Only the caller that commits this transition receives a continuation grant.
+// A persisted recovering sentinel cannot reconstruct that grant after a crash.
+function resumeMergeReadFailure(manifestPath, dependencies = {}) {
+  const initial = loadManifest(manifestPath).manifest;
+  if (!mergeReadRecoveryEligible(initial)) return null;
+  const readPullRequest =
+    dependencies.readPullRequest ||
+    ((manifest) =>
+      parseJson(
+        execFileSync(
+          "gh",
+          [
+            "pr",
+            "view",
+            String(manifest.repo.pr),
+            "--repo",
+            manifest.repo.githubRepository,
+            "--json",
+            "state,headRefOid",
+          ],
+          { cwd: manifest.repo.realpath, encoding: "utf8", timeout: 30000 },
+        ),
+        "current pull request",
+      ));
+  const readChecks =
+    dependencies.readChecks ||
+    ((manifest) =>
+      parseJson(
+        execFileSync(
+          "gh",
+          [
+            "pr",
+            "checks",
+            String(manifest.repo.pr),
+            "--repo",
+            manifest.repo.githubRepository,
+            "--json",
+            "state",
+          ],
+          { cwd: manifest.repo.realpath, encoding: "utf8", timeout: 30000 },
+        ),
+        "current pull request checks",
+      ));
+  let grant = null;
+  require("./quality-repo-lease").withManifestMutation(
+    manifestPath,
+    process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN,
+    (manifest) => {
+      if (!mergeReadRecoveryEligible(manifest)) return;
+      validateIdentity(manifest, manifest.repo.realpath);
+      verifyGateEvidence(manifest);
+      reviewAuthorization(manifest);
+      const pr = readPullRequest(manifest);
+      if (
+        pr?.state !== "OPEN" ||
+        pr.headRefOid !== manifest.revisions.currentHead
+      )
+        throw new Error("merge-read recovery requires the open exact-head PR");
+      const checks = readChecks(manifest);
+      if (
+        !Array.isArray(checks) ||
+        checks.length === 0 ||
+        checks.some(
+          (check) => !["SUCCESS", "SKIPPED", "NEUTRAL"].includes(check?.state),
+        )
+      )
+        throw new Error(
+          "merge-read recovery requires current nonempty green checks",
+        );
+      if (
+        manifest.terminalHistory !== undefined &&
+        !Array.isArray(manifest.terminalHistory)
+      )
+        throw new Error("terminal history is malformed");
+      const recordedAt = new Date().toISOString();
+      const epoch = terminalEpoch(manifest) + 1;
+      manifest.terminalHistory ??= [];
+      manifest.terminalHistory.push({
+        ...manifest.terminalState,
+        disposition: "reentered-merge-read-failure",
+        supersededAt: recordedAt,
+      });
+      manifest.terminalEpoch = epoch;
+      manifest.merge.readRecovery = {
+        head: manifest.revisions.currentHead,
+        terminalEpoch: epoch,
+        recordedAt,
+      };
+      manifest.terminalState = {
+        state: "recovering",
+        head: manifest.revisions.currentHead,
+        terminalEpoch: epoch,
+        recordedAt,
+        recovery: { kind: "merge-read-failure" },
+      };
+      grant = { head: manifest.revisions.currentHead, terminalEpoch: epoch };
+    },
+    { requireIdle: true },
+  );
+  return grant;
 }
 
 function resumeInterruptedTerminal(manifestPath) {
@@ -7562,6 +7714,7 @@ module.exports = {
   resolveGreenCiAdmissionBlock,
   recoveryScope,
   resumeInterruptedTerminal,
+  resumeMergeReadFailure,
   resumeRecoverableTerminal,
   terminalEpoch,
   isTerminal,

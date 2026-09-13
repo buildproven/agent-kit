@@ -365,7 +365,7 @@ else
   # real local budget refusal ahead of every workflow dispatch.
   PREPARE_JSON="$(node "$SCRIPT_DIR/quality-required-checks.js" prepare \
     --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
-    --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD")" || exit 1
+    --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD")" || exit $?
   PREPARED_DISPATCH_COUNT="$(printf '%s' "$PREPARE_JSON" | jq '.dispatches | length')"
   if [ "$PREPARED_DISPATCH_COUNT" -gt 0 ]; then
     admit_ci_dispatch
@@ -373,7 +373,8 @@ else
     ENSURE_JSON="$(node "$SCRIPT_DIR/quality-required-checks.js" ensure \
       --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
       --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD" \
-      --head-ref "$EXPECTED_HEAD_REF")" || exit 1
+      --head-ref "$EXPECTED_HEAD_REF" --manifest "$MANIFEST" \
+      --timeout "$CI_TIMEOUT")" || exit $?
     if [ "$(printf '%s' "$ENSURE_JSON" | jq '.deferred | length')" -gt 0 ]; then
       printf '%s' "$ENSURE_JSON" | jq -r \
         '.deferred[] | "[quality] exact-head workflow registered; required check remains deferred: \(.context) workflow=\(.workflowId) run=\(.runId) status=\(.status)"' >&2
@@ -382,8 +383,12 @@ else
   bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$CI_TIMEOUT" -- \
     node "$SCRIPT_DIR/quality-required-checks.js" wait \
       --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
-      --head "$MERGE_HEAD" --timeout "$CI_TIMEOUT" --interval 10 || RC=$?
+      --head "$MERGE_HEAD" --timeout "$CI_TIMEOUT" --interval 10 \
+      --manifest "$MANIFEST" || RC=$?
 fi
+# A GitHub read transport failure is not CI failure or billing evidence.
+# Preserve its type for same-campaign recovery before any waiver evaluation.
+[ "$RC" -ne 75 ] || exit 75
 if [ "$RC" -ne 0 ]; then
   if node "$SCRIPT_DIR/quality-ci-billing-waiver.js" \
     --repo "$EXPECTED_REPOSITORY" --pr "$PR" --head "$MERGE_HEAD" \
@@ -416,6 +421,12 @@ fi
   echo "❌ MERGE BLOCKED: PR HEAD changed while waiting for exact-candidate CI." >&2
   exit 1
 }
+if [ "$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" options.deliveryClaim)" = engineering ]; then
+  # Re-read the closed policy from the exact protected base after CI and
+  # immediately before final authorization. Candidate files never supply the
+  # policy, and a stale or revoked base remains blocked.
+  node "$SCRIPT_DIR/engineering-delivery-policy.js" --manifest "$MANIFEST" >/dev/null
+fi
 if [ "$CI_BILLING_WAIVED" = true ]; then
   BS_QUALITY_CI_BILLING_WAIVER_ARTIFACT="$CI_WAIVER_ARTIFACT" \
     QUALITY_CI_BILLING_LOCAL_REVIEW="$LOCAL_REVIEW_EVIDENCE" \
