@@ -235,6 +235,17 @@ never signed exact-head review or product-completion evidence.
 | `--manifest <path>`                  | -       | Resume one exact persisted invocation; accepts no other flags                                |
 | `--target-dir <path>`                | -       | Run against this repo (use when invoking from a forked/agent context with no inherited cwd)  |
 
+### Quarantined runner recovery
+
+A dead runner with `childInFlight: true` stays unavailable until child
+quiescence is proved. Use `scripts/quality-runner-reconcile.js` with the exact
+manifest, current head, owner host, PID, and nonce. Schema-v2 ownership proves
+the recorded process group absent. A legacy schema-v1 record also requires
+`--confirm-legacy-child-quiescent` after explicit process-tree inspection. The
+reconciler removes only the exact fenced ownership file; it does not change the
+manifest, budgets, reviews, or terminal history. See
+`docs/decisions/ADR-quality-runner-reconciliation.md` for the command contract.
+
 ### `--verify-app` gate (BUI-306)
 
 Every deterministic gate up to this point (lint/type/build/test/security/

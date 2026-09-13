@@ -20,6 +20,18 @@ function workflow(name) {
   );
 }
 
+function commissioningWorkflow() {
+  return parse(
+    fs.readFileSync(
+      new URL(
+        "../../.github/workflows/product-admission-public-key.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+}
+
 const expected = {
   repository: "buildproven/claude-kit",
   repositoryId: "123456",
@@ -299,5 +311,151 @@ describe("protected product workflow transport", () => {
     );
     expect(diagnostics?.run).toContain("test -f behavioral-tests.log");
     expect(diagnostics?.run).toContain("test -f acceptance-evidence.log");
+  });
+
+  it("installs the fixed evidence trust root through the protected worker", () => {
+    const admission = workflow("admission");
+    const step = admission.jobs["admit-product-evidence"].steps.find(
+      (candidate) =>
+        candidate.name ===
+        "Install fixed verifier trust root and create admission",
+    );
+    expect(step?.run).toContain("sudo install -d -m 0755 /etc/claude-kit");
+    expect(step?.run).toContain(
+      "| sudo tee /etc/claude-kit/product-evidence-public-key >/dev/null",
+    );
+    expect(step?.run).toContain(
+      "sudo chmod 0644 /etc/claude-kit/product-evidence-public-key",
+    );
+    expect(step?.run).not.toContain(
+      "> /etc/claude-kit/product-evidence-public-key",
+    );
+  });
+
+  it("derives only public repository trust keys on the protected base", () => {
+    const definition = commissioningWorkflow();
+    expect(Object.keys(definition.on)).toEqual(["workflow_dispatch"]);
+    expect(definition.on.workflow_dispatch ?? {}).toEqual({});
+    expect(definition.permissions).toEqual({ contents: "read" });
+    expect(definition.concurrency).toEqual({
+      group: "${{ github.workflow }}",
+      "cancel-in-progress": false,
+    });
+    const job = definition.jobs["derive-public-trust-root"];
+    expect(job.if).toContain("github.ref == format('refs/heads/{0}'");
+    expect(job.if).toContain("github.workflow_ref == format(");
+    const checkout = job.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    expect(checkout.with).toEqual({
+      ref: "${{ github.event.repository.default_branch }}",
+      "persist-credentials": false,
+    });
+    const derive = job.steps.find(
+      (step) => step.name === "Derive public trust-root artifact",
+    );
+    expect(derive.env).toEqual({
+      PRODUCT_EVIDENCE_PRIVATE_KEY:
+        "${{ secrets.PRODUCT_EVIDENCE_PRIVATE_KEY }}",
+      PRODUCT_ADMISSION_PRIVATE_KEY:
+        "${{ secrets.PRODUCT_ADMISSION_PRIVATE_KEY }}",
+    });
+    expect(derive.run).toContain("crypto.createPrivateKey");
+    expect(derive.run).toContain("crypto.createPublicKey");
+    expect(derive.run).toContain("asymmetricKeyType !== 'ed25519'");
+    expect(derive.run).not.toMatch(/console\.(?:log|error)\([^)]*PRIVATE_KEY/);
+
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "admission-public-key-"),
+    );
+    try {
+      const evidencePair = generateKeyPairSync("ed25519");
+      const admissionPair = generateKeyPairSync("ed25519");
+      const evidencePrivateMaterial = evidencePair.privateKey
+        .export({ format: "der", type: "pkcs8" })
+        .toString("base64");
+      const admissionPrivateMaterial = admissionPair.privateKey
+        .export({ format: "der", type: "pkcs8" })
+        .toString("base64");
+      const result = spawnSync(
+        "bash",
+        ["-e", "-o", "pipefail", "-c", derive.run],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PRODUCT_EVIDENCE_PRIVATE_KEY: evidencePrivateMaterial,
+            PRODUCT_ADMISSION_PRIVATE_KEY: admissionPrivateMaterial,
+            GITHUB_REPOSITORY: "buildproven/claude-kit",
+            GITHUB_REPOSITORY_ID: "1175614110",
+            GITHUB_SHA: "a".repeat(40),
+            GITHUB_RUN_ID: "101",
+            GITHUB_RUN_ATTEMPT: "1",
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const artifact = path.join(root, "product-admission-public-key");
+      const evidencePublicMaterial = fs
+        .readFileSync(
+          path.join(artifact, "product-evidence-public-key"),
+          "utf8",
+        )
+        .trim();
+      const admissionPublicMaterial = fs
+        .readFileSync(
+          path.join(artifact, "product-admission-public-key"),
+          "utf8",
+        )
+        .trim();
+      const evidencePublicDer = evidencePair.publicKey.export({
+        format: "der",
+        type: "spki",
+      });
+      const admissionPublicDer = admissionPair.publicKey.export({
+        format: "der",
+        type: "spki",
+      });
+      expect(evidencePublicMaterial).toBe(evidencePublicDer.toString("base64"));
+      expect(admissionPublicMaterial).toBe(
+        admissionPublicDer.toString("base64"),
+      );
+      const provenance = JSON.parse(
+        fs.readFileSync(path.join(artifact, "provenance.json"), "utf8"),
+      );
+      expect(provenance).toEqual({
+        schemaVersion: 1,
+        keys: {
+          productEvidence: {
+            algorithm: "Ed25519",
+            fingerprint: createHash("sha256")
+              .update(evidencePublicDer)
+              .digest("hex"),
+          },
+          productAdmission: {
+            algorithm: "Ed25519",
+            fingerprint: createHash("sha256")
+              .update(admissionPublicDer)
+              .digest("hex"),
+          },
+        },
+        repository: "buildproven/claude-kit",
+        repositoryId: "1175614110",
+        workflowCommit: "a".repeat(40),
+        runId: "101",
+        runAttempt: "1",
+      });
+      for (const file of fs.readdirSync(artifact)) {
+        expect(
+          fs.readFileSync(path.join(artifact, file), "utf8"),
+        ).not.toContain(evidencePrivateMaterial);
+        expect(
+          fs.readFileSync(path.join(artifact, file), "utf8"),
+        ).not.toContain(admissionPrivateMaterial);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
