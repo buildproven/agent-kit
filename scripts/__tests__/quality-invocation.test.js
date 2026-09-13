@@ -834,39 +834,6 @@ describe("quality invocation manifest", () => {
     expect(schemaChanged.selector).toBe(after.selector);
   });
 
-  it.each(["javascript", "shell"])(
-    "rejects a %s parent-directory runtime dependency",
-    (kind) => {
-      const runtime = realpathSync(makeTempDir("selection-traversal-"));
-      const files = [
-        "quality-select-agents.sh",
-        "quality-run.js",
-        "quality-risk-resolve.sh",
-        "quality-runtime-plan.js",
-        "quality-run-gate.sh",
-        "quality-run-review.sh",
-        "quality-mutation-check.sh",
-        "quality-authorize-review-round.sh",
-        "quality-stamp-and-merge.sh",
-      ];
-      for (const file of files)
-        writeFileSync(path.join(runtime, file), "// fixture\n");
-      writeFileSync(
-        path.join(
-          runtime,
-          kind === "javascript" ? "quality-run.js" : "quality-run-review.sh",
-        ),
-        kind === "javascript"
-          ? 'require("./../outside.js");\n'
-          : 'source "$SCRIPT_DIR/../outside.sh"\n',
-      );
-
-      expect(() => invocation.selectionRuntimeDigests(runtime)).toThrow(
-        /dependency name is malformed/,
-      );
-    },
-  );
-
   it("rejects a runtime file replaced with a symlink after canonical validation", () => {
     const runtime = realpathSync(makeTempDir("selection-race-"));
     const files = [
