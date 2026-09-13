@@ -6450,6 +6450,15 @@ function recoverDeadManifestLock(lock, file) {
   return true;
 }
 
+function withManifestMetadataGuard(file, operation) {
+  const { manifest } = loadManifest(file);
+  if (manifest.options?.merge !== true || !manifest.repo?.githubRepository)
+    return operation();
+  const lease = require("./quality-repo-lease");
+  if (lease.hasMetadataGuard(manifest)) return operation();
+  return lease.withMetadataGuard(manifest, operation);
+}
+
 function openManifestLock(lock, file) {
   try {
     return fs.openSync(lock, "wx", 0o600);
@@ -6467,7 +6476,7 @@ function openManifestLock(lock, file) {
   }
 }
 
-function withManifestLockRaw(file, mutation) {
+function withManifestLockRawGuarded(file, mutation) {
   const lock = `${path.resolve(file)}.lock`;
   const descriptor = openManifestLock(lock, file);
   try {
@@ -6495,6 +6504,12 @@ function withManifestLockRaw(file, mutation) {
     fs.closeSync(descriptor);
     fs.unlinkSync(lock);
   }
+}
+
+function withManifestLockRaw(file, mutation) {
+  return withManifestMetadataGuard(file, () =>
+    withManifestLockRawGuarded(file, mutation),
+  );
 }
 
 function withManifestLock(file, mutation) {
@@ -6613,17 +6628,19 @@ function recordTerminalState(manifestPath, state, detail = null, options = {}) {
       write,
     ).terminalState.state;
   }
-  const lock = `${path.resolve(manifestPath)}.lock`;
-  const descriptor = openManifestLock(lock, manifestPath);
-  try {
-    const loaded = loadManifest(manifestPath);
-    const result = write(loaded.manifest);
-    saveManifestMidTransaction(loaded.manifestPath, loaded.manifest);
-    return result;
-  } finally {
-    fs.closeSync(descriptor);
-    fs.unlinkSync(lock);
-  }
+  return withManifestMetadataGuard(manifestPath, () => {
+    const lock = `${path.resolve(manifestPath)}.lock`;
+    const descriptor = openManifestLock(lock, manifestPath);
+    try {
+      const loaded = loadManifest(manifestPath);
+      const result = write(loaded.manifest);
+      saveManifestMidTransaction(loaded.manifestPath, loaded.manifest);
+      return result;
+    } finally {
+      fs.closeSync(descriptor);
+      fs.unlinkSync(lock);
+    }
+  });
 }
 
 function recordMergeAdmissionBlockedTerminal(

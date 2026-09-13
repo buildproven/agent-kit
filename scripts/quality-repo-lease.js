@@ -398,6 +398,12 @@ function hasMetadataGuard(manifest) {
   return sameGuardOwner(guardOwner(paths.metadataGuard), held);
 }
 
+// quality-invocation is loaded by this module and calls these functions while
+// repository-lease initialization is still in progress. Publish the narrow
+// guard API before the complete export table below replaces module.exports.
+module.exports.withMetadataGuard = withMetadataGuard;
+module.exports.hasMetadataGuard = hasMetadataGuard;
+
 function loadManifest(manifestPath) {
   return require("./quality-invocation").loadManifest(manifestPath);
 }
