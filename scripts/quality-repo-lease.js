@@ -1889,14 +1889,35 @@ function performMerge(manifestPath, presentedToken, options = {}) {
   }
   // A failed/timeout client can have submitted an accepted request. Preserve
   // the operation guard until GitHub proves merge or the operator closes the PR.
+  // Build the hint BEFORE the throw, and never let its preconditions replace
+  // this diagnostic. This is the most safety-critical message in the file: it
+  // fires when GitHub could not confirm the merge, and it carries the gh
+  // status, stderr and remote state an operator needs to avoid a duplicate
+  // merge. Evaluating the builder inline as an Error argument meant that a
+  // manifest missing repo.pr threw "requires the displaced owner record"
+  // INSTEAD, discarding all of that context — precisely the failure mode where
+  // pr is most likely to be unset.
+  let recoveryHint;
+  try {
+    recoveryHint = `run ${recoveryInvocation(
+      "reconcile-merge",
+      loaded.manifestPath,
+      {
+        invocationId: loaded.manifest.invocationId,
+        pr: loaded.manifest.repo.pr,
+      },
+    )}`;
+  } catch {
+    recoveryHint =
+      `run reconcile-merge against ${loaded.manifestPath} manually ` +
+      `(owner identity incomplete: invocationId=` +
+      `${loaded.manifest.invocationId ?? "unset"}, ` +
+      `pr=${loaded.manifest.repo?.pr ?? "unset"})`;
+  }
   throw new Error(
     `merge outcome is ambiguous and quarantined (gh status ${merge.status ?? "timeout"}): ` +
       `${merge.stderr || remoteReadError?.message || `GitHub returned ${JSON.stringify(remote)}`}`.trim() +
-      `; after verifying GitHub, run ` +
-      recoveryInvocation("reconcile-merge", loaded.manifestPath, {
-        invocationId: loaded.manifest.invocationId,
-        pr: loaded.manifest.repo.pr,
-      }),
+      `; after verifying GitHub, ${recoveryHint}`,
   );
 }
 

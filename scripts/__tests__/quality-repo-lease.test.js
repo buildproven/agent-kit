@@ -1840,3 +1840,43 @@ describe("idle-only recovery mutation", () => {
     expect(manifest.merge.repositoryLease.generation).toBe(owner.generation);
   });
 });
+
+describe("quarantine diagnostic survives an incomplete owner record", () => {
+  // Regression for a defect the PR-536 review caught in its own fix.
+  //
+  // recoveryInvocation() validates displacedOwner and throws when pr is
+  // undefined. It was being called INLINE as an argument to
+  // `throw new Error(...)` in reconcileMergeOutcome, so on a manifest with no
+  // repo.pr the builder threw FIRST and the ambiguous-merge Error was never
+  // constructed. The operator then saw "recovery invocation requires the
+  // displaced owner record" instead of the gh status, stderr and remote state
+  // needed to avoid a duplicate merge — and repo.pr being unset is exactly
+  // when that path is most likely to run.
+  //
+  // The invariant: the recovery hint is a best-effort addendum. It must never
+  // be able to replace the primary diagnostic.
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "quality-repo-lease.js"),
+    "utf8",
+  );
+
+  it("never evaluates recoveryInvocation inside the quarantine throw", () => {
+    const quarantine = source.slice(
+      source.indexOf("merge outcome is ambiguous and quarantined"),
+    );
+    const throwExpression = quarantine.slice(0, quarantine.indexOf("\n  );"));
+    expect(throwExpression).not.toMatch(/recoveryInvocation\(/);
+  });
+
+  it("guards the hint builder so its preconditions cannot mask the error", () => {
+    const builder = source.slice(
+      source.indexOf("let recoveryHint;"),
+      source.indexOf("merge outcome is ambiguous and quarantined"),
+    );
+    expect(builder).toMatch(/recoveryInvocation\(/);
+    expect(builder).toMatch(/\btry\b/);
+    expect(builder).toMatch(/\bcatch\b/);
+    // The fallback still has to name the manifest an operator must act on.
+    expect(builder).toMatch(/reconcile-merge/);
+  });
+});
