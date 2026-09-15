@@ -21,6 +21,15 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.10.1](https://github.com/buildproven/agent-kit/compare/v4.10.0...v4.10.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* honor the mutation acknowledgement the gate already accepted ([#535](https://github.com/buildproven/agent-kit/issues/535)) ([5894481](https://github.com/buildproven/agent-kit/commit/58944816d54624e66ba84fd6528b7cf270d3042e))
+* let an operator acknowledge missing mutation evidence ([#532](https://github.com/buildproven/agent-kit/issues/532)) ([45f5089](https://github.com/buildproven/agent-kit/commit/45f50892e7412d157fa582b6ad8ab63d293663cb))
+* pass only named build variables into repository gates ([#529](https://github.com/buildproven/agent-kit/issues/529)) ([39607a0](https://github.com/buildproven/agent-kit/commit/39607a063d693467afb4ff9c8d11ca011e690012))
+
 ## [4.10.0](https://github.com/buildproven/claude-kit/compare/v4.9.1...v4.10.0) (2026-09-15)
 
 
