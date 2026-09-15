@@ -185,6 +185,40 @@ describe("no credential-shaped path escapes the floor", () => {
     ]),
   );
 
+  // The sweep above varies the credential NOUN and holds the extension prose.
+  // BUI-640 lived on the other axis: key material identified by its EXTENSION
+  // rather than its stem. `certs/server.pem.md` has no credential noun to
+  // tokenize, so nothing above could ever generate it, and every probe of
+  // `.key` looked healthy because `.key` matches the `**/*key*` substring
+  // pattern instead of the extension path.
+  const KEY_MATERIAL_EXTENSIONS = [
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+    ".ppk",
+    ".pk8",
+    ".kdb",
+    ".kdbx",
+  ];
+
+  const keyMaterialCases = KEY_MATERIAL_EXTENSIONS.flatMap((material) =>
+    PROSE_EXTS.flatMap((ext) => [
+      `server${material}${ext}`,
+      `certs/server${material}${ext}`,
+      `docs/tls${material}${ext}`,
+    ]),
+  );
+
+  it.each(keyMaterialCases)(
+    "keeps the security floor for laundered key material %s",
+    (file) => {
+      expect(matchesSecurityFloor(file)).toBe(true);
+    },
+  );
+
   // Separator variants must tokenize like the hyphen form.
   // Decoration around a credential noun — the OS-generated duplicate names a
   // pasted credential dump actually arrives under, plus the invisible-character
