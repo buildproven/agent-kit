@@ -542,9 +542,45 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
         repoKey: first.repoKey,
         advanceHead: true,
       });
-      expect(() =>
-        lease.acquire(successor.manifestPath, { waitMs: 0 }),
-      ).toThrow(/recover or resume/);
+      // Pins the two manifests to their ROLES, not just the flag names.
+      // The old message said "recover or resume that exact campaign", which
+      // reads as an instruction to point --manifest at the BLOCKING
+      // campaign. That is the wrong argument: it transfers the lease to
+      // itself and silently changes nothing (BUI-910, 4 repos blocked, two
+      // for a month). An assertion that only greps for the flag name would
+      // still pass with the two manifests swapped — which is the whole bug —
+      // so this pins --manifest to the SUCCESSOR and --confirm-owner-* to the
+      // displaced owner.
+      let raised;
+      try {
+        lease.acquire(successor.manifestPath, { waitMs: 0 });
+      } catch (error) {
+        raised = error;
+      }
+      expect(raised, "acquire must refuse a held lease").toBeDefined();
+      expect(raised.code).toBe("LEASE_OWNED");
+      expect(raised.message).toContain(`--manifest ${successor.manifestPath}`);
+      // The displaced ID must be the one the LEASE RECORD holds, which is
+      // what recoverFromOptions validates against -- not the successor's or
+      // the fixture manifest's. Printing any other ID yields "recovery
+      // requires the exact current owner invocation ID".
+      // status() emits the whole recoveryCommand, so the error and status
+      // must agree on the displaced ID -- they are now built by the same
+      // function, and this pins them together.
+      const fromStatus = lease.status(successor.manifestPath).recoveryCommand;
+      const heldBy = /--confirm-owner-invocation-id (\S+)/.exec(
+        fromStatus,
+      )?.[1];
+      expect(heldBy, "status must emit a recovery command").toBeTruthy();
+      expect(raised.message).toContain(
+        `--confirm-owner-invocation-id ${heldBy}`,
+      );
+      expect(raised.message).not.toContain(
+        `--confirm-owner-invocation-id ${successor.invocationId}`,
+      );
+      // The displaced campaign's manifest must never be the --manifest
+      // argument; that is the no-op form.
+      expect(raised.message).not.toContain(`--manifest ${first.manifestPath}`);
     } finally {
       process.env.PATH = previousPath;
     }
@@ -1802,5 +1838,45 @@ describe("idle-only recovery mutation", () => {
     const { manifest } = invocation.loadManifest(manifestPath);
     expect(manifest.recoveryProbe).toBe(true);
     expect(manifest.merge.repositoryLease.generation).toBe(owner.generation);
+  });
+});
+
+describe("quarantine diagnostic survives an incomplete owner record", () => {
+  // Regression for a defect the PR-536 review caught in its own fix.
+  //
+  // recoveryInvocation() validates displacedOwner and throws when pr is
+  // undefined. It was being called INLINE as an argument to
+  // `throw new Error(...)` in reconcileMergeOutcome, so on a manifest with no
+  // repo.pr the builder threw FIRST and the ambiguous-merge Error was never
+  // constructed. The operator then saw "recovery invocation requires the
+  // displaced owner record" instead of the gh status, stderr and remote state
+  // needed to avoid a duplicate merge — and repo.pr being unset is exactly
+  // when that path is most likely to run.
+  //
+  // The invariant: the recovery hint is a best-effort addendum. It must never
+  // be able to replace the primary diagnostic.
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "quality-repo-lease.js"),
+    "utf8",
+  );
+
+  it("never evaluates recoveryInvocation inside the quarantine throw", () => {
+    const quarantine = source.slice(
+      source.indexOf("merge outcome is ambiguous and quarantined"),
+    );
+    const throwExpression = quarantine.slice(0, quarantine.indexOf("\n  );"));
+    expect(throwExpression).not.toMatch(/recoveryInvocation\(/);
+  });
+
+  it("guards the hint builder so its preconditions cannot mask the error", () => {
+    const builder = source.slice(
+      source.indexOf("let recoveryHint;"),
+      source.indexOf("merge outcome is ambiguous and quarantined"),
+    );
+    expect(builder).toMatch(/recoveryInvocation\(/);
+    expect(builder).toMatch(/\btry\b/);
+    expect(builder).toMatch(/\bcatch\b/);
+    // The fallback still has to name the manifest an operator must act on.
+    expect(builder).toMatch(/reconcile-merge/);
   });
 });
