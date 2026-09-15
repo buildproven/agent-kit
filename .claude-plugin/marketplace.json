@@ -13,7 +13,7 @@
         "repo": "buildproven/claude-kit"
       },
       "description": "claude-kit — quality automation, autonomous backlog execution, multi-LLM strategy panels, and fleet auditing. Free and open source.",
-      "version": "4.9.1",
+      "version": "4.10.0",
       "author": {
         "name": "buildproven"
       }
