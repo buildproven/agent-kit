@@ -7,10 +7,31 @@ SKIP=false
 REASON=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
-    --name) NAME="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-run-gate: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --name)
+      [ "$#" -ge 2 ] || {
+        echo "quality-run-gate: --name requires a value" >&2
+        exit 1
+      }
+      NAME="$2"
+      shift 2
+      ;;
     --skip) SKIP=true; shift ;;
-    --reason) REASON="${2:-}"; shift 2 ;;
+    --reason)
+      [ "$#" -ge 2 ] || {
+        echo "quality-run-gate: --reason requires a value" >&2
+        exit 1
+      }
+      REASON="$2"
+      shift 2
+      ;;
     --) shift; break ;;
     *) echo "quality-run-gate: unknown argument '$1'" >&2; exit 1 ;;
   esac

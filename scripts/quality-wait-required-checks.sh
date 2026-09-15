@@ -12,9 +12,30 @@ INTERVAL=2
 DEADLINE="${QUALITY_CI_WAIT_DEADLINE_SECONDS:-2700}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --pr) PR="${2:-}"; shift 2 ;;
-    --interval) INTERVAL="${2:-}"; shift 2 ;;
-    --deadline) DEADLINE="${2:-}"; shift 2 ;;
+    --pr)
+      [ "$#" -ge 2 ] || {
+        echo "quality-wait-required-checks: --pr requires a value" >&2
+        exit 1
+      }
+      PR="$2"
+      shift 2
+      ;;
+    --interval)
+      [ "$#" -ge 2 ] || {
+        echo "quality-wait-required-checks: --interval requires a value" >&2
+        exit 1
+      }
+      INTERVAL="$2"
+      shift 2
+      ;;
+    --deadline)
+      [ "$#" -ge 2 ] || {
+        echo "quality-wait-required-checks: --deadline requires a value" >&2
+        exit 1
+      }
+      DEADLINE="$2"
+      shift 2
+      ;;
     *) echo "quality-wait-required-checks: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done

@@ -11,9 +11,30 @@ ALLOWLISTS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --source) SOURCES+=("${2:-}"); shift 2 ;;
-    --allowlist) ALLOWLISTS+=("${2:-}"); shift 2 ;;
-    --target) TARGET="${2:-}"; shift 2 ;;
+    --source)
+      [ "$#" -ge 2 ] || {
+        echo "setup-codex-skills: --source requires a value" >&2
+        exit 1
+      }
+      SOURCES+=("$2")
+      shift 2
+      ;;
+    --allowlist)
+      [ "$#" -ge 2 ] || {
+        echo "setup-codex-skills: --allowlist requires a value" >&2
+        exit 1
+      }
+      ALLOWLISTS+=("$2")
+      shift 2
+      ;;
+    --target)
+      [ "$#" -ge 2 ] || {
+        echo "setup-codex-skills: --target requires a value" >&2
+        exit 1
+      }
+      TARGET="$2"
+      shift 2
+      ;;
     --check) MODE="check"; shift ;;
     --clean) MODE="clean"; shift ;;
     -h|--help) echo "usage: setup-codex-skills.sh [--source skills-dir] [--target dir] [--check|--clean]"; exit 0 ;;

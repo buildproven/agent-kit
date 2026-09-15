@@ -31,8 +31,22 @@ LIST=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --profile) PROFILE="${2:-}"; shift 2 ;;
-    --target) TARGET="${2:-}"; shift 2 ;;
+    --profile)
+      [ "$#" -ge 2 ] || {
+        echo "setup-codex-skill-profile: --profile requires a value" >&2
+        exit 1
+      }
+      PROFILE="$2"
+      shift 2
+      ;;
+    --target)
+      [ "$#" -ge 2 ] || {
+        echo "setup-codex-skill-profile: --target requires a value" >&2
+        exit 1
+      }
+      TARGET="$2"
+      shift 2
+      ;;
     --check|--clean) MODE=("$1"); shift ;;
     --list) LIST=1; shift ;;
     -h|--help)

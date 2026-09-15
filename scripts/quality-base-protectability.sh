@@ -33,9 +33,30 @@ RC=""
 BODY_FILE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --private) PRIVATE="${2:-}"; shift 2 ;;
-    --rc) RC="${2:-}"; shift 2 ;;
-    --body-file) BODY_FILE="${2:-}"; shift 2 ;;
+    --private)
+      [ "$#" -ge 2 ] || {
+        echo "quality-base-protectability: --private requires a value" >&2
+        exit 1
+      }
+      PRIVATE="$2"
+      shift 2
+      ;;
+    --rc)
+      [ "$#" -ge 2 ] || {
+        echo "quality-base-protectability: --rc requires a value" >&2
+        exit 1
+      }
+      RC="$2"
+      shift 2
+      ;;
+    --body-file)
+      [ "$#" -ge 2 ] || {
+        echo "quality-base-protectability: --body-file requires a value" >&2
+        exit 1
+      }
+      BODY_FILE="$2"
+      shift 2
+      ;;
     *) echo "quality-base-protectability: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done

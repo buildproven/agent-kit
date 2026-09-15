@@ -4,7 +4,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MANIFEST=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-stamp-and-merge: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
     *) echo "quality-stamp-and-merge: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done

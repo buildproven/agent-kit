@@ -707,7 +707,14 @@ case "${1:-}" in
         SC_ARGS=()
         while [[ $# -gt 0 ]]; do
             case "$1" in
-                --evidence-dir) EVIDENCE_DIR="${2:-}"; shift 2 ;;
+                --evidence-dir)
+                  [ "$#" -ge 2 ] || {
+                    echo "ralph-next-run: --evidence-dir requires a value" >&2
+                    exit 1
+                  }
+                  EVIDENCE_DIR="$2"
+                  shift 2
+                  ;;
                 *) SC_ARGS+=("$1"); shift ;;
             esac
         done
@@ -722,15 +729,78 @@ case "${1:-}" in
                 set -- "${SC_ARGS[@]}"
                 while [[ $# -gt 0 ]]; do
                     case "$1" in
-                        --until)          UNTIL_CONDITION="${2:-}"; shift 2 ;;
-                        --scope)          SCOPE_FILTER="${2:-}"; shift 2 ;;
-                        --section)        SECTION_FILTER="${2:-}"; shift 2 ;;
-                        --quality)        QUALITY_LEVEL="${2:-}"; shift 2 ;;
-                        --reflect-depth)  REFLECT_DEPTH="${2:-}"; shift 2 ;;
-                        --speculate)      SPECULATE_MODE="${2:-}"; shift 2 ;;
-                        --score-threshold) SCORE_THRESHOLD="${2:-}"; shift 2 ;;
-                        --max-retries)    MAX_RETRIES="${2:-}"; shift 2 ;;
-                        --max-ci-retries) MAX_CI_RETRIES="${2:-}"; shift 2 ;;
+                        --until)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --until requires a value" >&2
+                            exit 1
+                          }
+                          UNTIL_CONDITION="$2"
+                          shift 2
+                          ;;
+                        --scope)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --scope requires a value" >&2
+                            exit 1
+                          }
+                          SCOPE_FILTER="$2"
+                          shift 2
+                          ;;
+                        --section)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --section requires a value" >&2
+                            exit 1
+                          }
+                          SECTION_FILTER="$2"
+                          shift 2
+                          ;;
+                        --quality)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --quality requires a value" >&2
+                            exit 1
+                          }
+                          QUALITY_LEVEL="$2"
+                          shift 2
+                          ;;
+                        --reflect-depth)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --reflect-depth requires a value" >&2
+                            exit 1
+                          }
+                          REFLECT_DEPTH="$2"
+                          shift 2
+                          ;;
+                        --speculate)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --speculate requires a value" >&2
+                            exit 1
+                          }
+                          SPECULATE_MODE="$2"
+                          shift 2
+                          ;;
+                        --score-threshold)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --score-threshold requires a value" >&2
+                            exit 1
+                          }
+                          SCORE_THRESHOLD="$2"
+                          shift 2
+                          ;;
+                        --max-retries)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --max-retries requires a value" >&2
+                            exit 1
+                          }
+                          MAX_RETRIES="$2"
+                          shift 2
+                          ;;
+                        --max-ci-retries)
+                          [ "$#" -ge 2 ] || {
+                            echo "ralph-next-run: --max-ci-retries requires a value" >&2
+                            exit 1
+                          }
+                          MAX_CI_RETRIES="$2"
+                          shift 2
+                          ;;
                         *) log_warn "Unknown init arg: $1"; shift ;;
                     esac
                 done
@@ -920,18 +990,88 @@ CHECKPOINT_ITEMS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --until) UNTIL_CONDITION="${2:-}"; shift 2 ;;
-        --scope) SCOPE_FILTER="${2:-}"; shift 2 ;;
-        --section) SECTION_FILTER="${2:-}"; shift 2 ;;
-        --quality) QUALITY_LEVEL="${2:-}"; shift 2 ;;
+        --until)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --until requires a value" >&2
+            exit 1
+          }
+          UNTIL_CONDITION="$2"
+          shift 2
+          ;;
+        --scope)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --scope requires a value" >&2
+            exit 1
+          }
+          SCOPE_FILTER="$2"
+          shift 2
+          ;;
+        --section)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --section requires a value" >&2
+            exit 1
+          }
+          SECTION_FILTER="$2"
+          shift 2
+          ;;
+        --quality)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --quality requires a value" >&2
+            exit 1
+          }
+          QUALITY_LEVEL="$2"
+          shift 2
+          ;;
         --next) MODE="next"; shift ;;
         --classic) MODE="classic"; shift ;;
-        --reflect-depth) REFLECT_DEPTH="${2:-}"; shift 2 ;;
-        --speculate) SPECULATE_MODE="${2:-}"; shift 2 ;;
-        --score-threshold) SCORE_THRESHOLD="${2:-}"; shift 2 ;;
-        --evidence-dir) EVIDENCE_DIR="${2:-}"; shift 2 ;;
-        --max-retries) MAX_RETRIES="${2:-}"; shift 2 ;;
-        --max-ci-retries) MAX_CI_RETRIES="${2:-}"; shift 2 ;;
+        --reflect-depth)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --reflect-depth requires a value" >&2
+            exit 1
+          }
+          REFLECT_DEPTH="$2"
+          shift 2
+          ;;
+        --speculate)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --speculate requires a value" >&2
+            exit 1
+          }
+          SPECULATE_MODE="$2"
+          shift 2
+          ;;
+        --score-threshold)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --score-threshold requires a value" >&2
+            exit 1
+          }
+          SCORE_THRESHOLD="$2"
+          shift 2
+          ;;
+        --evidence-dir)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --evidence-dir requires a value" >&2
+            exit 1
+          }
+          EVIDENCE_DIR="$2"
+          shift 2
+          ;;
+        --max-retries)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --max-retries requires a value" >&2
+            exit 1
+          }
+          MAX_RETRIES="$2"
+          shift 2
+          ;;
+        --max-ci-retries)
+          [ "$#" -ge 2 ] || {
+            echo "ralph-next-run: --max-ci-retries requires a value" >&2
+            exit 1
+          }
+          MAX_CI_RETRIES="$2"
+          shift 2
+          ;;
         --no-compact) NO_COMPACT="true"; shift ;;
         --dry-run) DRY_RUN="true"; shift ;;
         -h|--help) usage; exit 0 ;;

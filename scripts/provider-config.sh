@@ -10,9 +10,30 @@ FALLBACK=""
 CONFIG="${BS_PROVIDER_CONFIG:-$(bs_provider_default_config)}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --primary) PRIMARY="${2:-}"; shift 2 ;;
-    --fallback) FALLBACK="${2:-}"; shift 2 ;;
-    --config) CONFIG="${2:-}"; shift 2 ;;
+    --primary)
+      [ "$#" -ge 2 ] || {
+        echo "provider-config: --primary requires a value" >&2
+        exit 1
+      }
+      PRIMARY="$2"
+      shift 2
+      ;;
+    --fallback)
+      [ "$#" -ge 2 ] || {
+        echo "provider-config: --fallback requires a value" >&2
+        exit 1
+      }
+      FALLBACK="$2"
+      shift 2
+      ;;
+    --config)
+      [ "$#" -ge 2 ] || {
+        echo "provider-config: --config requires a value" >&2
+        exit 1
+      }
+      CONFIG="$2"
+      shift 2
+      ;;
     *) echo "usage: provider-config.sh --primary auto|codex|claude --fallback none|codex|claude [--config path]" >&2; exit 1 ;;
   esac
 done

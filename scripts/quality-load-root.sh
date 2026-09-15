@@ -6,8 +6,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MANIFEST=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
-    --manifest=*) MANIFEST="${1#*=}"; shift ;;
+    --manifest|--manifest=*)
+      if [ "$1" = "--manifest" ]; then
+        MANIFEST="${2:-}"
+      else
+        MANIFEST="${1#*=}"
+      fi
+      case "$MANIFEST" in
+        ""|-*) echo "quality-load-root: --manifest requires a non-empty path (use ./ for a path starting with '-')" >&2; exit 1 ;;
+      esac
+      if [ "$1" = "--manifest" ]; then shift 2; else shift; fi
+      ;;
     *) echo "quality-load-root: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
