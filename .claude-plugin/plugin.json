@@ -1,7 +1,7 @@
 {
   "name": "bs",
   "displayName": "claude-kit",
-  "version": "4.9.1",
+  "version": "4.10.0",
   "description": "Quality automation, autonomous backlog execution, multi-LLM strategy panels, and fleet auditing. Free and open source.",
   "author": {
     "name": "buildproven",
