@@ -38,7 +38,6 @@ function recoveryInvocation(subcommand, successorManifestPath, displacedOwner) {
   );
 }
 
-
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(SLEEP_BUFFER), 0, 0, milliseconds);
 }

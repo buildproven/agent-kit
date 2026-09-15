@@ -559,9 +559,7 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
       }
       expect(raised, "acquire must refuse a held lease").toBeDefined();
       expect(raised.code).toBe("LEASE_OWNED");
-      expect(raised.message).toContain(
-        `--manifest ${successor.manifestPath}`,
-      );
+      expect(raised.message).toContain(`--manifest ${successor.manifestPath}`);
       // The displaced ID must be the one the LEASE RECORD holds, which is
       // what recoverFromOptions validates against -- not the successor's or
       // the fixture manifest's. Printing any other ID yields "recovery
@@ -570,7 +568,9 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
       // must agree on the displaced ID -- they are now built by the same
       // function, and this pins them together.
       const fromStatus = lease.status(successor.manifestPath).recoveryCommand;
-      const heldBy = /--confirm-owner-invocation-id (\S+)/.exec(fromStatus)?.[1];
+      const heldBy = /--confirm-owner-invocation-id (\S+)/.exec(
+        fromStatus,
+      )?.[1];
       expect(heldBy, "status must emit a recovery command").toBeTruthy();
       expect(raised.message).toContain(
         `--confirm-owner-invocation-id ${heldBy}`,
@@ -580,9 +580,7 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
       );
       // The displaced campaign's manifest must never be the --manifest
       // argument; that is the no-op form.
-      expect(raised.message).not.toContain(
-        `--manifest ${first.manifestPath}`,
-      );
+      expect(raised.message).not.toContain(`--manifest ${first.manifestPath}`);
     } finally {
       process.env.PATH = previousPath;
     }
