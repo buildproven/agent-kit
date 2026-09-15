@@ -218,9 +218,67 @@ function commitsSinceBaseline(cwd, startSha) {
  * let `evaluateBudget` do the subtraction (the old, rebase-fragile behavior —
  * but no worse than before, and only for in-flight pre-upgrade runs).
  */
+// Follow a validated rebase-carry chain from the original baseline to the head
+// that actually survives in current history. Each carry records
+// `reviewedHead -> head` for one proven exact replay, so walking the links from
+// the start SHA yields the carried equivalent of that commit.
+//
+// Fails closed on a discontinuous or cyclic chain: an unproven jump is exactly
+// what the ancestry check exists to refuse, and a malformed chain must not
+// become a way to relocate the baseline anywhere convenient.
+function carriedBaseline(cwd, startSha, carries) {
+  if (!Array.isArray(carries) || carries.length === 0) return null;
+  let current = startSha;
+  const seen = new Set([current]);
+  for (let step = 0; step < carries.length; step += 1) {
+    // Exact SHA equality, not a prefix test. A 7-character prefix match would
+    // accept any carry whose reviewedHead merely shares its first 7 hex
+    // characters with `current`, and Array.find returns the FIRST such entry —
+    // so after a few rebase/retry cycles the wrong carry could be selected and
+    // the baseline silently resolved to an unrelated commit, skewing the fix
+    // commit count that bounds an autonomous campaign. A carry asserts one
+    // proven exact replay; the lookup has to be exact too.
+    const carry = carries.find(
+      (entry) =>
+        entry &&
+        typeof entry.reviewedHead === "string" &&
+        typeof entry.head === "string" &&
+        entry.reviewedHead === current,
+    );
+    if (!carry) break;
+    if (seen.has(carry.head)) return null;
+    seen.add(carry.head);
+    current = carry.head;
+  }
+  if (current === startSha) return null;
+  return isAncestorOfHead(cwd, current) ? current : null;
+}
+
+function isAncestorOfHead(cwd, sha) {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
+      cwd,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveCommitCount(cwd, state) {
   if (state && typeof state.start_commit_sha === "string") {
-    return commitsSinceBaseline(cwd, state.start_commit_sha);
+    const direct = commitsSinceBaseline(cwd, state.start_commit_sha);
+    if (direct !== null) return direct;
+    // The original baseline is no longer in history. Before failing closed,
+    // see whether a proven rebase carried it to a commit that still is.
+    const carried = carriedBaseline(
+      cwd,
+      state.start_commit_sha,
+      state.review_rebase_carries,
+    );
+    if (carried === null) return null;
+    return commitsSinceBaseline(cwd, carried);
   }
   return currentCommitCount(cwd);
 }
@@ -263,6 +321,16 @@ function loadState(sentinelPath) {
         start_epoch: 0,
         deadline_epoch: executableSecondsLimit,
         start_commit_sha: governor.startCommitSha,
+        // A campaign that advanced through a proven rebase-only replay keeps a
+        // valid carry chain, but its original start SHA is no longer an
+        // ancestor of HEAD. Without the chain the governor cannot tell that
+        // expected topology apart from a hard reset, and reports it as a
+        // malformed sentinel (BUI-902).
+        review_rebase_carries: Array.isArray(
+          parsed.revisions?.reviewRebaseCarries,
+        )
+          ? parsed.revisions.reviewRebaseCarries
+          : [],
         max_fix_commits: governor.maxFixCommits,
         max_wall_seconds: executableSecondsLimit,
         execution_seconds_used: executionSecondsUsed,
@@ -925,6 +993,7 @@ module.exports = {
   bumpRound,
   parseFindingsArg,
   priorFindingsFrom,
+  resolveCommitCount,
 };
 
 if (require.main === module) {

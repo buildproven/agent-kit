@@ -1,0 +1,126 @@
+name: Product Evidence Source
+
+on:
+  repository_dispatch:
+    types: [product-evidence-request]
+
+permissions:
+  contents: read
+
+jobs:
+  collect-product-evidence:
+    # This worker intentionally runs the candidate. It has no secrets and only
+    # emits raw logs; a different protected worker validates and signs them.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Validate protected request
+        env:
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        run: |
+          node -e '
+            const p = JSON.parse(process.env.PAYLOAD);
+            const document = (value) => /^docs\/(?:(?:prd|decisions)\/)?[a-zA-Z0-9._-]+\.md$/.test(value || "");
+            if (!Number.isSafeInteger(p.pullRequest) || p.pullRequest < 1 || !/^[0-9a-f]{40}$/.test(p.base || "") || !/^[0-9a-f]{40}$/.test(p.head || "") || !/^[0-9a-f]{32}$/.test(p.nonce || "") || !document(p.prd) || !document(p.tasks)) process.exit(1);
+          '
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.client_payload.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      - name: Install zsh for shell-isolation regressions
+        timeout-minutes: 4
+        env:
+          ZSH_PROVENANCE: ${{ runner.temp }}/product-evidence-zsh-version.log
+          ZSH_PACKAGE_DIR: ${{ runner.temp }}/product-evidence-zsh-packages
+        run: |
+          if ! command -v zsh >/dev/null 2>&1; then
+            mkdir -p "$ZSH_PACKAGE_DIR"
+            timeout 60s curl --fail --location --retry 3 --connect-timeout 10 \
+              --output "$ZSH_PACKAGE_DIR/zsh-common.deb" \
+              https://archive.ubuntu.com/ubuntu/pool/main/z/zsh/zsh-common_5.9-6ubuntu2_all.deb
+            timeout 60s curl --fail --location --retry 3 --connect-timeout 10 \
+              --output "$ZSH_PACKAGE_DIR/zsh.deb" \
+              https://archive.ubuntu.com/ubuntu/pool/main/z/zsh/zsh_5.9-6ubuntu2_amd64.deb
+            printf '%s  %s\n' \
+              56d160585b417af0cc04d7372f74a3b734609d7cc43ef8ea6e92bfdfc27f77c3 \
+              "$ZSH_PACKAGE_DIR/zsh-common.deb" | sha256sum --check --strict
+            printf '%s  %s\n' \
+              bd5cc8dd3a01a6db38c0a815d75202c356a9c7f378674ba7bed9bc86dcba8af0 \
+              "$ZSH_PACKAGE_DIR/zsh.deb" | sha256sum --check --strict
+            sudo dpkg --install "$ZSH_PACKAGE_DIR/zsh-common.deb" "$ZSH_PACKAGE_DIR/zsh.deb"
+          fi
+          ZSH_PATH="$(command -v zsh)"
+          test "$(dpkg-query --showformat='${Version}' --show zsh)" = '5.9-6ubuntu2'
+          test "$(dpkg-query --showformat='${Version}' --show zsh-common)" = '5.9-6ubuntu2'
+          test "$(sha256sum "$ZSH_PATH" | cut -d ' ' -f 1)" = 'f88db3dd0a2909ed62cdb645dbb7b56a6bee5abbe310751dc0f549a811222f46'
+          {
+            printf 'zsh-path=%s\n' "$ZSH_PATH"
+            printf 'zsh-binary-sha256=%s\n' "$(sha256sum "$ZSH_PATH" | cut -d ' ' -f 1)"
+            zsh --version
+            printf 'zsh-package=%s\n' "$(dpkg-query --showformat='${Version}' --show zsh)"
+            printf 'zsh-common-package=%s\n' "$(dpkg-query --showformat='${Version}' --show zsh-common)"
+          } > "$ZSH_PROVENANCE"
+      - name: Upload environment provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: product-evidence-source-environment-${{ github.run_id }}
+          path: ${{ runner.temp }}/product-evidence-zsh-version.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Run allowlisted behavioral command
+        id: behavioral
+        continue-on-error: true
+        run: "{ npm ci && npm test; } > behavioral-tests.log 2>&1"
+      - name: Run allowlisted acceptance command
+        id: acceptance
+        if: always()
+        continue-on-error: true
+        run: npm run test:patterns > acceptance-evidence.log 2>&1
+      - name: Validate failure diagnostics
+        if: always()
+        run: |
+          test -f behavioral-tests.log
+          test -f acceptance-evidence.log
+      - name: Upload failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: product-evidence-source-diagnostic-${{ github.run_id }}
+          path: |
+            behavioral-tests.log
+            acceptance-evidence.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce evidence command success
+        if: always()
+        env:
+          BEHAVIORAL_OUTCOME: ${{ steps.behavioral.outcome }}
+          ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
+        run: |
+          test "$BEHAVIORAL_OUTCOME" = success
+          test "$ACCEPTANCE_OUTCOME" = success
+      - name: Build raw evidence bundle
+        env:
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+          REPOSITORY_ID: ${{ github.event.repository.id }}
+        run: |
+          node -e '
+            const fs = require("fs"); const p = JSON.parse(process.env.PAYLOAD);
+            const request = { schemaVersion: 1, repository: process.env.GITHUB_REPOSITORY, repositoryId: String(process.env.REPOSITORY_ID), pullRequest: p.pullRequest, base: p.base, head: p.head, nonce: p.nonce, behavioralCommand: "npm test", acceptanceCommand: "npm run test:patterns" };
+            fs.mkdirSync("product-evidence-source", { mode: 0o700 });
+            fs.writeFileSync("product-evidence-source/request.json", JSON.stringify(request) + "\n", { mode: 0o600 });
+            const changedFiles = require("node:child_process").execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", p.base, p.head], { encoding: "utf8" }).split("\0").filter(Boolean);
+            fs.writeFileSync("product-evidence-source/changed-files.json", JSON.stringify(changedFiles) + "\n", { mode: 0o600 });
+            for (const [from, to] of [[p.prd,"prd.md"],[p.tasks,"tasks.md"],["behavioral-tests.log","behavioral-tests.log"],["acceptance-evidence.log","acceptance-evidence.log"]]) fs.copyFileSync(from, `product-evidence-source/${to}`);
+          '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: product-evidence-source-${{ github.run_id }}
+          path: product-evidence-source
+          if-no-files-found: error
+          retention-days: 7

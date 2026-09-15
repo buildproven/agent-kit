@@ -383,6 +383,18 @@ describe("provider review runtime", () => {
     expect(companion).not.toContain('category: "marker-only-findings"');
   });
 
+  it("routes Claude cancellation through the shared bounded supervisor", () => {
+    const companion = readFileSync(
+      path.resolve(ROOT, "scripts", "claude-review-companion.sh"),
+      "utf8",
+    );
+    const bounded = readFileSync(BOUNDED, "utf8");
+    expect(companion).toContain("quality-run-bounded.sh");
+    expect(companion).toContain('--cancel-file "$CANCEL_FILE"');
+    expect(bounded).toContain('--cancel-file) CANCEL_FILE="$2"');
+    expect(bounded).toContain('"$CANCEL_FILE" ] && [ -f "$CANCEL_FILE"');
+  });
+
   it("routes every caller-built provider prompt through the review-input artifact", () => {
     const runner = readFileSync(RUN_REVIEW, "utf8");
     const companion = readFileSync(

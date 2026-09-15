@@ -286,8 +286,8 @@ function usageFromAdapter(command) {
       "USAGE_UNAVAILABLE",
     );
   }
-  const fiveHourPercent = Number(usage.fiveHourPercent);
-  const sevenDayPercent = Number(usage.sevenDayPercent);
+  const fiveHourPercent = usage.fiveHourPercent;
+  const sevenDayPercent = usage.sevenDayPercent;
   if (
     !Number.isFinite(fiveHourPercent) ||
     fiveHourPercent < 0 ||
@@ -307,7 +307,8 @@ function usageFromAdapter(command) {
 function admit(options, environment = process.env) {
   const kind = requireValue(options, "kind");
   const id = requireValue(options, "id");
-  const adapter = requireValue(options, "usage-command");
+  const adapter = options["usage-command"];
+  const provider = adapter ? null : requireValue(options, "provider");
   const maxLoops = positiveInteger(
     options["max-loops"],
     "max-loops",
@@ -368,7 +369,36 @@ function admit(options, environment = process.env) {
     }
     let usage;
     try {
-      usage = usageFromAdapter(adapter);
+      if (adapter) {
+        usage = usageFromAdapter(adapter);
+      } else {
+        try {
+          usage = require("./provider-usage-adapter.js").readProviderUsage(
+            provider,
+          );
+          if (
+            options.fallback &&
+            options.fallback !== "none" &&
+            options.fallback !== provider
+          ) {
+            const fallbackUsage =
+              require("./provider-usage-adapter.js").readProviderUsage(
+                options.fallback,
+              );
+            Object.assign(
+              usage.windows,
+              Object.fromEntries(
+                Object.entries(fallbackUsage.windows).map(([window, value]) => [
+                  `${options.fallback}-${window}`,
+                  value,
+                ]),
+              ),
+            );
+          }
+        } catch (error) {
+          throw new RuntimeError(error.message, "USAGE_UNAVAILABLE");
+        }
+      }
     } catch (error) {
       appendTelemetry(directory, {
         event: "admission",
@@ -379,7 +409,11 @@ function admit(options, environment = process.env) {
       throw error;
     }
     if (
-      Math.max(usage.fiveHourPercent, usage.sevenDayPercent) >= maxUtilization
+      Math.max(
+        ...(usage.windows
+          ? Object.values(usage.windows)
+          : [usage.fiveHourPercent, usage.sevenDayPercent]),
+      ) >= maxUtilization
     ) {
       appendTelemetry(directory, {
         event: "admission",

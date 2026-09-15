@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   mkdtempSync,
@@ -21,6 +22,7 @@ import {
   verifyClaim,
   next,
   productionCodeChange,
+  classifyChange,
 } from "../product-completion.js";
 import { canonicalJson } from "../product-evidence.js";
 
@@ -262,7 +264,10 @@ describe("product completion", () => {
       hosted: true,
       validated: true,
     });
-    expect(claim(result, "local-product", local).valid).toBe(true);
+    expect(claim(result, "local-product", local)).toMatchObject({
+      valid: true,
+      requirementsDigest: result.requirementsDigest,
+    });
     expect(claim(result, "hosted", local).valid).toBe(false);
     expect(claim(result, "hosted", hosted).valid).toBe(true);
     expect(claim(result, "validated", hosted).valid).toBe(false);
@@ -291,6 +296,41 @@ describe("product completion", () => {
         {},
       ),
     ).toMatchObject({ valid: true, errors: [] });
+  });
+
+  it("accepts the complete protected infrastructure bootstrap chain", () => {
+    const { prd, tasks } = files();
+    writeFileSync(
+      prd,
+      "# Protected admission\n\n## Delivery classification\n\n- Delivery: protected-infrastructure-bootstrap\n",
+    );
+    const result = validate(prd, tasks);
+    const changedFiles = [
+      ".github/workflows/product-evidence-admission.yml",
+      ".github/workflows/product-evidence-producer.yml",
+      ".github/workflows/product-evidence-source.yml",
+      "docs/prd/bui-836-product-evidence-admission-tasks.md",
+      "docs/prd/bui-836-product-evidence-admission.md",
+      "docs/product-evidence-admission-operator-guide.md",
+      "scripts/__tests__/product-admission.test.js",
+      "scripts/__tests__/quality-run.test.js",
+      "scripts/product-admission.js",
+      "scripts/product-evidence-producer.js",
+      "scripts/product-evidence.js",
+      "scripts/quality-run.js",
+    ];
+    expect(verifyClaim(result, "contract", changedFiles, {}, {})).toMatchObject(
+      { valid: true, errors: [] },
+    );
+    expect(
+      verifyClaim(
+        result,
+        "contract",
+        [...changedFiles, "scripts/other.js"],
+        {},
+        {},
+      ),
+    ).toMatchObject({ valid: false });
   });
 
   it("rejects unsigned, untrusted, wrong-repository, and wrong-head receipts", () => {
@@ -352,6 +392,9 @@ describe("product completion", () => {
       ".buildproven/test-impact.json",
       "harness-config.json",
       "package-lock.json",
+      "core",
+      "scripts/ci-workflow-contract.js",
+      "vitest.config.mjs",
     ]) {
       expect(productionCodeChange(file)).toBe(false);
     }
@@ -468,5 +511,123 @@ describe("product completion", () => {
       `- [ ] 1.0 Confirm data source\n  - Phase: contract\n  - Delivers: A confirmed source.\n  - Evidence: source decision\n\n- [x] 2.0 Find similar towns\n  - Phase: implementation\n  - Delivers: A user receives ten explainable alternatives.\n  - Evidence: browser journey + API behavior test\n`,
     );
     expect(next(validate(prd, tasks)).status).toBe("next-contract");
+  });
+});
+
+describe("committed dependency maintenance", () => {
+  function revisions(before, after, file = "package.json") {
+    const repo = mkdtempSync(path.join(tmpdir(), "manifest-maintenance-"));
+    const git = (...args) =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(
+      path.join(repo, file),
+      typeof before === "string" ? before : JSON.stringify(before),
+    );
+    git("add", ".");
+    git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    if (after === null) unlinkSync(path.join(repo, file));
+    else
+      writeFileSync(
+        path.join(repo, file),
+        typeof after === "string" ? after : JSON.stringify(after),
+      );
+    git("add", "-A");
+    git("commit", "--allow-empty", "-qm", "head");
+    return { repo, base, head: git("rev-parse", "HEAD") };
+  }
+
+  it("admits dependency updates/removals and overrides without customer evidence", () => {
+    const context = revisions(
+      {
+        name: "app",
+        dependencies: { unused: "1" },
+        devDependencies: { vitest: "3" },
+      },
+      {
+        name: "app",
+        dependencies: {},
+        devDependencies: { vitest: "4" },
+        overrides: { nested: { vulnerable: "2" } },
+      },
+    );
+    expect(classifyChange("package.json", context).kind).toBe(
+      "dependency-maintenance",
+    );
+    expect(productionCodeChange("package.json", context)).toBe(false);
+    // A dirty worktree must not change the decision for the committed candidate.
+    writeFileSync(
+      path.join(context.repo, "package.json"),
+      JSON.stringify({ scripts: { start: "evil" } }),
+    );
+    expect(productionCodeChange("package.json", context)).toBe(false);
+    expect(productionCodeChange("src/app.js", context)).toBe(true);
+  });
+
+  it.each([
+    ["dependencies", 42],
+    ["devDependencies", []],
+    ["optionalDependencies", { lib: null }],
+    ["peerDependencies", { lib: "" }],
+    ["overrides", { lib: { nested: 4 } }],
+    ["resolutions", { lib: {} }],
+  ])("rejects malformed %s values", (field, value) => {
+    const context = revisions({}, { [field]: value });
+    expect(productionCodeChange("package.json", context)).toBe(true);
+  });
+
+  it("requires product admission when conditional export order changes", () => {
+    const context = revisions(
+      {
+        exports: { default: "./fallback.js", node: "./node.js" },
+        devDependencies: { vitest: "3" },
+      },
+      {
+        exports: { node: "./node.js", default: "./fallback.js" },
+        devDependencies: { vitest: "4" },
+      },
+    );
+    expect(productionCodeChange("package.json", context)).toBe(true);
+  });
+
+  it.each([
+    "scripts",
+    "exports",
+    "type",
+    "engines",
+    "packageManager",
+    "workspaces",
+    "config",
+    "peerDependenciesMeta",
+  ])(
+    "requires product admission for mixed dependency and %s changes",
+    (field) => {
+      const context = revisions(
+        { dependencies: { lib: "1" } },
+        { dependencies: { lib: "2" }, [field]: "changed" },
+      );
+      expect(productionCodeChange("package.json", context)).toBe(true);
+    },
+  );
+
+  it("fails closed for missing context, deleted, malformed, and newly added manifests", () => {
+    expect(productionCodeChange("package.json")).toBe(true);
+    expect(productionCodeChange("package.json", revisions({}, null))).toBe(
+      true,
+    );
+    expect(productionCodeChange("package.json", revisions({}, "{bad"))).toBe(
+      true,
+    );
+    const context = revisions({}, { dependencies: {} });
+    expect(
+      productionCodeChange("package.json", {
+        ...context,
+        base: "0".repeat(40),
+      }),
+    ).toBe(true);
+    expect(productionCodeChange("new/package.json", context)).toBe(true);
   });
 });

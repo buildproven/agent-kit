@@ -122,6 +122,18 @@ function activeBudgetStatus(manifest) {
   return `${used}s used / ${limit}s shared active limit; lifecycle idle time excluded`;
 }
 
+function terminalStatus(manifest) {
+  const terminal = manifest.terminalState;
+  if (!terminal) return "open";
+  if (terminal.state !== "interrupted") return terminal.state;
+  if (manifest.governor?.activeExecution) {
+    return "interrupted — recovery waits for active execution reconciliation";
+  }
+  return terminal.head === manifest.revisions?.currentHead
+    ? "interrupted — exact resume will continue unfinished phases"
+    : "interrupted at prior HEAD — descendant resume will archive it";
+}
+
 function buildDiagnosis(manifestPath, manifest, failure = {}) {
   const gates = (manifest.requiredGates || [])
     .map(
@@ -137,6 +149,7 @@ function buildDiagnosis(manifestPath, manifest, failure = {}) {
   return [
     "",
     "QUALITY TERMINAL DIAGNOSIS",
+    `Campaign terminal: ${terminalStatus(manifest)}`,
     `Repository gates: ${gates || "none discovered"}`,
     `Provider review/checkpoint: ${providerStatus(manifest, failure)}`,
     `Active execution: ${activeBudgetStatus(manifest)}`,
@@ -189,6 +202,7 @@ module.exports = {
   buildDiagnosis,
   currentGateStatus,
   parseArgs,
+  terminalStatus,
   worktreeLockStatus,
   repositoryLeaseStatus,
 };

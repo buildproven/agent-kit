@@ -1,16 +1,20 @@
 const {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const SOURCE_RUNNER = path.resolve(__dirname, "..", "quality-run.js");
+const { writeAllSync } = require(SOURCE_RUNNER);
+const { ownershipSchemaVersion } = require("../quality-runner-ownership");
 
 const FAKE_INVOCATION = `
 "use strict";
@@ -42,10 +46,15 @@ function advanceHead(manifest) {
 }
 function advanceManifest(file) {
   return withManifestLock(file, (manifest) => {
+    const active = manifest.governor?.activeExecution;
+    if (active && Date.now() < Date.parse(active.startedAt) + active.timeoutSeconds * 1000) {
+      throw new Error("provider execution 'review' is already active");
+    }
     manifest.advanceMode = "transactional";
     return advanceHead(manifest);
   });
 }
+function resumeMergeReadFailure() { return null; }
 function resumeRecoverableTerminal(file) {
   const manifest = read(file);
   if (!manifest.behavior?.recoverTerminal || !["blocked", "recovering"].includes(manifest.terminalState?.state)) return null;
@@ -59,6 +68,53 @@ function resumeRecoverableTerminal(file) {
   manifest.terminalState = { state: "recovering", head: manifest.revisions.currentHead, terminalEpoch: epoch };
   write(file, manifest);
   return manifest.terminalState;
+}
+function resumeInterruptedTerminal(file) {
+  const manifest = read(file);
+  const terminal = manifest.terminalState;
+  if (terminal?.state !== "interrupted" ||
+      terminal.head !== manifest.revisions.currentHead ||
+      manifest.governor?.activeExecution) return null;
+  const epoch = terminalEpoch(manifest) + 1;
+  manifest.terminalHistory ||= [];
+  manifest.terminalHistory.push({ ...terminal, disposition: "resumed-after-interruption" });
+  manifest.terminalHistory.push({ event: "reopened-after-interruption", terminalEpoch: epoch });
+  manifest.terminalEpoch = epoch;
+  delete manifest.terminalState;
+  write(file, manifest);
+  return { head: manifest.revisions.currentHead, terminalEpoch: epoch };
+}
+function recordPreReviewSelectionFailure(file, detail, exitCode) {
+  const manifest = read(file);
+  if (!manifest.terminalState) {
+    manifest.terminalState = {
+      state: "blocked",
+      failureCode: "pre-review-selection-failed",
+      phase: "panel",
+      selectorExitCode: exitCode,
+      detail,
+      head: manifest.revisions.currentHead,
+      terminalEpoch: terminalEpoch(manifest),
+      selectionRecovery: { selectorRuntimeDigest: "before", remainingRuntimeDigest: "stable" },
+    };
+  }
+  write(file, manifest);
+  return manifest.terminalState;
+}
+function resumePreReviewSelectionFailure(file) {
+  const manifest = read(file);
+  const terminal = manifest.terminalState;
+  if (terminal?.failureCode !== "pre-review-selection-failed" ||
+      !manifest.behavior?.selectorRepaired || manifest.selectionRecovery) return null;
+  const epoch = terminalEpoch(manifest) + 1;
+  manifest.terminalHistory ||= [];
+  manifest.terminalHistory.push({ ...terminal, disposition: "superseded-by-selection-recovery" });
+  manifest.terminalHistory.push({ event: "reopened-by-selection-recovery", terminalEpoch: epoch });
+  manifest.terminalEpoch = epoch;
+  manifest.selectionRecovery = { terminalEpoch: terminal.terminalEpoch };
+  delete manifest.terminalState;
+  write(file, manifest);
+  return { head: manifest.revisions.currentHead, terminalEpoch: epoch };
 }
 function clearMergeAdmissionBlock(file) {
   const manifest = read(file);
@@ -175,26 +231,38 @@ if (require.main === module) {
   process.stdout.write(inForce + "\\n");
 }
 module.exports = { advanceHead, incompleteRetryStatus, judgeContext, leadDispositionStatus, loadManifest, mutationEvidenceValid, parseJson, recordTerminalState,
-  advanceManifest, changedFiles, clearMergeAdmissionBlock, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
+  advanceManifest, changedFiles, clearMergeAdmissionBlock, recordPreReviewSelectionFailure, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeInterruptedTerminal, resumeMergeReadFailure, resumePreReviewSelectionFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
 `;
 
 const FAKE_STEP = `
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const [step, ...args] = process.argv.slice(2);
 const index = args.indexOf("--manifest");
 const file = index >= 0 ? args[index + 1] :
   (step === "quality-run-governor.js" ? args[1] : args[0]);
-const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+let manifest = JSON.parse(fs.readFileSync(file, "utf8"));
 manifest.calls ||= [];
 manifest.calls.push(step);
 if (step === "quality-risk-resolve.sh") manifest.risk.resolved = true;
+if (step === "quality-risk-resolve.sh" && manifest.behavior?.orphanSuccessfulChild) {
+  const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
+  });
+  orphan.unref();
+  fs.writeFileSync(file + ".successful-orphan-pid", String(orphan.pid));
+}
 if (step === "quality-risk-resolve.sh" && manifest.behavior?.failRisk) {
   fs.writeFileSync(file, JSON.stringify(manifest));
   process.exit(5);
 }
 if (step === "quality-select-agents.sh") {
+  if (manifest.behavior?.failPanel) {
+    fs.writeFileSync(file, JSON.stringify(manifest));
+    process.exit(7);
+  }
   if (manifest.panel) {
     fs.writeFileSync(file, JSON.stringify(manifest));
     process.stderr.write("quality agent selection is immutable once persisted\\n");
@@ -224,6 +292,20 @@ if (step === "quality-run-governor.js") {
   if (manifest.behavior?.remediationBudgetFail) process.exit(1);
   manifest.governor.remediationStartedAtEpoch ||= 1;
 }
+if (step === "quality-run-review.sh" && manifest.behavior?.holdReview) {
+  manifest.governor.activeExecution = {
+    kind: "provider", name: "review", startedAt: new Date().toISOString(), timeoutSeconds: 30,
+  };
+  fs.writeFileSync(file, JSON.stringify(manifest));
+  fs.writeFileSync(file + ".review-ready", "ready");
+  const deadline = Date.now() + 15000;
+  while (!fs.existsSync(file + ".review-release") && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  if (!fs.existsSync(file + ".review-release")) process.exit(9);
+  manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+  manifest.governor.activeExecution = null;
+}
 if (step === "quality-run-review.sh") manifest.reviews.push({
   from: manifest.reviews.filter((review) =>
     ["complete", "exempt"].includes(review.status)).at(-1)?.to || manifest.revisions.baseSha,
@@ -234,6 +316,13 @@ if (step === "quality-run-review.sh") manifest.reviews.push({
 });
 if (step === "quality-stamp-and-merge.sh") {
   if (manifest.behavior?.externalMergeRequirement) {
+    if (manifest.behavior?.orphanMergeDescendant) {
+      const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+      });
+      orphan.unref();
+      fs.writeFileSync(file + ".merge-orphan-pid", String(orphan.pid));
+    }
     const terminalEpoch = manifest.terminalEpoch || 0;
     const mergeAttemptId = "fixture-merge-attempt";
     manifest.merge ||= {};
@@ -265,7 +354,7 @@ if (step === "quality-stamp-and-merge.sh") {
       process.stderr.write(manifest.behavior.mergeWarning + "\\n");
     }
     process.stderr.write("required CI failed on exact candidate\\n");
-    process.exit(1);
+    process.exit(manifest.behavior.mergeExit || 1);
   }
   if (!manifest.behavior?.mergeWithoutTerminal) {
     if (manifest.behavior?.rewriteMergedHead) {
@@ -276,7 +365,26 @@ if (step === "quality-stamp-and-merge.sh") {
   }
 }
 fs.writeFileSync(file, JSON.stringify(manifest));
+if (step === "quality-run-review.sh" && manifest.behavior?.holdReview) fs.writeFileSync(file + ".review-finished", "done");
 `;
+
+function installEngineeringPolicyFixture(runtime, behavior) {
+  if (behavior.deliveryClaim === "engineering") {
+    writeFileSync(
+      path.join(runtime, "engineering-delivery-policy.js"),
+      `"use strict"; module.exports = { assertEngineeringPolicy() { ${
+        behavior.policyReject
+          ? `throw new Error(${JSON.stringify(behavior.policyReject)});`
+          : 'return { policyRevision: "base123", productAcceptance: "not-established" };'
+      } } };\n`,
+    );
+  } else {
+    copyFileSync(
+      path.resolve(__dirname, "..", "engineering-delivery-policy.js"),
+      path.join(runtime, "engineering-delivery-policy.js"),
+    );
+  }
+}
 
 function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "quality-run-"));
@@ -284,12 +392,27 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   mkdirSync(runtime);
   copyFileSync(SOURCE_RUNNER, path.join(runtime, "quality-run.js"));
   copyFileSync(
+    path.resolve(__dirname, "..", "quality-runner-ownership.js"),
+    path.join(runtime, "quality-runner-ownership.js"),
+  );
+  copyFileSync(
+    path.resolve(__dirname, "..", "quality-runner-reconcile.js"),
+    path.join(runtime, "quality-runner-reconcile.js"),
+  );
+  copyFileSync(
     path.resolve(__dirname, "..", "product-completion.js"),
     path.join(runtime, "product-completion.js"),
   );
   copyFileSync(
     path.resolve(__dirname, "..", "product-evidence.js"),
     path.join(runtime, "product-evidence.js"),
+  );
+  installEngineeringPolicyFixture(runtime, behavior);
+  writeFileSync(
+    path.join(runtime, "product-admission.js"),
+    behavior.productAdmission
+      ? `#!/usr/bin/env node\n${behavior.productAdmission}\n`
+      : "#!/usr/bin/env node\nprocess.stderr.write('no protected admission fixture\\n'); process.exitCode = 1;\n",
   );
   if (behavior.productVerifier) {
     const verifier = path.join(runtime, "product-completion.js");
@@ -345,7 +468,12 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
             productTasks: path.join(root, "tasks.md"),
             deliveryEvidence: path.join(root, "evidence.json"),
           }
-        : { merge },
+        : {
+            merge,
+            ...(behavior.deliveryClaim
+              ? { deliveryClaim: behavior.deliveryClaim }
+              : {}),
+          },
       ...(merge
         ? { merge: { repositoryLease: { token: "fixture-token" } } }
         : {}),
@@ -373,7 +501,11 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
       writeFileSync(path.join(root, name), "fixture\n");
     }
   }
-  return { manifestPath, runner: path.join(runtime, "quality-run.js") };
+  return {
+    manifestPath,
+    runner: path.join(runtime, "quality-run.js"),
+    reconciler: path.join(runtime, "quality-runner-reconcile.js"),
+  };
 }
 
 function run(entry) {
@@ -396,6 +528,27 @@ function run(entry) {
     manifest: JSON.parse(readFileSync(entry.manifestPath, "utf8")),
     output: result.stdout.trim().split("\n").at(-1),
   };
+}
+
+function reconcile(entry, record, extra = []) {
+  return spawnSync(
+    process.execPath,
+    [
+      entry.reconciler,
+      "--manifest",
+      entry.manifestPath,
+      "--head",
+      "abc123",
+      "--owner-host",
+      record.hostname,
+      "--owner-pid",
+      String(record.pid),
+      "--owner-nonce",
+      record.nonce,
+      ...extra,
+    ],
+    { encoding: "utf8" },
+  );
 }
 
 function recordDisposition(entry, blockingCount, label = "judge") {
@@ -435,6 +588,434 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("re-enters one typed pre-review selector failure after the selector is repaired", () => {
+    const entry = fixture({ failPanel: true }, { merge: true, tier: "medium" });
+    const failed = run(entry);
+
+    expect(failed.status).toBe(1);
+    expect(JSON.parse(failed.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      message: "panel failed with exit 7",
+    });
+    expect(failed.manifest.terminalState).toMatchObject({
+      failureCode: "pre-review-selection-failed",
+      phase: "panel",
+      selectorExitCode: 7,
+    });
+    expect(failed.manifest.gates).toHaveLength(0);
+    expect(failed.manifest.reviews).toHaveLength(0);
+
+    failed.manifest.behavior.failPanel = false;
+    failed.manifest.behavior.selectorRepaired = true;
+    writeFileSync(entry.manifestPath, JSON.stringify(failed.manifest));
+    const resumed = run(entry);
+
+    expect(resumed.status).toBe(0);
+    expect(JSON.parse(resumed.output)).toMatchObject({
+      status: "complete",
+      state: "merged",
+    });
+    expect(
+      resumed.manifest.calls.filter(
+        (call) => call === "quality-select-agents.sh",
+      ),
+    ).toHaveLength(2);
+    expect(resumed.manifest.terminalHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          disposition: "superseded-by-selection-recovery",
+        }),
+        expect.objectContaining({
+          event: "reopened-by-selection-recovery",
+          terminalEpoch: 1,
+        }),
+      ]),
+    );
+  });
+
+  it("uses the explicit-confirmation compatibility schema without POSIX process groups", () => {
+    expect(ownershipSchemaVersion("win32")).toBe(1);
+    expect(ownershipSchemaVersion("darwin")).toBe(2);
+    expect(ownershipSchemaVersion("linux")).toBe(2);
+  });
+
+  it("completes short ownership writes before returning", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "quality-run-write-"));
+    const file = path.join(root, "owner");
+    const descriptor = require("node:fs").openSync(file, "w+");
+    const fs = require("node:fs");
+    const originalWrite = fs.writeSync;
+    const write = vi
+      .spyOn(fs, "writeSync")
+      .mockImplementation((fd, data, offset, length, position) =>
+        originalWrite(fd, data, offset, Math.min(length, 3), position),
+      );
+    let contents;
+    try {
+      writeAllSync(descriptor, Buffer.from("complete ownership record"));
+      contents = fs.readFileSync(descriptor, "utf8");
+    } finally {
+      write.mockRestore();
+      fs.closeSync(descriptor);
+    }
+    expect(contents).toBe("complete ownership record");
+  });
+
+  function seedRunnerLock(entry, overrides = {}) {
+    const record = {
+      schemaVersion: 1,
+      hostname: os.hostname(),
+      pid: process.pid,
+      nonce: "fixture-owner",
+      acquiredAt: new Date().toISOString(),
+      childInFlight: false,
+      ...overrides,
+    };
+    writeFileSync(entry.manifestPath + ".runner-lock", JSON.stringify(record));
+    return readFileSync(entry.manifestPath + ".runner-lock", "utf8");
+  }
+
+  function expectBusyUnchanged(entry, reason) {
+    const before = readFileSync(entry.manifestPath, "utf8");
+    const result = run(entry);
+    expect(result.status).toBe(5);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "busy", reason });
+    expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+  }
+
+  it.each([false, true])(
+    "refuses orphan execution without rewriting its ledger (expired: %s)",
+    (expired) => {
+      const entry = fixture();
+      const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+      manifest.governor = {
+        activeSecondsUsed: 32,
+        providerSecondsUsed: 17,
+        gateSecondsUsed: 15,
+        activeExecution: {
+          kind: "provider",
+          name: "review",
+          startedAt: expired
+            ? "2020-01-01T00:00:00.000Z"
+            : new Date().toISOString(),
+          timeoutSeconds: 900,
+        },
+      };
+      manifest.terminalHistory = [
+        { state: "blocked", detail: "legacy collision" },
+      ];
+      writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+      expectBusyUnchanged(entry, "active-execution");
+      expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    },
+  );
+
+  it("preserves a live runner's lock", () => {
+    const entry = fixture();
+    const lock = seedRunnerLock(entry);
+    expectBusyUnchanged(entry, "runner-owned");
+    expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
+      lock,
+    );
+  });
+
+  it("refuses foreign-host and malformed ownership", () => {
+    const entry = fixture();
+    const lock = seedRunnerLock(entry, { hostname: "another-machine" });
+    expectBusyUnchanged(entry, "runner-owned");
+    expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
+      lock,
+    );
+    writeFileSync(entry.manifestPath + ".runner-lock", "partial");
+    expectBusyUnchanged(entry, "runner-owned");
+    expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
+      "partial",
+    );
+  });
+
+  it("recovers only positively dead idle ownership", () => {
+    const entry = fixture();
+    const exited = spawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(String(process.pid))"],
+      { encoding: "utf8" },
+    );
+    const pid = Number(exited.stdout);
+    expect(() => process.kill(pid, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+    seedRunnerLock(entry, { pid });
+    const result = run(entry);
+    expect(result.status).toBe(0);
+    expect(result.manifest.terminalState.state).toBe("verified-unmerged");
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+  });
+
+  it("preserves a held recovery fence", () => {
+    const entry = fixture();
+    const exited = spawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(String(process.pid))"],
+      { encoding: "utf8" },
+    );
+    const lock = seedRunnerLock(entry, { pid: Number(exited.stdout) });
+    writeFileSync(entry.manifestPath + ".runner-lock.recovery", "held fence");
+    expectBusyUnchanged(entry, "runner-owned");
+    expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
+      lock,
+    );
+    expect(
+      readFileSync(entry.manifestPath + ".runner-lock.recovery", "utf8"),
+    ).toBe("held fence");
+  });
+
+  it("refuses ordinary acquisition while a recovery fence is held", () => {
+    const entry = fixture();
+    writeFileSync(entry.manifestPath + ".runner-lock.recovery", "held fence");
+    expectBusyUnchanged(entry, "runner-owned");
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(
+      readFileSync(entry.manifestPath + ".runner-lock.recovery", "utf8"),
+    ).toBe("held fence");
+  });
+
+  it("releases a failed child after its dedicated process group is quiescent", () => {
+    const entry = fixture({ failRisk: true });
+    expect(run(entry).status).toBe(1);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(run(entry).status).toBe(1);
+  });
+
+  it("retains ownership when a successful child leaves its process group live", async () => {
+    const entry = fixture({ orphanSuccessfulChild: true });
+    const result = run(entry);
+    const orphanPid = Number(
+      readFileSync(entry.manifestPath + ".successful-orphan-pid", "utf8"),
+    );
+    let cleanupError;
+    try {
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        "quality foreground child process group is not quiescent",
+      );
+      const lock = JSON.parse(
+        readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(lock).toMatchObject({
+        schemaVersion: 2,
+        childInFlight: true,
+        child: { processGroupId: expect.any(Number) },
+      });
+      expect(
+        JSON.parse(readFileSync(entry.manifestPath, "utf8")),
+      ).not.toHaveProperty("terminalState");
+      expectBusyUnchanged(entry, "runner-owned");
+    } finally {
+      try {
+        process.kill(orphanPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") cleanupError = error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(orphanPid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 10000 },
+    );
+  });
+
+  it("reconciles a dead legacy quarantine only with exact bindings and confirmation", () => {
+    const entry = fixture();
+    const exited = spawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(String(process.pid))"],
+      { encoding: "utf8" },
+    );
+    const record = {
+      schemaVersion: 1,
+      hostname: os.hostname(),
+      pid: Number(exited.stdout),
+      nonce: "legacy-quarantine",
+      acquiredAt: new Date().toISOString(),
+      childInFlight: true,
+    };
+    writeFileSync(entry.manifestPath + ".runner-lock", JSON.stringify(record));
+    const manifestBefore = readFileSync(entry.manifestPath, "utf8");
+
+    expect(reconcile(entry, record).status).toBe(1);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(true);
+    const recovered = reconcile(entry, record, [
+      "--confirm-legacy-child-quiescent",
+    ]);
+    expect(recovered.status).toBe(0);
+    expect(JSON.parse(recovered.stdout)).toMatchObject({
+      status: "reconciled",
+      head: "abc123",
+      legacyConfirmationUsed: true,
+    });
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    expect(readFileSync(entry.manifestPath, "utf8")).toBe(manifestBefore);
+  });
+
+  it("refuses dead-owner recovery while its orphan child may write", async () => {
+    const entry = fixture({ holdReview: true });
+    const owner = spawn(
+      process.execPath,
+      [entry.runner, "--manifest", entry.manifestPath],
+      {
+        env: { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath },
+        stdio: "ignore",
+      },
+    );
+    const completed = new Promise((resolve, reject) => {
+      owner.once("error", reject);
+      owner.once("exit", resolve);
+    });
+    try {
+      await vi.waitFor(
+        () =>
+          expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true),
+        { timeout: 10000 },
+      );
+      owner.kill("SIGKILL");
+      await completed;
+      const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+      manifest.governor.activeExecution.startedAt = "2020-01-01T00:00:00.000Z";
+      writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+      const lock = readFileSync(entry.manifestPath + ".runner-lock", "utf8");
+      expect(JSON.parse(lock).childInFlight).toBe(true);
+      expectBusyUnchanged(entry, "runner-owned");
+      expect(readFileSync(entry.manifestPath + ".runner-lock", "utf8")).toBe(
+        lock,
+      );
+    } finally {
+      writeFileSync(entry.manifestPath + ".review-release", "release");
+      if (owner.exitCode === null && owner.signalCode === null)
+        owner.kill("SIGKILL");
+      await completed;
+      await vi.waitFor(
+        () =>
+          expect(existsSync(entry.manifestPath + ".review-finished")).toBe(
+            true,
+          ),
+        { timeout: 10000 },
+      );
+    }
+  });
+
+  it("refuses a concurrent runner without changing its owner's campaign", async () => {
+    const entry = fixture({ holdReview: true });
+    const owner = spawn(
+      process.execPath,
+      [entry.runner, "--manifest", entry.manifestPath],
+      {
+        env: { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath },
+        stdio: "ignore",
+      },
+    );
+    const completed = new Promise((resolve, reject) => {
+      owner.once("error", reject);
+      owner.once("exit", resolve);
+    });
+    try {
+      await vi.waitFor(
+        () =>
+          expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true),
+        {
+          timeout: 10000,
+        },
+      );
+      const before = readFileSync(entry.manifestPath, "utf8");
+      const duplicate = run(entry);
+      expect(duplicate.status).toBe(5);
+      expect(JSON.parse(duplicate.output)).toMatchObject({ status: "busy" });
+      expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+      expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(true);
+      const alias = entry.manifestPath + ".alias";
+      symlinkSync(path.dirname(entry.manifestPath), alias, "dir");
+      const aliased = run({
+        ...entry,
+        manifestPath: path.join(alias, "invocation.json"),
+      });
+      expect(aliased.status).toBe(5);
+      expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+    } finally {
+      writeFileSync(entry.manifestPath + ".review-release", "release");
+      await completed;
+    }
+    const after = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    expect(after.terminalState.state).toBe("verified-unmerged");
+    expect(after.reviews).toHaveLength(1);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+  });
+
+  it("retains creator ownership when the release fence is unavailable", async () => {
+    const entry = fixture({ holdReview: true });
+    const owner = spawn(
+      process.execPath,
+      [entry.runner, "--manifest", entry.manifestPath],
+      {
+        env: { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath },
+        stdio: "ignore",
+      },
+    );
+    const completed = new Promise((resolve, reject) => {
+      owner.once("error", reject);
+      owner.once("exit", resolve);
+    });
+    await vi.waitFor(
+      () => expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true),
+      { timeout: 10000 },
+    );
+    writeFileSync(entry.manifestPath + ".runner-lock.recovery", "held fence");
+    writeFileSync(entry.manifestPath + ".review-release", "release");
+    await completed;
+
+    expect(owner.exitCode).toBe(0);
+    expect(
+      JSON.parse(readFileSync(entry.manifestPath + ".runner-lock", "utf8")),
+    ).toMatchObject({ childInFlight: false });
+    expect(
+      readFileSync(entry.manifestPath + ".runner-lock.recovery", "utf8"),
+    ).toBe("held fence");
+  });
+
+  it("merges engineering work without claiming product acceptance", () => {
+    const result = run(
+      fixture({ deliveryClaim: "engineering" }, { merge: true, tier: "low" }),
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "complete",
+      state: "merged",
+    });
+    expect(
+      result.manifest.orchestration.steps["delivery-claim"].detail,
+    ).toContain("product acceptance not established");
+  });
+
+  it("blocks engineering work when protected policy validation fails", () => {
+    const result = run(
+      fixture({
+        deliveryClaim: "engineering",
+        policyReject: "protected engineering policy is revoked",
+      }),
+    );
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      message: "protected engineering policy is revoked",
+    });
+    expect(result.manifest.calls).toBeUndefined();
+  });
+
   it("pauses for identity-bound lead verification before merge", () => {
     const result = run(fixture({ leads: 2 }, { merge: true, tier: "medium" }));
 
@@ -623,7 +1204,7 @@ describe("quality-run public orchestration", () => {
       status: "terminal",
       state: "blocked",
     });
-    expect(result.manifest.calls).not.toContain("quality-run-review.sh");
+    expect(result.manifest.calls || []).not.toContain("quality-run-review.sh");
     expect(result.manifest.telemetryWrites).toBe(1);
   });
 
@@ -653,6 +1234,45 @@ describe("quality-run public orchestration", () => {
     expect(result.manifest.calls).toContain("quality-run-review.sh");
   });
 
+  it("runs all quality gates and review for committed dependency maintenance", () => {
+    const entry = fixture({
+      changedFiles: ["package.json", "package-lock.json"],
+    });
+    const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    const cwd = manifest.repo.realpath;
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      expect(result.status).toBe(0);
+      return result.stdout.trim();
+    };
+    git("init", "-q");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(
+      path.join(cwd, "package.json"),
+      JSON.stringify({ devDependencies: { vitest: "3" } }),
+    );
+    git("add", "package.json");
+    git("commit", "-qm", "base");
+    manifest.revisions.baseSha = git("rev-parse", "HEAD");
+    writeFileSync(
+      path.join(cwd, "package.json"),
+      JSON.stringify({ devDependencies: { vitest: "4" } }),
+    );
+    git("add", "package.json");
+    git("commit", "-qm", "candidate");
+    manifest.revisions.currentHead = git("rev-parse", "HEAD");
+    manifest.revisions.initialHead = manifest.revisions.currentHead;
+    writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+    const result = run(entry);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output).state).toBe("verified-unmerged");
+    expect(result.manifest.calls).toContain("quality-run-review.sh");
+    expect(result.manifest.gates.map((gate) => gate.name)).toEqual(
+      expect.arrayContaining(["lint", "test", "security"]),
+    );
+  });
+
   it("requires protected admission before merging a product claim", () => {
     const result = run(
       fixture(
@@ -672,7 +1292,47 @@ describe("quality-run public orchestration", () => {
         "candidate-worker verification is preflight only",
       ),
     });
-    expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
+    expect(result.manifest.calls || []).not.toContain(
+      "quality-stamp-and-merge.sh",
+    );
+    expect(result.manifest.calls || []).not.toContain("quality-run-review.sh");
+  });
+
+  it("does not request protected admission for a non-merge product review", () => {
+    const result = run(
+      fixture({
+        changedFiles: ["src/App.tsx"],
+        productVerifier:
+          "process.stdout.write(JSON.stringify({valid:true,errors:[]}));",
+      }),
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "complete",
+      state: "verified-unmerged",
+    });
+    expect(result.manifest.calls).toContain("quality-run-review.sh");
+  });
+
+  it("merges a product claim only after exact-head protected admission", () => {
+    const result = run(
+      fixture(
+        {
+          changedFiles: ["src/App.tsx"],
+          productVerifier:
+            "process.stdout.write(JSON.stringify({valid:true,errors:[]}));",
+          productAdmission:
+            "process.stdout.write(JSON.stringify({valid:true,checkId:'123'}));",
+        },
+        { merge: true },
+      ),
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "complete",
+      state: "merged",
+    });
+    expect(result.manifest.calls).toContain("quality-stamp-and-merge.sh");
   });
 
   it("blocks similarly named harness configuration that is not the exact quality-control file", () => {
@@ -722,7 +1382,7 @@ describe("quality-run public orchestration", () => {
     expect(JSON.parse(result.output).message).toContain(
       "delivery evidence changed without a HEAD advance",
     );
-    expect(result.manifest.calls).not.toContain("quality-run-review.sh");
+    expect(result.manifest.calls || []).not.toContain("quality-run-review.sh");
   });
 
   it("classifies malformed verifier output without exposing it", () => {
@@ -767,13 +1427,70 @@ describe("quality-run public orchestration", () => {
   });
 
   it("records signal interruption as one terminal campaign", () => {
-    const result = run(fixture({ signalGate: "lint" }));
+    const entry = fixture({ signalGate: "lint" });
+    const result = run(entry);
     expect(result.status).toBe(1);
     expect(JSON.parse(result.output)).toMatchObject({
       status: "terminal",
       state: "interrupted",
     });
     expect(result.manifest.telemetryWrites).toBe(1);
+    expect(
+      JSON.parse(readFileSync(entry.manifestPath + ".runner-lock", "utf8")),
+    ).toMatchObject({ childInFlight: true });
+  });
+
+  it("resumes an exact-head reviewed campaign after host interruption", () => {
+    const entry = fixture({}, { merge: true, tier: "high" });
+    const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    manifest.risk.resolved = true;
+    manifest.gates = manifest.requiredGates.map(({ name }) => ({
+      name,
+      status: "success",
+      head: manifest.revisions.currentHead,
+    }));
+    manifest.reviews = [
+      {
+        from: manifest.revisions.baseSha,
+        to: "reviewed-before-interruption",
+        status: "complete",
+        leadCount: 0,
+      },
+    ];
+    manifest.governor.providerSecondsUsed = 64;
+    manifest.governor.activeExecution = null;
+    manifest.terminalEpoch = 1;
+    manifest.terminalState = {
+      state: "interrupted",
+      detail: "quality run interrupted",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: 1,
+    };
+    writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+
+    const result = run(entry);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "complete",
+      state: "merged",
+    });
+    expect(result.manifest.governor.providerSecondsUsed).toBe(64);
+    expect(result.manifest.calls).toContain("quality-mutation-check.sh");
+    expect(result.manifest.calls).toContain("quality-run-review.sh");
+    expect(result.manifest.calls).toContain("quality-stamp-and-merge.sh");
+    expect(result.manifest.terminalHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: "interrupted",
+          disposition: "resumed-after-interruption",
+        }),
+        expect.objectContaining({
+          event: "reopened-after-interruption",
+          terminalEpoch: 2,
+        }),
+      ]),
+    );
   });
 
   it("classifies stale identity as superseded before any phase runs", () => {
@@ -1078,6 +1795,44 @@ describe("quality-run public orchestration", () => {
     expect(result.manifest.telemetryWrites).toBe(1);
   });
 
+  it("retains typed-pause ownership while its process group is not quiescent", async () => {
+    const entry = fixture(
+      { externalMergeRequirement: true, orphanMergeDescendant: true },
+      { merge: true, tier: "medium" },
+    );
+    const result = run(entry);
+    const orphanPid = Number(
+      readFileSync(entry.manifestPath + ".merge-orphan-pid", "utf8"),
+    );
+    let cleanupError;
+    try {
+      expect(result.status).toBe(3);
+      const lock = JSON.parse(
+        readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(lock).toMatchObject({
+        schemaVersion: 2,
+        childInFlight: true,
+        child: { processGroupId: expect.any(Number) },
+      });
+      expectBusyUnchanged(entry, "runner-owned");
+    } finally {
+      try {
+        process.kill(orphanPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") cleanupError = error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(orphanPid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 10000 },
+    );
+  });
+
   it("resumes a structured merge requirement without replaying immutable phases", () => {
     const entry = fixture(
       { recoverTerminal: true, externalMergeRequirement: true },
@@ -1117,5 +1872,46 @@ describe("quality-run public orchestration", () => {
       "terminal state recording failed after: risk failed with exit 5",
     );
     expect(result.stderr).not.toContain("Cannot read properties of undefined");
+  });
+});
+
+describe("merge read failure runner boundary", () => {
+  it("keeps a persisted creator-only recovery sentinel terminal", () => {
+    const entry = fixture({}, { merge: true, tier: "medium" });
+    const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    manifest.terminalState = {
+      state: "recovering",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: 1,
+      recovery: { kind: "merge-read-failure" },
+    };
+    writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+    const result = run(entry);
+    expect(result.status).toBe(1);
+    expect(result.manifest).toEqual(manifest);
+  });
+
+  it("retains typed read failure diagnostics separately from CI rejection", () => {
+    const entry = fixture(
+      {
+        failMerge: true,
+        mergeExit: 75,
+        mergeWarning: "GitHub GET transport exhausted",
+      },
+      { merge: true, tier: "medium" },
+    );
+    const result = run(entry);
+    expect(result.status).toBe(1);
+    expect(result.manifest.terminalState).toMatchObject({
+      state: "blocked",
+      detail: "ci-admission-read-failed",
+    });
+    expect(result.manifest.merge.readFailure).toMatchObject({
+      kind: "ci-admission-read-failed",
+      exitCode: 75,
+      head: result.manifest.revisions.currentHead,
+      stderr: expect.stringContaining("GitHub GET transport exhausted"),
+    });
+    expect(result.manifest.merge.admissionBlock).toBeUndefined();
   });
 });

@@ -47,13 +47,16 @@ targeted proof that the caller has not established.
 Before an unattended run, acquire operator-scoped admission with
 `scripts/autonomous-loop-runtime.js admit`. Its launcher **must** pass the
 long-lived loop's `--owner-pid` (Bash: `"$$"`), never the short-lived `node`
-child. It requires a local usage adapter that prints only:
+child. Pass `--provider codex` or `--provider claude`, matching the provider
+that will execute the loop. The bundled adapter queries CodexBar with local
+authentication and validates evidence freshness. Install CodexBar on each
+computer as described in `../../docs/provider-usage.md`. It prints only:
 
 ```json
-{ "fiveHourPercent": 12, "sevenDayPercent": 18 }
+{ "provider": "codex", "windows": { "primary": 12, "secondary": 18 } }
 ```
 
-The default gate refuses a new loop at 70% on either window, refuses a third
+The default gate refuses a new loop at 70% on any reported window, refuses a third
 loop across all repositories for the operator, and records only sanitized
 percentages/outcomes under `$XDG_STATE_HOME/claude-kit/autonomous-loops/`.
 Never put account credentials, raw usage responses, or that telemetry in a

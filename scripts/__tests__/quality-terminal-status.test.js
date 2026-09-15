@@ -4,6 +4,7 @@ const path = require("node:path");
 const { makeTempDir } = require("./helpers/tmp.js");
 const {
   buildDiagnosis,
+  terminalStatus,
   worktreeLockStatus,
 } = require("../quality-terminal-status");
 
@@ -39,6 +40,23 @@ function repo(label) {
 }
 
 describe("quality terminal diagnosis", () => {
+  it("distinguishes recoverable interruption state", () => {
+    const manifest = {
+      revisions: { currentHead: "abc" },
+      governor: { activeExecution: null },
+      terminalState: { state: "interrupted", head: "abc" },
+    };
+
+    expect(terminalStatus(manifest)).toBe(
+      "interrupted — exact resume will continue unfinished phases",
+    );
+
+    manifest.governor.activeExecution = { token: "active" };
+    expect(terminalStatus(manifest)).toBe(
+      "interrupted — recovery waits for active execution reconciliation",
+    );
+  });
+
   it("skips an unrelated prunable worktree while resolving the target lock", () => {
     const primary = repo("terminal-status-prunable");
     const stale = makeTempDir("quality-a-stale-");

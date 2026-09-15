@@ -194,7 +194,7 @@ fi
 # to the right PID (e.g. it forks) will still fall back to the guess.
 PORT_IS_GUESS=0
 if [ -z "$PORT" ]; then
-  PORT=3000
+  PORT="${QUALITY_VERIFY_APP_DEFAULT_PORT:-3000}"
   PORT_IS_GUESS=1
 fi
 

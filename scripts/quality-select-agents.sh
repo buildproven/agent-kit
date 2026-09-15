@@ -49,6 +49,9 @@ if [ "$TIER" = critical ] && [ "$MERGE_AUTHORITY" = autonomous ]; then
   echo "[quality] Critical tier: autonomous merge authority; running full critical review." >&2
 fi
 
-node "$SCRIPT_DIR/quality-invocation.js" agents "$MANIFEST" \
-  --domain "$DOMAIN" --rule "$RULE" -- "${AGENTS[@]}" || exit 1
+AGENT_ARGS=(--domain "$DOMAIN" --rule "$RULE" --)
+if [ "${#AGENTS[@]}" -gt 0 ]; then
+  AGENT_ARGS+=("${AGENTS[@]}")
+fi
+node "$SCRIPT_DIR/quality-invocation.js" agents "$MANIFEST" "${AGENT_ARGS[@]}" || exit 1
 echo "[quality] Selected ${#AGENTS[@]} agents for tier=$TIER domain=$DOMAIN rule=$RULE"

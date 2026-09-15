@@ -836,6 +836,64 @@ fi
   });
 
   describe("account exhaustion", () => {
+    it("kills a detached provider descendant when the review times out", () => {
+      const d = tmpdir();
+      const bin = path.join(d, "bin");
+      const pidFile = path.join(d, "detached.pid");
+      fs.mkdirSync(bin);
+      const fakeClaude = path.join(bin, "claude");
+      fs.writeFileSync(
+        fakeClaude,
+        `#!/bin/bash
+python3 - "${pidFile}" <<'PY' &
+import os
+import sys
+import time
+
+os.setsid()
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()))
+    handle.flush()
+time.sleep(30)
+PY
+helper=$!
+wait "$helper"
+`,
+      );
+      fs.chmodSync(fakeClaude, 0o755);
+      fs.writeFileSync(path.join(d, "diff.txt"), "x\n");
+      const result = run(
+        [
+          "--diff-file",
+          path.join(d, "diff.txt"),
+          "--out-dir",
+          path.join(d, "o"),
+          "--agents",
+          "code-reviewer",
+          "--timeout",
+          // Python startup can exceed one second when the complete suite is
+          // running in parallel. Keep the provider timeout short while giving
+          // the fixture enough time to publish its detached-child handshake.
+          "5",
+        ],
+        { env: { PATH: `${bin}:${process.env.PATH}` } },
+      );
+
+      expect(result.code).toBe(4);
+      const detachedPid = Number(fs.readFileSync(pidFile, "utf8"));
+      expect(Number.isInteger(detachedPid)).toBe(true);
+      const deadline = Date.now() + 5000;
+      let alive = true;
+      while (alive && Date.now() < deadline) {
+        alive =
+          spawnSync("ps", ["-p", String(detachedPid)], {
+            stdio: "ignore",
+          }).status === 0;
+        if (alive) execFileSync("sleep", ["0.1"]);
+      }
+      expect(alive).toBe(false);
+    });
+
     it("returns 75, exposes the 429, and cancels sibling reviewers", () => {
       const d = tmpdir();
       const bin = path.join(d, "bin");

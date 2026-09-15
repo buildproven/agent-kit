@@ -60,6 +60,18 @@ normal exact-candidate gate uses the smallest evidence-backed selection. Reuse
 already successful evidence for the identical candidate rather than repeating
 it locally or in CI.
 
+Mutation proof treats a modified submodule pointer as executable behavior when
+the candidate also changes a behavioral test. The isolated mutation worktree
+restores and materializes the base submodule revision before it runs the
+persisted test plan; that test must fail to produce red-capable evidence. A
+pointer-only submodule update has no candidate-owned behavioral subject and is
+recorded separately as `gitlink-skip`.
+
+The task-completion hook uses this same selector for staged, unstaged and
+untracked working-tree paths. It reports an unmapped or failed selection early,
+but it is local feedback only; exact-head quality and product-completion evidence
+remain owned by the revision-bound quality runtime.
+
 Example policy:
 
 ```json

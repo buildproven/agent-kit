@@ -25,7 +25,9 @@ state; do not copy the reference into another playbook.
 REFLECT → DECIDE`; `INIT`, `BLOCK`, `SPLIT`, and `SPECULATE` are explicit
   transitions, not informal retries.
 - Before unattended work, run `scripts/autonomous-loop-runtime.js admit` with
-  the long-lived loop's owner PID. Never expose credentials or raw usage data;
+  the long-lived loop's owner PID and `--provider codex|claude` matching the
+  executing provider. The bundled adapter queries CodexBar; see
+  `../../docs/provider-usage.md` for per-computer setup. Never expose credentials or raw usage data;
   state belongs under `$XDG_STATE_HOME/claude-kit/autonomous-loops/`.
 - Each item gets a fresh provider process and an isolated feature branch or
   worktree. Inline items are ephemeral and never update Linear.
