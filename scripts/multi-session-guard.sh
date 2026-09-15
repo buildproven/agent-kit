@@ -29,8 +29,23 @@ mkdir -p "$LOCK_DIR" 2>/dev/null || exit 0
 SESSION_ID="${SESSION_ID:-$$}"
 LOCK_FILE="$LOCK_DIR/$SESSION_ID.lock"
 
-# Register this session
-echo "$(date +%s) $PWD $$" > "$LOCK_FILE"
+# Register this session.
+#
+# The third field is the OWNER, and it must outlive this hook. $$ here is the
+# hook shell, which exits the moment this script returns, so recording it made
+# every lock instantly reapable by the liveness check below while the real
+# session kept running — the guard silently stopped guarding (BUI-917).
+#
+# Prefer a real session identity. Only fall back to $$ when Claude supplies no
+# session id, and mark that case so the reaper knows the pid is untrustworthy.
+if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    LOCK_OWNER="session:$CLAUDE_SESSION_ID"
+elif [ -n "${SESSION_ID:-}" ] && [ "$SESSION_ID" != "$$" ]; then
+    LOCK_OWNER="session:$SESSION_ID"
+else
+    LOCK_OWNER="hookpid:$$"
+fi
+echo "$(date +%s) $PWD $LOCK_OWNER" > "$LOCK_FILE"
 
 # Clean stale locks (sessions that ended without cleanup — older than 12 hours)
 NOW=$(date +%s)
@@ -47,13 +62,24 @@ for lock in "$LOCK_DIR"/*.lock; do
             continue
         fi
 
-        # Check if the process is still alive
-        LOCK_PID=$(head -1 "$lock" 2>/dev/null | awk '{print $3}')
-        if [ -n "$LOCK_PID" ] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
-            # Process dead — stale lock
-            rm -f "$lock"
-            continue
-        fi
+        # Liveness check, but ONLY for owners whose pid is meaningful.
+        #
+        # A "session:" owner belongs to a Claude session this hook cannot see
+        # in the process table, so its absence proves nothing; those locks age
+        # out via the 12h TTL above instead. A "hookpid:" owner is the legacy
+        # shape and is already dead by definition, so reaping on pid liveness
+        # would discard live sessions — exactly the BUI-917 defect. Treat a
+        # bare number the same way: it is a pre-fix record of unknown validity.
+        LOCK_OWNER=$(head -1 "$lock" 2>/dev/null | awk '{print $3}')
+        case "$LOCK_OWNER" in
+            proc:*)
+                LOCK_PID="${LOCK_OWNER#proc:}"
+                if [ -n "$LOCK_PID" ] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
+                    rm -f "$lock"
+                    continue
+                fi
+                ;;
+        esac
     fi
 done
 

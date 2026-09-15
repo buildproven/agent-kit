@@ -70,15 +70,40 @@ if (hasCommit) guards.push("block-commit-main.sh");
 // therefore invoked for every git command, including ordinary status calls.
 if (hasGit) guards.push("branch-drift-guard.sh");
 
+// A guard that never returns blocks the tool call forever. Claude Code's hook
+// `timeout` is the outer bound, but it is measured in SECONDS and defaults to
+// 600, so leaning on it means a hung guard stalls the session for ten minutes
+// before anything reacts. Bound each guard here instead.
+//
+// This is not hypothetical: these guards parse their own argv, and a
+// `shift 2` arm with no remaining value spins its option loop forever rather
+// than erroring. Five seconds is far above the ~50ms these checks take.
+const GUARD_TIMEOUT_MS = Number.parseInt(
+  process.env.BS_GUARD_TIMEOUT_MS || "5000",
+  10,
+);
+
 for (const name of guards) {
   const result = spawnSync("bash", [resolveGuard(name)], {
     input: rawInput,
     encoding: "utf8",
+    timeout: GUARD_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
 
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
 
+  // A timeout surfaces as error.code ETIMEDOUT, or as a null status with the
+  // kill signal set. Deny in both cases: a guard that did not finish has not
+  // approved anything, and treating silence as consent would invert the
+  // safety property these guards exist to provide.
+  if (result.error?.code === "ETIMEDOUT" || result.signal) {
+    deny(
+      `${name} did not finish within ${GUARD_TIMEOUT_MS}ms and was terminated; ` +
+        `refusing the command rather than proceeding unchecked`,
+    );
+  }
   if (result.error) {
     deny(`could not execute ${name}: ${result.error.message}`);
   }

@@ -1,5 +1,11 @@
 const { execFileSync, spawnSync } = require("node:child_process");
-const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 
@@ -132,5 +138,53 @@ describe("bash-pretooluse-dispatcher.js", () => {
     });
     expect(synchronized.code).toBe(2);
     expect(synchronized.output).toMatch(/minute policy denied/i);
+  });
+
+  it("terminates a hung guard and denies rather than proceeding unchecked", () => {
+    // A guard that never returns used to block the tool call indefinitely:
+    // spawnSync was called with no timeout, and Claude Code's hook `timeout`
+    // is SECONDS with a 600 default, so nothing reacted for ten minutes.
+    //
+    // This is reachable, not theoretical. These guards parse their own argv,
+    // and a `shift 2` arm with no remaining value spins its option loop
+    // forever (BUI-844). Silence must never read as approval.
+    const guardDir = mkdtempSync(path.join(tmpdir(), "hung-guard-"));
+    const hung = path.join(guardDir, "block-commit-main.sh");
+    writeFileSync(hung, "#!/usr/bin/env bash\nsleep 600\n", { mode: 0o755 });
+
+    const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
+    writeFileSync(staged, readFileSync(HOOK, "utf8"));
+    for (const sibling of [
+      "block-push-main.sh",
+      "block-destructive-paths.sh",
+      "branch-drift-guard.sh",
+    ]) {
+      writeFileSync(
+        path.join(guardDir, sibling),
+        "#!/usr/bin/env bash\nexit 0\n",
+        { mode: 0o755 },
+      );
+    }
+
+    const started = Date.now();
+    const result = spawnSync("node", [staged], {
+      input: JSON.stringify({
+        tool_input: { command: "git commit -m x" },
+        cwd: repo,
+      }),
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, BS_GUARD_TIMEOUT_MS: "1500" },
+    });
+    const elapsed = Date.now() - started;
+
+    expect(result.status).toBe(2);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /did not finish within 1500ms/i,
+    );
+    // Bounded well below the 600s the guard would otherwise have slept.
+    expect(elapsed).toBeLessThan(10_000);
+
+    rmSync(guardDir, { recursive: true, force: true });
   });
 });
