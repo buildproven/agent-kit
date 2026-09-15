@@ -9,9 +9,10 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const Ajv = require("ajv");
 
-const ROOT = path.resolve(process.env.SOTA_ROOT || path.join(__dirname, ".."));
+let ROOT = path.resolve(process.env.SOTA_ROOT || path.join(__dirname, ".."));
 const SETTINGS_SCHEMA_URL =
   "https://json.schemastore.org/claude-code-settings.json";
 const CURRENT_BASELINE = "2.1.233";
@@ -34,6 +35,33 @@ function readJSON(relativePath) {
   } catch {
     return null;
   }
+}
+
+function settingsPath() {
+  return exists("config/settings.json")
+    ? "config/settings.json"
+    : "settings.json";
+}
+
+function controlPath(name) {
+  const shared = `core/scripts/${name}`;
+  return exists(shared) ? shared : `scripts/${name}`;
+}
+
+function governorFailsClosed() {
+  const governor = path.join(ROOT, controlPath("quality-run-governor.js"));
+  if (!fs.existsSync(governor)) return false;
+  const missingSentinel = path.join(ROOT, ".sota-missing-governor-state.json");
+  const run = spawnSync(
+    process.execPath,
+    [governor, "check", missingSentinel],
+    {
+      cwd: ROOT,
+      encoding: "utf8",
+      timeout: 5_000,
+    },
+  );
+  return run.status === 1 && /failing CLOSED/i.test(run.stderr);
 }
 
 // Directories that never hold repository sources. Scratch and coverage output
@@ -96,9 +124,9 @@ async function fetchSettingsSchema() {
 }
 
 function scoreSettingsValidity(schema, schemaError) {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings)
-    return result(0, "config/settings.json is missing or invalid JSON");
+    return result(0, `${settingsPath()} is missing or invalid JSON`);
   if (!schema) {
     return result(0, `Live settings schema unavailable: ${schemaError}`);
   }
@@ -117,7 +145,7 @@ function scoreSettingsValidity(schema, schemaError) {
 }
 
 function scorePermissionPosture() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings) return result(0, "settings.json missing");
   const permissions = settings.permissions || {};
   const allow = permissions.allow || [];
@@ -179,7 +207,14 @@ function scoreNativeFirst() {
   );
 }
 
-function scoreDistribution() {
+function scoreDistribution(layer) {
+  if (layer !== "public_kit") {
+    return {
+      score: null,
+      gap: null,
+      notApplicable: "not a public distribution",
+    };
+  }
   const plugin = readJSON(".claude-plugin/plugin.json");
   const marketplace = readJSON(".claude-plugin/marketplace.json");
   let score = 0;
@@ -198,7 +233,7 @@ function notificationMatchers(settings) {
 }
 
 function scoreAgentOrchestration() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings) return result(0, "settings.json missing");
   const matchers = notificationMatchers(settings);
   const corpus = [
@@ -231,13 +266,23 @@ function scoreAgentOrchestration() {
 }
 
 function scoreClaudeMd() {
-  const content = readText("config/CLAUDE.md");
-  if (!content) return result(0, "config/CLAUDE.md missing");
+  const claudeMdPath = exists("config/CLAUDE.md")
+    ? "config/CLAUDE.md"
+    : "CLAUDE.md";
+  const content = readText(claudeMdPath);
+  if (!content) return result(0, `${claudeMdPath} missing`);
   const lines = content.split("\n").length;
-  const required = ["Action Defaults", "Code Quality", "Communication", "Git"];
-  const missing = required.filter((heading) => !content.includes(heading));
+  const requiredBehaviors = [
+    /act by default|continue.*autonom/i,
+    /\b(?:test|lint|quality)\b/i,
+    /\b(?:report|communicat)\b/i,
+    /\b(?:git|branch|commit)\b/i,
+  ];
+  const missing = requiredBehaviors
+    .map((behavior, index) => (behavior.test(content) ? null : index))
+    .filter((index) => index !== null);
   let score = lines < 100 ? 6 : lines <= 120 ? 5 : 3;
-  score += required.length - missing.length;
+  score += requiredBehaviors.length - missing.length;
   return result(
     score,
     lines >= 100 ? `${lines} lines (target <100)` : missing[0] || null,
@@ -246,12 +291,18 @@ function scoreClaudeMd() {
 }
 
 function scoreBoundedAutonomy() {
+  const governor = controlPath("quality-run-governor.js");
+  const ralph = controlPath("ralph-next-run.sh");
   const checks = [
-    exists("scripts/quality-run-governor.js"),
-    /MAX_TRANSITIONS=\d+/.test(readText("scripts/ralph-next-run.sh")),
-    exists("scripts/__tests__/quality-run-governor-bump.test.js"),
-    /max_wall_seconds/.test(readText("scripts/quality-run-governor.js")),
-    /max_review_rounds/.test(readText("scripts/quality-run-governor.js")),
+    governorFailsClosed(),
+    spawnSync("bash", [path.join(ROOT, ralph), "--help"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      timeout: 5_000,
+    }).status === 0,
+    /MAX_TRANSITIONS=\d+/.test(readText(ralph)),
+    /max_wall_seconds/.test(readText(governor)),
+    /max_review_rounds/.test(readText(governor)),
   ];
   const passed = checks.filter(Boolean).length;
   return result(
@@ -261,7 +312,7 @@ function scoreBoundedAutonomy() {
 }
 
 function scoreHooks() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const hooks = settings?.hooks;
   if (!hooks) return result(0, "No hooks configured");
   const required = ["PreToolUse", "PostToolUse", "Notification"];
@@ -327,7 +378,7 @@ function scanRetiredModels() {
 }
 
 function scoreModelConfig() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings) return result(0, "settings.json missing");
   let score = 0;
   const gaps = [];
@@ -366,16 +417,16 @@ function scoreQualityGates() {
     exists("scripts/quality-run-bounded.sh")
   )
     score += 2;
-  if (exists("scripts/quality-run-governor.js")) score += 2;
+  if (governorFailsClosed()) score += 2;
   return result(score, missing[0] ? `Missing ${missing[0]} gate` : null, {
     missing,
   });
 }
 
-function scoreSecurity() {
+function scoreSecurity(layer) {
   const workflow = readText(".github/workflows/quality.yml");
   const semgrepRunner = readText("scripts/run-semgrep.sh");
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const checks = [
     exists("scripts/block-destructive-paths.sh"),
     /security:scan:ci/.test(workflow) && /--error/.test(semgrepRunner),
@@ -383,9 +434,11 @@ function scoreSecurity() {
     exists("package-lock.json") && /npm ci/.test(workflow),
     Boolean(settings?.sandbox?.credentials),
   ];
-  const privateLeak = /(?:\/Users\/brett|Projects\/internal|brettstark)/i.test(
-    [readText("README.md"), readText("config/settings.json")].join("\n"),
-  );
+  const privateLeak =
+    layer === "public_kit" &&
+    /(?:\/Users\/brett|Projects\/internal|brettstark)/i.test(
+      [readText("README.md"), readText("config/settings.json")].join("\n"),
+    );
   const passed = checks.filter(Boolean).length;
   return result(
     passed * 2 - (privateLeak ? 2 : 0),
@@ -412,7 +465,7 @@ function scoreObservability() {
   const corpus = [readText("README.md"), readText("skills/sota/SKILL.md")].join(
     "\n",
   );
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const env = settings?.env || {};
   const hasUsage = corpus.includes("/usage");
   const hasOtel =
@@ -440,7 +493,7 @@ function compareVersions(left, right) {
 }
 
 function scoreCurrency() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const pinned = settings?.requiredMinimumVersion;
   const rubric = readText("skills/sota/SKILL.md");
   const reviewedMatch = rubric.match(/Last reviewed:\s*(\d{4}-\d{2}-\d{2})/);
@@ -480,7 +533,80 @@ function overallScore(scores) {
   );
 }
 
-async function scoreRepository({ schema, schemaError } = {}) {
+function scoreLayer(root, layer, { schema, schemaError }) {
+  const priorRoot = ROOT;
+  ROOT = root;
+  try {
+    const categories = {
+      settings_validity: scoreSettingsValidity(schema, schemaError),
+      permission_posture: scorePermissionPosture(),
+      native_first: scoreNativeFirst(),
+      distribution: scoreDistribution(layer),
+      agent_orchestration: scoreAgentOrchestration(),
+      claude_md: scoreClaudeMd(),
+      bounded_autonomy: scoreBoundedAutonomy(),
+      hooks: scoreHooks(),
+      skill_design: scoreSkillDesign(),
+      model_config: scoreModelConfig(),
+      quality_gates: scoreQualityGates(),
+      security: scoreSecurity(layer),
+      git_workflow: scoreGitWorkflow(),
+      observability: scoreObservability(),
+      currency: scoreCurrency(),
+    };
+    const scores = Object.fromEntries(
+      Object.entries(categories).map(([name, value]) => [name, value.score]),
+    );
+    return {
+      label:
+        layer === "public_kit"
+          ? "Public kit"
+          : layer === "private_overlay"
+            ? "Private overlay"
+            : "Installed composition",
+      root,
+      overall: overallScore(scores),
+      scores,
+      topGaps: Object.values(categories)
+        .map((value) => value.gap)
+        .filter(Boolean)
+        .slice(0, 3),
+      categories,
+    };
+  } finally {
+    ROOT = priorRoot;
+  }
+}
+
+function layerRoots(options) {
+  const requestedRoot = path.resolve(
+    options.root || process.env.SOTA_ROOT || ROOT,
+  );
+  const overlayRoot = options.overlayRoot || process.env.SOTA_OVERLAY_ROOT;
+  const installedRoot =
+    options.installedRoot || process.env.SOTA_INSTALLED_ROOT;
+  const hasCore = fs.existsSync(path.join(requestedRoot, "core"));
+  return {
+    public_kit: path.resolve(
+      options.publicRoot ||
+        process.env.SOTA_PUBLIC_ROOT ||
+        (hasCore ? path.join(requestedRoot, "core") : requestedRoot),
+    ),
+    private_overlay:
+      overlayRoot || hasCore
+        ? path.resolve(overlayRoot || requestedRoot)
+        : null,
+    installed_composition: installedRoot
+      ? path.resolve(installedRoot)
+      : options.detectInstalled === false
+        ? null
+        : fs.existsSync(path.join(process.env.HOME || "", ".claude"))
+          ? path.join(process.env.HOME, ".claude")
+          : null,
+  };
+}
+
+async function scoreRepository({ schema, schemaError, ...options } = {}) {
   let liveSchema = schema;
   let liveSchemaError = schemaError;
   if (!liveSchema && !liveSchemaError) {
@@ -490,37 +616,25 @@ async function scoreRepository({ schema, schemaError } = {}) {
       liveSchemaError = error.message;
     }
   }
-  const categories = {
-    settings_validity: scoreSettingsValidity(liveSchema, liveSchemaError),
-    permission_posture: scorePermissionPosture(),
-    native_first: scoreNativeFirst(),
-    distribution: scoreDistribution(),
-    agent_orchestration: scoreAgentOrchestration(),
-    claude_md: scoreClaudeMd(),
-    bounded_autonomy: scoreBoundedAutonomy(),
-    hooks: scoreHooks(),
-    skill_design: scoreSkillDesign(),
-    model_config: scoreModelConfig(),
-    quality_gates: scoreQualityGates(),
-    security: scoreSecurity(),
-    git_workflow: scoreGitWorkflow(),
-    observability: scoreObservability(),
-    currency: scoreCurrency(),
-  };
-  const scores = Object.fromEntries(
-    Object.entries(categories).map(([name, value]) => [name, value.score]),
-  );
-  const overall = overallScore(scores);
+  const roots = layerRoots(options);
+  const layers = {};
+  const missingLayers = [];
+  for (const [layer, root] of Object.entries(roots)) {
+    if (!root || !fs.existsSync(root)) {
+      missingLayers.push(layer);
+      continue;
+    }
+    layers[layer] = scoreLayer(root, layer, {
+      schema: liveSchema,
+      schemaError: liveSchemaError,
+    });
+  }
   return {
     date: new Date().toISOString().split("T")[0],
     rubricVersion: "3.0",
-    overall,
-    scores,
-    topGaps: Object.values(categories)
-      .map((value) => value.gap)
-      .filter(Boolean)
-      .slice(0, 3),
-    categories,
+    composite: null,
+    missingLayers,
+    layers,
   };
 }
 
@@ -533,6 +647,7 @@ module.exports = {
   CURRENT_BASELINE,
   compareVersions,
   overallScore,
+  scoreLayer,
   scoreRepository,
   scoreSettingsValidity,
 };

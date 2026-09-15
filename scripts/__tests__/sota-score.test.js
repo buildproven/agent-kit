@@ -1,4 +1,5 @@
-const { readFileSync } = require("node:fs");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const {
   CURRENT_BASELINE,
@@ -18,12 +19,69 @@ const SETTINGS_SCHEMA = {
   },
 };
 
+const write = (root, relativePath, content) => {
+  const target = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+};
+
+const makeLayeredFixture = () => {
+  const overlay = fs.mkdtempSync(path.join(os.tmpdir(), "sota-layered-"));
+  const settings = JSON.stringify({
+    requiredMinimumVersion: "2.1.233",
+    permissions: {
+      defaultMode: "auto",
+      allow: [],
+      deny: ["rm -rf"],
+      ask: ["git push --force"],
+    },
+    hooks: { PreToolUse: [], PostToolUse: [], Notification: [] },
+  });
+  for (const prefix of ["", "core/"]) {
+    write(overlay, `${prefix}config/settings.json`, settings);
+    write(
+      overlay,
+      `${prefix}config/CLAUDE.md`,
+      "# Working rules\nAct by default. Run test and lint checks. Report results. Use a feature branch and commit with git.\n",
+    );
+    write(
+      overlay,
+      `${prefix}scripts/ralph-next-run.sh`,
+      '#!/usr/bin/env bash\nMAX_TRANSITIONS=8\n[ "$1" = "--help" ] && exit 0\n',
+    );
+    write(
+      overlay,
+      `${prefix}scripts/quality-run-governor.js`,
+      "#!/usr/bin/env node\nif (process.argv[2] === 'check') { process.stderr.write('failing CLOSED\\n'); process.exit(1); }\nprocess.exit(2);\n",
+    );
+  }
+  write(overlay, "core/.claude-plugin/plugin.json", '{"name":"bs"}');
+  write(overlay, "core/.claude-plugin/marketplace.json", '{"plugins":[]}');
+  return overlay;
+};
+
 describe("SOTA rubric 3.0 scorer", () => {
-  it("scores exactly the 15 documented rubric categories", async () => {
-    const output = await scoreRepository({ schema: SETTINGS_SCHEMA });
+  let fixture;
+
+  afterEach(() => {
+    if (fixture) fs.rmSync(fixture, { recursive: true, force: true });
+    fixture = undefined;
+  });
+
+  it("reports each available layer separately and does not emit a composite", async () => {
+    fixture = makeLayeredFixture();
+    const output = await scoreRepository({
+      root: fixture,
+      detectInstalled: false,
+      schema: SETTINGS_SCHEMA,
+    });
 
     expect(output.rubricVersion).toBe("3.0");
-    expect(Object.keys(output.categories)).toEqual([
+    expect(output.composite).toBeNull();
+    expect(output.missingLayers).toEqual(["installed_composition"]);
+    expect(output.layers.public_kit.label).toBe("Public kit");
+    expect(output.layers.private_overlay.label).toBe("Private overlay");
+    expect(Object.keys(output.layers.public_kit.categories)).toEqual([
       "settings_validity",
       "permission_posture",
       "native_first",
@@ -40,10 +98,16 @@ describe("SOTA rubric 3.0 scorer", () => {
       "observability",
       "currency",
     ]);
-    expect(Object.keys(output.scores)).toHaveLength(15);
-    expect(output.categories.skill_design.inert).toEqual([]);
-    expect(output.categories.skill_design.score).toBe(10);
-    expect(output.categories.agent_orchestration.score).toBe(10);
+    expect(Object.keys(output.layers.public_kit.scores)).toHaveLength(15);
+    expect(
+      output.layers.private_overlay.categories.distribution.score,
+    ).toBeNull();
+    expect(
+      output.layers.private_overlay.categories.distribution.notApplicable,
+    ).toBe("not a public distribution");
+    expect(
+      output.layers.private_overlay.categories.bounded_autonomy.score,
+    ).toBeGreaterThan(0);
   });
 
   it.each([
@@ -53,7 +117,7 @@ describe("SOTA rubric 3.0 scorer", () => {
   ])(
     "scores currency at day %i from the documented review date",
     async (days, expectedScore, expectedGap) => {
-      const rubric = readFileSync(
+      const rubric = fs.readFileSync(
         path.resolve(__dirname, "../../skills/sota/SKILL.md"),
         "utf8",
       );
@@ -64,19 +128,69 @@ describe("SOTA rubric 3.0 scorer", () => {
         new Date(Date.parse(`${reviewed[1]}T00:00:00Z`) + days * 86_400_000),
       );
       try {
-        const output = await scoreRepository({ schema: SETTINGS_SCHEMA });
+        const output = await scoreRepository({
+          schema: SETTINGS_SCHEMA,
+          detectInstalled: false,
+        });
+        const currency = output.layers.public_kit.categories.currency;
 
         expect(CURRENT_BASELINE).toBe("2.1.233");
-        expect(output.categories.currency.details).toBeUndefined();
-        expect(output.categories.currency.pinned).toBe("2.1.233");
+        expect(currency.details).toBeUndefined();
+        expect(currency.pinned).toBe("2.1.233");
 
-        expect(output.categories.currency.score).toBe(expectedScore);
-        expect(output.categories.currency.gap).toBe(expectedGap);
+        expect(currency.score).toBe(expectedScore);
+        expect(currency.gap).toBe(expectedGap);
       } finally {
         vi.useRealTimers();
       }
     },
   );
+  it("lowers the overlay score when its executable governor stops failing closed", async () => {
+    fixture = makeLayeredFixture();
+    const options = {
+      root: fixture,
+      detectInstalled: false,
+      schema: SETTINGS_SCHEMA,
+    };
+    const healthy = await scoreRepository(options);
+    write(
+      fixture,
+      "core/scripts/quality-run-governor.js",
+      "#!/usr/bin/env node\nprocess.exit(0);\n",
+    );
+    const broken = await scoreRepository(options);
+
+    expect(
+      broken.layers.private_overlay.categories.bounded_autonomy.score,
+    ).toBeLessThan(
+      healthy.layers.private_overlay.categories.bounded_autonomy.score,
+    );
+    expect(
+      broken.layers.private_overlay.categories.quality_gates.score,
+    ).toBeLessThan(
+      healthy.layers.private_overlay.categories.quality_gates.score,
+    );
+  });
+
+  it("keeps the CLAUDE.md score when headings change but instructions do not", async () => {
+    fixture = makeLayeredFixture();
+    const options = {
+      root: fixture,
+      detectInstalled: false,
+      schema: SETTINGS_SCHEMA,
+    };
+    const before = await scoreRepository(options);
+    write(
+      fixture,
+      "config/CLAUDE.md",
+      "# Different labels\nAct by default. Run test and lint checks. Report results. Use a feature branch and commit with git.\n",
+    );
+    const after = await scoreRepository(options);
+
+    expect(after.layers.private_overlay.categories.claude_md.score).toBe(
+      before.layers.private_overlay.categories.claude_md.score,
+    );
+  });
 
   it("fails settings validity closed when the live schema is unavailable", () => {
     const scored = scoreSettingsValidity(null, "network unavailable");
