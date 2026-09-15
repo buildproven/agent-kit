@@ -5644,17 +5644,89 @@ function executableAvailable(executable, environment) {
   return result.status === 0;
 }
 
+// Variables a build or test gate legitimately needs. Anything not named here,
+// and not matching GATE_ENVIRONMENT_PREFIXES, does not reach repository code.
+const GATE_ENVIRONMENT_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "PWD",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "CI",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "FORCE_COLOR",
+  "NO_COLOR",
+  "COLORTERM",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "VIRTUAL_ENV",
+  "JAVA_HOME",
+  "GOPATH",
+  "GOROOT",
+  "GOCACHE",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+]);
+
+// Toolchain namespaces whose values are caches, mirrors and feature flags
+// rather than credentials. Auth for these lives in separate files (.npmrc,
+// ~/.cargo/credentials) that a real sandbox must also address — see BUI-743.
+const GATE_ENVIRONMENT_PREFIXES = [
+  "npm_config_",
+  "npm_package_",
+  "npm_lifecycle_",
+  "NPM_CONFIG_",
+  "PNPM_",
+  "YARN_",
+  "VOLTA_",
+  "NVM_",
+  "ASDF_",
+  "XDG_",
+  "HOMEBREW_",
+];
+
+// Names that must never reach repository code even if a prefix above would
+// otherwise admit them. A token is a token whatever namespace it hides in.
+const GATE_ENVIRONMENT_SECRET_PATTERN =
+  /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY|APIKEY|API_KEY|AUTH|SESSION|COOKIE|PRIVATE)/i;
+
+// A quality gate runs repository-controlled code — a build script, a test
+// suite, a postinstall hook. Until that runs under a real OS boundary
+// (BUI-743), the process environment is the widest thing it inherits.
+//
+// This was a deny-list of six quality-internal names, which is an open
+// allowlist wearing a deny-list's clothes: every AWS_*, GITHUB_TOKEN,
+// OPENAI_API_KEY and operator .env export passed straight through. The
+// operator .env on the machine this was written from holds 106 entries.
+//
+// Invert it: nothing reaches repository code unless it is named, or sits in a
+// toolchain namespace, and never if it looks like a credential. This does not
+// replace a sandbox — it removes the cheapest exfiltration path while one is
+// built.
 function repositoryGateEnvironment(environment = process.env) {
-  const isolated = { ...environment };
-  for (const name of [
-    "BS_QUALITY_TERMINAL_EPOCH",
-    "BS_QUALITY_REPOSITORY_LEASE_TOKEN",
-    "QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY",
-    "QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY_FILE",
-    "QUALITY_APPROVAL_PRIVATE_KEY",
-    "QUALITY_APPROVAL_PRIVATE_KEY_FILE",
-  ]) {
-    delete isolated[name];
+  const isolated = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined) continue;
+    const allowed =
+      GATE_ENVIRONMENT_ALLOWLIST.has(name) ||
+      GATE_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix));
+    if (!allowed) continue;
+    if (GATE_ENVIRONMENT_SECRET_PATTERN.test(name)) continue;
+    isolated[name] = value;
   }
   return isolated;
 }
