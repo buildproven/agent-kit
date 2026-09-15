@@ -425,6 +425,11 @@ describe("operator override end-to-end", () => {
           "the exact campaign exhausted mutation capacity",
           "--accept",
           "mutation:missing",
+          // Was --i-understand-security-risk: mutation:missing had no
+          // acknowledgement of its own, so this fixture borrowed an unrelated
+          // flag. It now names the risk the operator is actually accepting
+          // (BUI-914).
+          "--i-understand-missing-mutation",
           "--i-understand-security-risk",
         ],
       }),
