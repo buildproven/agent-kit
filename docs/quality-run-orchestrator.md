@@ -35,6 +35,12 @@ reserved for external authority. Cleanup and telemetry run from a `finally`
 path and cannot convert a successful merge into a failure or an invalid
 campaign into success.
 
+An orphaned manifest file lock can recover only when the current process holds
+the exact repository metadata guard and the recorded local owner PID is
+confirmed dead. The recovery compares the lock identity and bytes again before
+replacement. Active, remote, malformed, and uncertain owners remain blocked.
+See [the lock recovery decision](decisions/ADR-quality-dead-manifest-lock.md).
+
 A host interruption is recoverable through the same exact manifest. Recovery
 requires the exact repository lease and no active execution owner. It preserves
 prior reviews, findings, provider use, and budgets, then continues only the

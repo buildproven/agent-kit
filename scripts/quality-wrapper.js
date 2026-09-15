@@ -28,6 +28,15 @@ const HIGH_RISK_ACK_FLAGS = [
     flag: "--i-understand-pr-state-race",
   },
   { prefix: "review:finding:", flag: "--i-understand-code-finding" },
+  // Every other high-risk condition can be acknowledged; this one could not,
+  // which made a whole class of change unmergeable rather than merely hard.
+  // A test-only diff at high tier raises mutation:missing, and the gate is
+  // right to refuse it — a changed test cannot vouch for itself (BUI-483) —
+  // but with no acknowledgement the only remaining routes were a bypass
+  // outside the system or abandoning the change. Neither is auditable.
+  // The operator now states the risk explicitly and it lands in signed
+  // evidence (BUI-914).
+  { prefix: "mutation:missing", flag: "--i-understand-missing-mutation" },
   {
     prefix: "review:provider-exhaustion",
     flag: "--i-understand-missing-review",

@@ -12,6 +12,7 @@ const STALE_MS = 6 * 60 * 60 * 1000;
 const RECOVERY_OVERRIDE_ENV = "BS_QUALITY_LEASE_RECOVERY_OVERRIDE";
 const DEFAULT_WAIT_MS = 30_000;
 const SLEEP_BUFFER = new SharedArrayBuffer(4);
+const heldMetadataGuards = new Map();
 
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(SLEEP_BUFFER), 0, 0, milliseconds);
@@ -378,11 +379,30 @@ function withMetadataGuard(manifest, operation, timeoutMs) {
   const paths = pathsFor(identity, manifest);
   acquireGuard(paths.metadataGuard, timeoutMs);
   try {
+    heldMetadataGuards.set(
+      paths.metadataGuard,
+      guardOwner(paths.metadataGuard),
+    );
     return operation(paths, identity);
   } finally {
+    heldMetadataGuards.delete(paths.metadataGuard);
     releaseGuard(paths.metadataGuard);
   }
 }
+
+function hasMetadataGuard(manifest) {
+  if (!manifest.repo?.githubRepository) return false;
+  const paths = pathsFor(repositoryIdentity(manifest), manifest);
+  const held = heldMetadataGuards.get(paths.metadataGuard);
+  if (!held) return false;
+  return sameGuardOwner(guardOwner(paths.metadataGuard), held);
+}
+
+// quality-invocation is loaded by this module and calls these functions while
+// repository-lease initialization is still in progress. Publish the narrow
+// guard API before the complete export table below replaces module.exports.
+module.exports.withMetadataGuard = withMetadataGuard;
+module.exports.hasMetadataGuard = hasMetadataGuard;
 
 function loadManifest(manifestPath) {
   return require("./quality-invocation").loadManifest(manifestPath);
@@ -739,7 +759,12 @@ function recover(manifestPath, ownerToken, options = {}) {
   });
 }
 
-function withManifestMutation(manifestPath, presentedToken, mutation) {
+function withManifestMutation(
+  manifestPath,
+  presentedToken,
+  mutation,
+  options = {},
+) {
   const loaded = loadManifest(manifestPath);
   if (loaded.manifest.options?.merge !== true) {
     return require("./quality-invocation").withManifestLockRaw(
@@ -763,6 +788,14 @@ function withManifestMutation(manifestPath, presentedToken, mutation) {
     ) {
       throw new Error(
         "repository merge lease credential is stale at manifest mutation",
+      );
+    }
+    if (
+      options.requireIdle &&
+      (fs.existsSync(paths.mergeGuard) || record.mergeIntent)
+    ) {
+      throw new Error(
+        "merge recovery requires an idle repository with no merge operation",
       );
     }
     return require("./quality-invocation").withManifestLockRaw(
@@ -1063,10 +1096,17 @@ function resolveProtectedNonstrictMode(manifest, options, head) {
     });
   const authorization = invocation.reviewAuthorization(manifest);
   const basePolicy = protectedNonstrictBasePolicy(manifest);
-  const checkStates = require("./quality-required-checks.js").assertChecks(
-    manifest.repo.githubRepository,
-    branch,
+  const requiredChecks = require("./quality-required-checks.js");
+  const checkContext = {
+    repository: manifest.repo.githubRepository,
+    base: branch,
     head,
+  };
+  const checkStates = requiredChecks.assertChecks(
+    checkContext.repository,
+    checkContext.base,
+    checkContext.head,
+    requiredChecks.monitorForAssertion(manifest, checkContext),
   );
   return autonomousRefCasAuthority(manifest, options, head, {
     inspection,
@@ -1955,6 +1995,7 @@ module.exports = {
   verify,
   withManifestMutation,
   withMetadataGuard,
+  hasMetadataGuard,
   _acquireGuard: acquireGuard,
   _atomicWrite: atomicWrite,
   _recoverDeadGuard: recoverDeadGuard,

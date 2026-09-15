@@ -60,12 +60,16 @@ QUALITY_SCRIPTS_DIR="$(for d in "${CLAUDE_PLUGIN_ROOT:-}" "${CLAUDE_KIT_ROOT:-}"
 node "$QUALITY_SCRIPTS_DIR/quality-run.js" --manifest "<exact-manifest-path>"
 ```
 
-Every campaign declares `--delivery-claim contract|local-product|hosted|validated`.
+Every campaign declares
+`--delivery-claim contract|engineering|local-product|hosted|validated`.
 The claim is immutable campaign evidence, not a new correctness gate. Verify
-the claim with `product-completion.js`: only documentation, tests/fixtures, and
-GitHub workflow metadata may use the evidence-free `contract` path. Every
+product claims with `product-completion.js`. Only documentation, tests/fixtures,
+and GitHub workflow metadata may use the evidence-free `contract` path. Every
 other changed path is product-affecting and needs an applicable explicit
-claim; `local-product` needs behavioral and acceptance receipts. Each receipt
+claim. `engineering` is enabled only by the closed policy at the exact current
+protected base. It preserves all gates, review, CI, freshness, and merge
+authority, but establishes no product acceptance and uses no product receipt.
+`local-product` needs behavioral and acceptance receipts. Each receipt
 is a signed version 2 Ed25519 envelope from the fixed system trust root. It
 binds the issuer, GitHub repository name and numeric ID, exact HEAD,
 requirements digest, protected producer provenance, result, environment,
@@ -223,8 +227,8 @@ the two Claude slots use distinct model families. A one-provider native run or
 missing diversity is signed as incomplete, never independent or clean. See
 `checklist.md` for provider failure handling.
 
-Codex review model selection is task-scoped: low uses Luna, medium/high uses
-Terra, and critical uses Sol. This does not change the interactive builder
+Codex review model selection is task-scoped: low launches no AI reviewer;
+medium/high use Terra, and critical uses Sol. This does not change the interactive builder
 session. Claude agents continue to inherit the selected session model, with the
 existing critical diversity rule. Starting a session on a stronger model does
 not automatically downshift it; only an explicit scoped invocation can do that.

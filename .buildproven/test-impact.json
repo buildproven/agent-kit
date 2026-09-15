@@ -7,12 +7,14 @@
         "scripts/product-completion.js",
         "scripts/product-evidence.js",
         "scripts/product-admission.js",
+        "scripts/install-product-trust.js",
         "scripts/product-evidence-producer.js",
         "scripts/schemas/product-evidence-receipt-v2.schema.json",
         "scripts/schemas/product-delivery-evidence-index-v2.schema.json",
         "scripts/schemas/product-evidence-v2-conformance.json",
         "scripts/__tests__/product-admission.test.js",
         "scripts/__tests__/product-completion.test.js",
+        "scripts/__tests__/repository-product-trust.test.js",
         ".github/workflows/product-evidence-admission.yml",
         ".github/workflows/product-evidence-producer.yml",
         "docs/decisions/ADR-authenticated-product-completion-receipts.md"
@@ -25,7 +27,8 @@
             "run",
             "scripts/__tests__/product-admission.test.js",
             "scripts/__tests__/product-evidence-producer.test.js",
-            "scripts/__tests__/product-completion.test.js"
+            "scripts/__tests__/product-completion.test.js",
+            "scripts/__tests__/repository-product-trust.test.js"
           ]
         }
       ]
@@ -100,6 +103,7 @@
             "run",
             "scripts/__tests__/claude-review-companion.test.js",
             "scripts/__tests__/compute-governor.test.js",
+            "scripts/__tests__/compute-governor-native.test.js",
             "scripts/__tests__/provider-native.test.js",
             "scripts/__tests__/overnight-loop.test.js"
           ]
@@ -271,9 +275,15 @@
     },
     {
       "paths": [
+        "scripts/engineering-delivery-policy.js",
         "scripts/quality-run.js",
+        "scripts/quality-runner-ownership.js",
+        "scripts/quality-runner-reconcile.js",
         "scripts/__tests__/quality-run.test.js",
+        "scripts/__tests__/engineering-delivery-policy.test.js",
         "docs/quality-run-orchestrator.md",
+        "docs/decisions/ADR-quality-runner-ownership.md",
+        "docs/decisions/ADR-quality-runner-reconciliation.md",
         "skills/quality/SKILL.md",
         "skills/quality/reference.md"
       ],

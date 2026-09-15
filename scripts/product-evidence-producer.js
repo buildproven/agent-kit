@@ -227,7 +227,7 @@ function produce(input) {
         runnerIsolation: "fresh-protected",
       },
       artifact: { path: artifactName, sha256: sha256(artifact) },
-      ...(command ? { command } : {}),
+      ...(kind === "behavioralTests" && command ? { command } : {}),
     };
     const receiptName = `${kind}.receipt.json`;
     writeJson(
