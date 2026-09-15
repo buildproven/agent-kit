@@ -97,4 +97,85 @@ exit 1
       "pr checks 17 --required",
     );
   });
+  it("gives up when required checks never register before the deadline", () => {
+    // A never-registering check used to spin forever: telemetry recorded a
+    // 71h campaign whose provider work was 228s.
+    const { root, bin } = harness(`
+printf '%s\n' "$*" >> "$QUALITY_TEST_CALLS"
+echo 'no checks reported' >&2
+exit 1
+`);
+    const result = spawnSync(
+      "bash",
+      [WAIT, "--pr", "17", "--interval", "0", "--deadline", "1"],
+      {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          QUALITY_TEST_CALLS: path.join(root, "calls.log"),
+        },
+        encoding: "utf8",
+        timeout: 30000,
+      },
+    );
+    expect(result.status).toBe(75);
+    expect(result.stderr).toContain("did not complete within");
+    expect(result.stderr).toContain("treating this as a CI failure");
+  });
+
+  it("bounds a watch that never returns", () => {
+    // The `gh --watch` handoff was previously an exec with no deadline.
+    const { root, bin } = harness(`
+printf '%s\n' "$*" >> "$QUALITY_TEST_CALLS"
+case "$*" in
+  *--watch*) exec sleep 600 ;;
+  *) exit 0 ;;
+esac
+`);
+    const started = Date.now();
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `exec bash "$0" --pr 17 --interval 0 --deadline 2 2> "$1"`,
+        WAIT,
+        path.join(root, "stderr.log"),
+      ],
+      {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          QUALITY_TEST_CALLS: path.join(root, "calls.log"),
+        },
+        encoding: "utf8",
+        timeout: 60000,
+        // The killed watcher's own `sleep` can outlive it and hold the
+        // inherited pipe open, so read stderr from a file and let stdio close.
+        stdio: ["ignore", "ignore", "ignore"],
+      },
+    );
+    expect(result.status).toBe(75);
+    expect(readFileSync(path.join(root, "stderr.log"), "utf8")).toContain(
+      "watch exceeded the deadline",
+    );
+    expect(Date.now() - started).toBeLessThan(45000);
+  });
+
+  it("rejects a non-numeric deadline", () => {
+    const { root, bin } = harness(`exit 0`);
+    const result = spawnSync(
+      "bash",
+      [WAIT, "--pr", "17", "--deadline", "soon"],
+      {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          QUALITY_TEST_CALLS: path.join(root, "calls.log"),
+        },
+        encoding: "utf8",
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--deadline must be seconds");
+  });
 });
