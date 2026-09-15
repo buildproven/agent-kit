@@ -1,6 +1,6 @@
 {
   "name": "claude-kit",
-  "version": "4.9.1",
+  "version": "4.10.1",
   "private": true,
   "description": "Free, open-source Claude Code toolkit — commands, skills, agents, and quality automation",
   "license": "MIT AND Apache-2.0",
@@ -37,7 +37,7 @@
     "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "^10.0.1",
     "@vercel/ncc": "0.45.0",
-    "@vitest/coverage-v8": "^4.1.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "@yarnpkg/fslib": "3.1.5",
     "@yarnpkg/libzip": "3.2.2",
     "@yarnpkg/parsers": "3.1.0",
@@ -56,7 +56,7 @@
     "prettier": "^3.9.6",
     "semver": "^7.7.3",
     "smol-toml": "1.8.0",
-    "vitest": "^4.0.18",
+    "vitest": "^4.1.11",
     "yaml": "2.9.0"
   },
   "lint-staged": {

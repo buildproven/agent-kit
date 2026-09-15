@@ -59,6 +59,84 @@ function phaseTarget(prefix = "governor-phase-") {
 }
 
 describe("compute governor", () => {
+  it("routes Claude native advice only through the exact neutral profile", () => {
+    const result = resolve({
+      interface: "native-advisory",
+      schemaVersion: 1,
+      work: "delegation",
+      facts: {
+        provider: "claude",
+        phase: "implement",
+        readOnly: false,
+        localized: false,
+        reversible: false,
+        targetedProof: false,
+        ambiguous: true,
+        changedFiles: 2,
+        protectedSurfaces: [],
+        sameFailureStreak: 0,
+        publicContract: false,
+        crossRepository: false,
+        operatorRoute: null,
+      },
+      task: { text: "Implement the approved change", plannedPaths: ["src"] },
+      parent: { model: "claude-sonnet-5", effort: "medium" },
+      override: null,
+      fork: "bounded",
+      capabilities: {
+        delegation: true,
+        overrides: true,
+        models: [{ model: "claude-sonnet-5", efforts: ["medium"] }],
+        profiles: [
+          { subagent_type: "security-review", effort: "medium" },
+          { subagent_type: "native-task-medium", effort: "medium" },
+        ],
+      },
+    });
+    expect(result).toMatchObject({
+      status: "ready",
+      modelArguments: {
+        subagent_type: "native-task-medium",
+        model: "sonnet",
+      },
+    });
+  });
+
+  it("rejects native advice without at least one planned path", () => {
+    expect(() =>
+      resolve({
+        interface: "native-advisory",
+        schemaVersion: 1,
+        work: "delegation",
+        facts: {
+          provider: "codex",
+          phase: "scan",
+          readOnly: true,
+          localized: true,
+          reversible: true,
+          targetedProof: true,
+          ambiguous: false,
+          changedFiles: 0,
+          protectedSurfaces: [],
+          sameFailureStreak: 0,
+          publicContract: false,
+          crossRepository: false,
+          operatorRoute: null,
+        },
+        task: { text: "Inspect the source", plannedPaths: [] },
+        parent: { model: "gpt-5.6-terra", effort: "medium" },
+        override: null,
+        fork: "bounded",
+        capabilities: {
+          delegation: true,
+          overrides: true,
+          models: [{ model: "gpt-5.6-luna", efforts: ["high"] }],
+          profiles: null,
+        },
+      }),
+    ).toThrow("invalid native identity, context, or task");
+  });
+
   it("makes an eligible localized code change an economy-builder candidate", () => {
     const plan = resolve(base);
     expect(plan).toMatchObject({

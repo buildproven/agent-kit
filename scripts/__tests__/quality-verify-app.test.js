@@ -165,6 +165,7 @@ describe("quality-verify-app.sh", () => {
 
   it("fails within its boot timeout when the dev script never binds a port", () => {
     const dir = fixtureDir("hangs");
+    const port = allocatePort();
     writePackageJson(dir, {
       name: "hangs",
       version: "1.0.0",
@@ -173,10 +174,11 @@ describe("quality-verify-app.sh", () => {
     const started = Date.now();
     const { status, stderr } = run(dir, {
       QUALITY_VERIFY_APP_BOOT_TIMEOUT: "3",
+      QUALITY_VERIFY_APP_DEFAULT_PORT: String(port),
     });
     const elapsedSeconds = (Date.now() - started) / 1000;
     expect(status).not.toBe(0);
-    expect(stderr).toMatch(/did not bind port 3000 within 3s/);
+    expect(stderr).toMatch(new RegExp(`did not bind port ${port} within 3s`));
     // This is a process-cleanup bound, not a CPU scheduling benchmark. The
     // isolated case is normally ~9s; allow CI contention but reject anything
     // remotely close to the 300s child sleep it must terminate.

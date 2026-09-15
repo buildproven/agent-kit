@@ -64,6 +64,11 @@ The committed repository policy is `.buildproven/test-impact.json`. Commands
 are argv arrays, never shell strings. Every file is classified, and mixed diffs
 remain blocked when even one executable path is unmapped.
 
+An `audit` selection runs the complete native test contract. It therefore
+inherits the repository's declared test timeout when quality plans the campaign.
+A `focused` selection keeps the smaller proportional timeout so routine changes
+do not reserve full-suite capacity.
+
 ## Consequences
 
 - Small changes stop paying the fixed cost of unrelated tests.

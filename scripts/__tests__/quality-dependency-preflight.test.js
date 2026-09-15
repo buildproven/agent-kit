@@ -253,6 +253,41 @@ function installYarnDirectoryPnpFixture(root) {
 
 describe("quality dependency preflight", () => {
   it.each([
+    ["v1.2.3", "1.2.3", 0],
+    ["v1.2.3-rc.1+build.7", "1.2.3-rc.1+build.7", 0],
+    ["v1.2.3-rc.1", "1.2.3", 78],
+    ["v1.2.3+build.7", "1.2.3+build.8", 78],
+    ["vv1.2.3", "1.2.3", 78],
+    ["v01.2.3", "1.2.3", 78],
+    ["v1.2", "1.2.3", 78],
+    ["v1.2.3 ", "1.2.3", 78],
+  ])(
+    "binds installed version %s to exact lock identity %s",
+    (installedVersion, lockedVersion, status) => {
+      const root = fixture();
+      installFixturePackage(root);
+      const manifestFile = path.join(root, "node_modules/eslint/package.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+      manifest.version = installedVersion;
+      fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+      const pkgFile = path.join(root, "package.json");
+      const pkg = JSON.parse(fs.readFileSync(pkgFile, "utf8"));
+      pkg.devDependencies.eslint = lockedVersion;
+      fs.writeFileSync(pkgFile, JSON.stringify(pkg));
+      const lockFile = path.join(root, "package-lock.json");
+      const lock = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+      lock.packages[""].devDependencies.eslint = lockedVersion;
+      lock.packages["node_modules/eslint"].version = lockedVersion;
+      fs.writeFileSync(lockFile, JSON.stringify(lock));
+      const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(status);
+      if (status !== 0) expect(result.stderr).toContain("lockfile requires");
+    },
+  );
+
+  it.each([
     ["npm", "6.14.0"],
     ["pnpm", "8.15.0"],
     ["yarn", "1.22.22"],
@@ -416,6 +451,43 @@ describe("quality dependency preflight", () => {
       "lockfileVersion: '9.0'\nimporters:\n  .:\n    devDependencies:\n      eslint:\n        specifier: 1.2.3\n        version: 1.2.3\npackages:\n  eslint@1.2.3:\n    resolution: {integrity: sha512-YQ==}\nsnapshots:\n  eslint@1.2.3: {}\n",
     );
     installPnpmFixturePackage(root);
+    const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it("parses scoped pnpm package versions before peer suffixes", () => {
+    const { pnpmDepPathIdentity, pnpmPackageIdentity } = require(PREFLIGHT);
+    const depPath = "@axe-core/playwright@4.13.0(playwright-core@1.63.0)";
+    expect(pnpmDepPathIdentity(depPath)).toEqual({
+      name: "@axe-core/playwright",
+      version: "4.13.0",
+    });
+    expect(pnpmPackageIdentity("axe", "npm:" + depPath)).toEqual({
+      name: "@axe-core/playwright",
+      depPath,
+    });
+  });
+
+  it("accepts pnpm command shims whose marker uses the project symlink", async () => {
+    const root = fixture();
+    selectFixtureManager(root, "pnpm", "11.25.0");
+    fs.writeFileSync(
+      path.join(root, "pnpm-lock.yaml"),
+      "lockfileVersion: '9.0'\nimporters:\n  .:\n    devDependencies:\n      eslint:\n        specifier: 1.2.3\n        version: 1.2.3\npackages:\n  eslint@1.2.3:\n    resolution: {integrity: sha512-YQ==}\nsnapshots:\n  eslint@1.2.3: {}\n",
+    );
+    installPnpmFixturePackage(root);
+    const command = path.join(root, "node_modules", ".bin", "eslint");
+    fs.unlinkSync(command);
+    for (const suffix of [".cmd", ".ps1"]) {
+      fs.rmSync(`${command}${suffix}`, { force: true });
+    }
+    const { cmdShim } = await import("@zkochan/cmd-shim");
+    await cmdShim(path.join(root, "node_modules", "eslint", "bin.js"), command);
+    for (const suffix of [".cmd", ".ps1"]) {
+      fs.rmSync(`${command}${suffix}`, { force: true });
+    }
     const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
       encoding: "utf8",
     });
@@ -848,6 +920,30 @@ describe("quality dependency preflight", () => {
     expect(result.stderr).toMatch(/differs from the supported template/);
   });
 
+  it.each(["injected-command", "comment-decoy"])(
+    "rejects a shim with %s even when it names the correct target",
+    async (variant) => {
+      const root = fixture();
+      installPnpmFixturePackage(root);
+      const target = path.join(root, "node_modules", "eslint", "bin.js");
+      const command = path.join(root, "node_modules", ".bin", "eslint");
+      fs.unlinkSync(command);
+      const { cmdShim } = await import("@zkochan/cmd-shim");
+      await cmdShim(target, command);
+      const template = fs.readFileSync(command, "utf8");
+      const content =
+        variant === "injected-command"
+          ? template.replace("#!/bin/sh\n", "#!/bin/sh\nprintf injected >&2\n")
+          : `#!/bin/sh\nprintf injected >&2\n# exec "$basedir/../eslint/bin.js"\n# cmd-shim-target=${target}\n`;
+      fs.writeFileSync(command, content);
+      const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(78);
+      expect(result.stderr).toMatch(/differs from the supported template/);
+    },
+  );
+
   it("rejects an exact regular shim that targets a different command owner", async () => {
     const root = fixture();
     installFixturePackage(root);
@@ -888,29 +984,39 @@ describe("quality dependency preflight", () => {
     expect(result.stderr).toMatch(/owner is not bound by the lockfile/);
   });
 
-  it("accepts a transitive command owner at its exact lock-backed path", () => {
-    const root = fixture();
-    installFixturePackage(root);
-    const helper = path.join(root, "node_modules", "helper");
-    fs.mkdirSync(helper);
-    fs.writeFileSync(
-      path.join(helper, "package.json"),
-      JSON.stringify({ name: "helper", version: "2.0.0", bin: "bin.js" }),
-    );
-    fs.writeFileSync(path.join(helper, "bin.js"), "", { mode: 0o755 });
-    fs.symlinkSync(
-      path.join("..", "helper", "bin.js"),
-      path.join(root, "node_modules", ".bin", "helper"),
-    );
-    const lockFile = path.join(root, "package-lock.json");
-    const lock = JSON.parse(fs.readFileSync(lockFile, "utf8"));
-    lock.packages["node_modules/helper"] = { version: "2.0.0" };
-    fs.writeFileSync(lockFile, JSON.stringify(lock));
-    const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
-      encoding: "utf8",
-    });
-    expect(result.status, result.stderr).toBe(0);
-  });
+  it.each([
+    ["2.0.0", 0],
+    ["v2.0.0", 0],
+    ["v2.0.0+different", 78],
+    ["vv2.0.0", 78],
+  ])(
+    "binds transitive command owner version %s to its exact lock-backed path",
+    (version, status) => {
+      const root = fixture();
+      installFixturePackage(root);
+      const helper = path.join(root, "node_modules", "helper");
+      fs.mkdirSync(helper);
+      fs.writeFileSync(
+        path.join(helper, "package.json"),
+        JSON.stringify({ name: "helper", version, bin: "bin.js" }),
+      );
+      fs.writeFileSync(path.join(helper, "bin.js"), "", { mode: 0o755 });
+      fs.symlinkSync(
+        path.join("..", "helper", "bin.js"),
+        path.join(root, "node_modules", ".bin", "helper"),
+      );
+      const lockFile = path.join(root, "package-lock.json");
+      const lock = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+      lock.packages["node_modules/helper"] = { version: "2.0.0" };
+      fs.writeFileSync(lockFile, JSON.stringify(lock));
+      const result = spawnSync("node", [PREFLIGHT, "--repo", root], {
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(status);
+      if (status !== 0)
+        expect(result.stderr).toContain("owner is not bound by the lockfile");
+    },
+  );
 
   it("rejects a command NODE_PATH with a nonexistent leaf under a symlink", async () => {
     const root = fixture();

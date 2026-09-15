@@ -222,10 +222,20 @@ main() {
   command -v "$PYTHON_BIN" >/dev/null 2>&1 || { log "FATAL: python3 not on PATH"; return 1; }
   command -v "$CURL_BIN" >/dev/null 2>&1 || { log "FATAL: curl not on PATH"; return 1; }
   [ -d "$TARGET_DIR" ] && [ -n "$(main_tip)" ] || { log "FATAL: target has no readable main branch: $TARGET_DIR"; return 1; }
-  [ -n "$CLAUDE_USAGE_COMMAND" ] || {
-    log "FATAL: CLAUDE_USAGE_COMMAND is required for unattended work (must emit fiveHourPercent/sevenDayPercent JSON)"
-    return 1
-  }
+  local usage_args=()
+  if [ -n "$CLAUDE_USAGE_COMMAND" ]; then
+    usage_args=(--usage-command "$CLAUDE_USAGE_COMMAND")
+  else
+    # Resolve the same policy as the worker before checking either provider.
+    source "$SCRIPT_DIR/provider-policy.sh"
+    local policy_primary policy_fallback
+    read -r policy_primary policy_fallback < <(bs_provider_load)
+    PROVIDER="${PROVIDER:-$policy_primary}"
+    [ "$PROVIDER" != auto ] || PROVIDER=$(bs_provider_invoker)
+    PROVIDER_FALLBACK="${PROVIDER_FALLBACK:-$policy_fallback}"
+    [ "$PROVIDER" != codex ] || PROVIDER_FALLBACK=none
+    usage_args=(--provider "$PROVIDER" --fallback "$PROVIDER_FALLBACK")
+  fi
 
   local lock_key
   lock_key=$(printf '%s\0%s' "$TARGET_DIR" "$LINEAR_PROJECT" | shasum -a 256 | cut -c1-20)
@@ -239,7 +249,7 @@ main() {
     --kind ralph \
     --id "$LOOP_ID" \
     --owner-pid "$$" \
-    --usage-command "$CLAUDE_USAGE_COMMAND" >/dev/null; then
+    "${usage_args[@]}" >/dev/null; then
     log "FATAL: autonomous-loop admission denied; inspect operator telemetry for the sanitized reason"
     rmdir "$LOCK_DIR" 2>/dev/null || true
     return 1
@@ -259,7 +269,7 @@ main() {
   local error_streak=0 now remaining main_before main_after run_rc receipt issue_state iteration_log provider_output_dir
   while [ "$items_done" -lt "$MAX_ITEMS" ]; do
     now=$(date +%s)
-    [ "$now" -lt "$DEADLINE_EPOCH" ] || { finish "max-hours" 0; return $?; }
+    [ "$now" -lt "$DEADLINE_EPOCH" ] || { finish "max-hours" 1; return $?; }
     attempts=$((attempts + 1))
     [ "$attempts" -le $((MAX_ITEMS * 3)) ] || { finish "attempt-cap" 1; return $?; }
     remaining=$((DEADLINE_EPOCH - now))
@@ -306,10 +316,10 @@ main() {
       log "ERROR: inconsistent outcome for $current_issue: receipt=${receipt:-none} Linear=$issue_state rc=$run_rc"
       finish "inconsistent-receipt" 1; return $?
     fi
-    if [ "$run_rc" -eq 124 ]; then finish "agent-deadline" 1; return $?; fi
+    if [ "$run_rc" -eq 76 ] || [ "$run_rc" -eq 124 ]; then finish "agent-deadline" 1; return $?; fi
     if [ "$run_rc" -eq 75 ]; then
       if sleep_until_reset; then continue; fi
-      finish "limit-reset-past-deadline" 0; return $?
+      finish "limit-reset-past-deadline" 1; return $?
     fi
 
     error_streak=$((error_streak + 1))

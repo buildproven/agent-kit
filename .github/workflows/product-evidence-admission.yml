@@ -1,0 +1,54 @@
+name: Product Evidence Admission
+
+on:
+  workflow_run:
+    workflows: ["Product Evidence Producer"]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+
+jobs:
+  admit-product-evidence:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.18.0"
+      - name: Download signed producer artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          artifact_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRODUCER_RUN/artifacts" --jq '.artifacts[] | select(.name == "product-evidence-producer-" + env.PRODUCER_RUN) | .id')"
+          test -n "$artifact_id"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > producer.zip
+          unzip -q producer.zip -d producer
+      - name: Install fixed verifier trust root and create admission
+        env:
+          PRODUCT_EVIDENCE_PUBLIC_KEY: ${{ vars.PRODUCT_EVIDENCE_PUBLIC_KEY }}
+          PRODUCT_ADMISSION_PRIVATE_KEY: ${{ secrets.PRODUCT_ADMISSION_PRIVATE_KEY }}
+          PRODUCT_ADMISSION_WORKFLOW_PATH: .github/workflows/product-evidence-admission.yml
+        run: |
+          test -n "$PRODUCT_EVIDENCE_PUBLIC_KEY"
+          sudo install -d -m 0755 /etc/claude-kit
+          printf '%s\n' "$PRODUCT_EVIDENCE_PUBLIC_KEY" | sudo tee /etc/claude-kit/product-evidence-public-key >/dev/null
+          sudo chmod 0644 /etc/claude-kit/product-evidence-public-key
+          marker="$(node scripts/product-admission.js create producer admission.json)"
+          printf '%s\n' "$marker" > admission-marker.txt
+      - name: Publish exact-head admission check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          head="$(node -p 'require("./producer/producer.json").head')"
+          summary="$(cat admission-marker.txt)"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" -f name=product-admission -f head_sha="$head" -f status=completed -f conclusion=success -f details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -f output[title]='Protected product admission' -f output[summary]="$summary"

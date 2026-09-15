@@ -129,6 +129,15 @@ if [ -n "$EXECUTION_PLAN" ] || [ -n "$EXECUTION_FACTS" ] || [ -n "$PHASE_REQUEST
   PROMPT_FILE="$PROMPT_SNAPSHOT"
 fi
 
+# Reject a caller-supplied plan before provider discovery. Plan identity is a
+# safety contract and must fail the same way on hosts that do not have a
+# provider CLI installed.
+if [ -n "$EXECUTION_PLAN" ]; then
+  node "$SCRIPT_DIR/compute-governor.js" validate-execution-plan \
+    "$EXECUTION_PLAN" "$PROMPT_FILE" "$TARGET_DIR" >/dev/null \
+    || { echo "provider-run: invalid execution plan" >&2; exit 2; }
+fi
+
 read -r POLICY_PRIMARY POLICY_FALLBACK < <(bs_provider_load)
 REQUESTED_PROVIDER="$PROVIDER"
 PROVIDER="${PROVIDER:-$POLICY_PRIMARY}"

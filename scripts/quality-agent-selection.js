@@ -3,6 +3,8 @@
 
 const { execFileSync } = require("node:child_process");
 
+const MAX_DIFF_BUFFER = 64 * 1024 * 1024;
+
 const SECURITY_PATH =
   /(^|\/)(?:\.github\/workflows|\.husky|auth|security|credentials?|secrets?|keys?|deploy|hooks?)(\/|$)|(?:^|[._-])(?:auth|secret|credential|password|token|signing)(?:[._/-]|$)|\.(?:pem|key|p12|pfx|jks|kdbx?)$/i;
 const SECURITY_CONTENT =
@@ -127,12 +129,14 @@ function selectReviewersForRange({ tier, repo, base, head }) {
   const range = `${base}..${head}`;
   const files = execFileSync("git", ["diff", "--name-only", "-z", range], {
     cwd: repo,
+    maxBuffer: MAX_DIFF_BUFFER,
   })
     .toString()
     .split("\0")
     .filter(Boolean);
   const patch = execFileSync("git", ["diff", "--no-ext-diff", range], {
     cwd: repo,
+    maxBuffer: MAX_DIFF_BUFFER,
   }).toString();
   return selectReviewers({ tier, files, patches: [patch] });
 }

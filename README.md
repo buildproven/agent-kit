@@ -176,6 +176,12 @@ the current directory, 8 items, and 8 hours. Run with `--dry-run` first to valid
 scope without launching Ralph. Add `--provider codex --fallback claude` (or the
 reverse) to override the shared policy for a run.
 
+An unfinished item at the wall deadline or a usage reset beyond that deadline
+returns nonzero and persists its terminal reason. Provider timeouts stop the
+attempt without a generic retry. A successful `max-items` stop proves only that
+the requested item cap was reached; it does not prove the backlog or product is
+complete. Inspect `currentIssue` and `terminalReason` in the saved status.
+
 For product work that needs explicit V-cycle traceability,
 [`scripts/vcycle-creator.js`](scripts/vcycle-creator.js) provides a local,
 provider-free control plane. It snapshots requirements and verification gates,

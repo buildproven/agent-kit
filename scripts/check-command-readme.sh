@@ -9,10 +9,8 @@ README="$REPO_ROOT/commands/README.md"
 
 # Collect commands from table rows only (lines starting with |).
 # Match the pattern: | `/some:command` | — must have at least one letter after the slash.
-mapfile -t listed < <(grep '^|' "$README" | grep -oE '`/[a-z][a-z:_-]+`' | tr -d '`' | sort -u)
-
 missing=()
-for cmd in "${listed[@]}"; do
+while IFS= read -r cmd; do
   # Strip leading slash, convert colon to slash for path lookup (e.g. /bs:dev -> bs/dev.md)
   # Also handle top-level commands like /update-claudemd -> update-claudemd.md
   # and bs:scrub which lives at bs:scrub.md (colon in filename)
@@ -36,7 +34,7 @@ for cmd in "${listed[@]}"; do
   fi
 
   missing+=("$cmd")
-done
+done < <(grep '^|' "$README" | grep -oE '`/[a-z][a-z:_-]+`' | tr -d '`' | sort -u)
 
 if [[ ${#missing[@]} -gt 0 ]]; then
   echo "ERROR: commands/README.md lists commands that don't exist:" >&2

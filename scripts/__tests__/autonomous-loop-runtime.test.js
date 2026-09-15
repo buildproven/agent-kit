@@ -55,6 +55,71 @@ afterEach(() => {
 });
 
 describe("autonomous-loop runtime", () => {
+  it("installs and resolves the adapter on a clean computer configuration", () => {
+    const fx = fixture();
+    const config = join(fx.root, "fresh-config");
+    const install = spawnSync(
+      "bash",
+      [join(ROOT, "scripts/setup-claude-sync.sh"), "--repair"],
+      { encoding: "utf8", env: { ...process.env, CLAUDE_CONFIG_DIR: config } },
+    );
+    expect(install.status, install.stdout + install.stderr).toBe(0);
+    const invoke = spawnSync(
+      "node",
+      [join(config, "scripts/provider-usage-adapter.js")],
+      { encoding: "utf8" },
+    );
+    expect(invoke.status).toBe(1);
+    expect(invoke.stderr).toContain("--provider codex|claude");
+  });
+
+  it.each(["codex", "claude"])(
+    "admits and releases %s through the installed reader contract",
+    (provider) => {
+      const fx = fixture();
+      executable(
+        join(fx.root, "codexbar"),
+        `printf '%s' '${JSON.stringify([{ provider, usage: { updatedAt: new Date().toISOString(), primary: { usedPercent: 12 } } }])}'`,
+      );
+      const common = [
+        "--id",
+        `portable-${provider}`,
+        "--state-dir",
+        fx.state,
+        "--owner-pid",
+        String(process.pid),
+      ];
+      const result = runtime(
+        ["admit", "--kind", "ralph", "--provider", provider, ...common],
+        { env: { PATH: `${fx.root}:${process.env.PATH}` } },
+      );
+      expect(result.status).toBe(0);
+      expect(response(result).usage).toEqual({
+        provider,
+        windows: { primary: 12 },
+      });
+      expect(response(runtime(["release", ...common])).released).toBe(true);
+    },
+  );
+
+  it("rejects numeric-looking missing legacy evidence", () => {
+    const fx = fixture();
+    const result = runtime([
+      "admit",
+      "--kind",
+      "ralph",
+      "--id",
+      "invalid-legacy",
+      "--state-dir",
+      fx.state,
+      "--owner-pid",
+      String(process.pid),
+      "--usage-command",
+      usageAdapter(fx.root, { fiveHourPercent: null, sevenDayPercent: false }),
+    ]);
+    expect(response(result).code).toBe("USAGE_UNAVAILABLE");
+  });
+
   it("shares the two-loop cap across otherwise independent repositories", () => {
     const fx = fixture();
     const adapter = usageAdapter(fx.root, {

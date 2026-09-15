@@ -5,12 +5,14 @@ TIMEOUT=""
 GOVERNOR_FILE=""
 CAP=""
 RESERVE=0
+CANCEL_FILE=""
 while [ "$#" -gt 0 ]; do
   case "${1:-}" in
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --governor) GOVERNOR_FILE="$2"; shift 2 ;;
     --cap) CAP="$2"; shift 2 ;;
     --reserve) RESERVE="$2"; shift 2 ;;
+    --cancel-file) CANCEL_FILE="$2"; shift 2 ;;
     --) break ;;
     *) break ;;
   esac
@@ -201,9 +203,18 @@ watchdog() {
   # watchdog receives HUP as the orphaned job and must own provider cleanup.
   trap 'terminate_provider; exit 0' HUP
   trap stop_watchdog INT TERM
-  sleep "$TIMEOUT" &
-  sleeper=$!
-  wait "$sleeper" || exit 0
+  local waited=0
+  while [ "$waited" -lt "$TIMEOUT" ]; do
+    if [ -n "$CANCEL_FILE" ] && [ -f "$CANCEL_FILE" ]; then
+      terminate_provider
+      exit 0
+    fi
+    sleep 1 &
+    sleeper=$!
+    wait "$sleeper" || exit 0
+    sleeper=""
+    waited=$((waited + 1))
+  done
   : > "$MARKER"
   terminate_provider
 }

@@ -19,22 +19,16 @@ const conditionTaxonomy = require("./quality-condition-taxonomy.js");
 const { evidenceDigestValid } = require("./quality-ci-billing-waiver.js");
 const testImpact = require("./test-impact.js");
 
-const SCHEMA_VERSION = 1;
 const REVIEW_CONTRACT_VERSION = 2;
-const EXECUTION_BUDGET_VERSION = 1;
 const RUNTIME_PLAN_VERSION = 2;
-const REQUIRED_GATES_POLICY_VERSION = 3;
 const MAX_AGENT_TARGET = 9;
 const DELIVERY_CLAIMS = new Set([
   "contract",
+  "engineering",
   "local-product",
   "hosted",
   "validated",
 ]);
-const NEEDS_EXECUTION_BUDGET_MIGRATION = Symbol(
-  "needs-execution-budget-migration",
-);
-const NEEDS_REQUIRED_GATES_MIGRATION = Symbol("needs-required-gates-migration");
 
 class GateExecutionError extends Error {
   constructor(status, message, failureCode = null) {
@@ -45,27 +39,7 @@ class GateExecutionError extends Error {
   }
 }
 
-function parseJson(raw, label) {
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`${label} is not valid JSON: ${error.message}`, {
-      cause: error,
-    });
-  }
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalJson(value[key])]),
-    );
-  }
-  return value;
-}
+const { parseJson, canonicalJson } = require("./quality-canonical-json.js");
 
 function buildReviewPolicy(manifest) {
   const config = riskScore.loadConfig(manifest.repo.realpath);
@@ -84,358 +58,30 @@ function reviewPolicyDigest(policy) {
     .digest("hex");
 }
 
-function git(cwd, args) {
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-}
-
-// The review runner expands an initialized `core` gitlink into the exact
-// recursive submodule diff so a provider cannot approve an opaque control-
-// plane pointer. Canonical verification must hash the same byte stream or a
-// valid review is rejected after the provider has already spent its budget.
-function reviewDiffBuffer(root, from, to) {
-  const diff = execFileSync("git", ["diff", `${from}..${to}`], {
-    cwd: root,
-    encoding: "buffer",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 1024 * 1024 * 64,
-  });
-  const treeEntry = (commit) => {
-    const row = git(root, ["ls-tree", commit, "--", "core"]);
-    const fields = row.split(/\s+/);
-    return fields[0] === "160000" && fields[1] === "commit" ? fields[2] : "";
-  };
-  const baseCore = treeEntry(from);
-  const headCore = treeEntry(to);
-  const coreCheckout = fs.existsSync(path.join(root, "core", ".git"));
-  if (!baseCore && !headCore) return diff;
-  if (!baseCore || !headCore) {
-    throw new Error("core gitlink exists on only one side of the diff");
-  }
-  if (baseCore === headCore) return diff;
-  if (!coreCheckout) {
-    throw new Error(
-      "changed core gitlink requires an initialized checkout for recursive review",
-    );
-  }
-  for (const commit of [baseCore, headCore]) {
-    execFileSync(
-      "git",
-      ["-C", "core", "cat-file", "-e", `${commit}^{commit}`],
-      {
-        cwd: root,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-  }
-  const recursive = execFileSync(
-    "git",
-    ["-C", "core", "diff", "--submodule=diff", baseCore, headCore],
-    {
-      cwd: root,
-      encoding: "buffer",
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 1024 * 1024 * 64,
-    },
-  );
-  return Buffer.concat([
-    diff,
-    Buffer.from(
-      `\n===== recursive submodule diff: core ${baseCore}..${headCore} =====\n`,
-    ),
-    recursive,
-    Buffer.from("===== end recursive submodule diff: core =====\n"),
-  ]);
-}
-
-function canonicalRoot(input) {
-  const resolved = fs.realpathSync(input);
-  return fs.realpathSync(git(resolved, ["rev-parse", "--show-toplevel"]));
-}
-
-// Prove that applying the exact binary diff reviewed at oldHead onto newBase
-// produces nextHead's tree. This is stronger than git patch-id: patch-id
-// deliberately ignores whitespace and cannot safely authorize a carry.
-function replayedTree(root, oldBase, oldHead, newBase) {
-  try {
-    const diff = execFileSync(
-      "git",
-      ["diff", "--binary", "--full-index", oldBase, oldHead],
-      {
-        cwd: root,
-        encoding: "buffer",
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 1024 * 1024 * 64,
-      },
-    );
-    const indexFile = path.join(
-      fs.mkdtempSync(path.join(os.tmpdir(), "quality-rebase-index-")),
-      "index",
-    );
-    try {
-      const env = { ...process.env, GIT_INDEX_FILE: indexFile };
-      execFileSync("git", ["read-tree", newBase], {
-        cwd: root,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      execFileSync("git", ["apply", "--cached", "--whitespace=nowarn", "-"], {
-        cwd: root,
-        env,
-        input: diff,
-        stdio: ["pipe", "pipe", "pipe"],
-        maxBuffer: 1024 * 1024 * 64,
-      });
-      return execFileSync("git", ["write-tree"], {
-        cwd: root,
-        env,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }).trim();
-    } finally {
-      fs.rmSync(path.dirname(indexFile), { recursive: true, force: true });
-    }
-  } catch {
-    return null;
-  }
-}
-
-function isAncestorOf(root, ancestor, descendant) {
-  try {
-    git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function gitCommonDir(root) {
-  const value = git(root, ["rev-parse", "--git-common-dir"]);
-  return fs.realpathSync(path.resolve(root, value));
-}
-
-function originIdentity(root) {
-  const value = git(root, ["remote", "get-url", "origin"]);
-  if (!value) throw new Error("quality requires an origin remote identity");
-  return value;
-}
-
-function repoKey(root) {
-  return crypto
-    .createHash("sha256")
-    .update(gitCommonDir(root))
-    .digest("hex")
-    .slice(0, 16);
-}
-
-function deterministicInvocationId(identity) {
-  const digest = crypto
-    .createHash("sha256")
-    .update(JSON.stringify(canonicalJson(identity)))
-    .digest("hex")
-    .slice(0, 32)
-    .split("");
-  digest[12] = "5";
-  digest[16] = (8 + (parseInt(digest[16], 16) % 4)).toString(16);
-  const value = digest.join("");
-  return [
-    value.slice(0, 8),
-    value.slice(8, 12),
-    value.slice(12, 16),
-    value.slice(16, 20),
-    value.slice(20),
-  ].join("-");
-}
-
-function qualityTmpRoot() {
-  return fs.realpathSync(process.env.TMPDIR || os.tmpdir());
-}
-
-function atomicWrite(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = path.join(
-    path.dirname(file),
-    `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`,
-  );
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  fs.renameSync(temporary, file);
-  fs.chmodSync(file, 0o600);
-}
-
-function atomicCreate(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = path.join(
-    path.dirname(file),
-    `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.create`,
-  );
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  try {
-    fs.linkSync(temporary, file);
-    fs.chmodSync(file, 0o600);
-    return true;
-  } catch (error) {
-    if (error.code === "EEXIST") return false;
-    throw error;
-  } finally {
-    fs.unlinkSync(temporary);
-  }
-}
-
-function normalizeExecutionGovernor(manifest) {
-  if (manifest.governor.executionBudgetVersion === undefined) {
-    Object.defineProperty(manifest, NEEDS_EXECUTION_BUDGET_MIGRATION, {
-      value: true,
-      writable: true,
-    });
-  } else if (
-    manifest.governor.executionBudgetVersion !== EXECUTION_BUDGET_VERSION
-  ) {
-    throw new Error(
-      `unsupported execution budget version ${manifest.governor.executionBudgetVersion}`,
-    );
-  }
-  manifest.governor.lifecycleTTLSeconds ??= 24 * 60 * 60;
-  manifest.governor.lastActivityAt ??= new Date(
-    (manifest.governor.startedAtEpoch || Math.floor(Date.now() / 1000)) * 1000,
-  ).toISOString();
-  manifest.governor.gateSecondsLimit ??= 10 * 60;
-  manifest.governor.gateSecondsUsed ??= 0;
-  manifest.governor.providerSecondsLimit ??= 15 * 60;
-  manifest.governor.providerSecondsUsed ??= 0;
-  manifest.governor.activeExecution ??= null;
-}
-
-function normalizeGovernor(manifest) {
-  manifest.governor ??= {};
-  normalizeExecutionGovernor(manifest);
-  manifest.governor.authorizedAttempts ??= [];
-  manifest.governor.maxProviderAttempts ??= 6;
-  manifest.governor.providerWindowSeconds ??= 3600;
-  manifest.governor.providerAttempts ??= [];
-  manifest.governor.campaignSeconds ??=
-    manifest.governor.providerWindowSeconds +
-    manifest.governor.remediationSeconds +
-    manifest.governor.reReviewReserveSeconds;
-  manifest.governor.activeSecondsLimit ??= manifest.governor.campaignSeconds;
-  manifest.governor.activeSecondsUsed ??=
-    manifest.governor.gateSecondsUsed + manifest.governor.providerSecondsUsed;
-}
-
-function normalizeManifestCollections(manifest) {
-  manifest.reviews ??= [];
-  manifest.gates ??= [];
-  manifest.mutation ??= null;
-  manifest.merge ??= {};
-  manifest.merge.invalidatedStamps ??= [];
-  // Every campaign ends in exactly ONE recorded terminal state. Without this a
-  // campaign killed mid-flight (timeout, ^C, crashed provider) leaves a
-  // manifest byte-identical to one that is still running: activeExecution is
-  // null either way, so the only signal is a stale lastActivityAt. Nine PR-267
-  // manifests were in precisely that condition — interrupted before review,
-  // with no way to tell "paused" from "in progress" from disk.
-  //
-  // null = still open. Anything else is final and must never be overwritten
-  // (see recordTerminalState), so the first terminal cause wins and a late
-  // cleanup path cannot relabel a failure as success.
-  manifest.terminalState ??= null;
-  normalizeGovernor(manifest);
-  if (
-    manifest.requiredGatesPolicyVersion === undefined ||
-    manifest.requiredGatesPolicyVersion === 1 ||
-    manifest.requiredGatesPolicyVersion === 2
-  ) {
-    // v1->v2 and v2->v3 both migrate via full recompute (replace, not
-    // union) — v3 (BUI-467) changed inference semantics for the `type`
-    // gate specifically (mypy is no longer promoted merely because
-    // pyproject.toml declares [tool.mypy]; the diff must touch .py/.pyi
-    // too), so a v2 manifest that already inferred python:mypy must be
-    // recomputed under the new policy rather than keeping the stale entry
-    // via union.
-    Object.defineProperty(manifest, NEEDS_REQUIRED_GATES_MIGRATION, {
-      value: true,
-      writable: true,
-    });
-  } else if (
-    manifest.requiredGatesPolicyVersion !== REQUIRED_GATES_POLICY_VERSION
-  ) {
-    throw new Error(
-      `unsupported required-gates policy version ${manifest.requiredGatesPolicyVersion}`,
-    );
-  }
-  manifest.requiredGates ??= [];
-}
-
-function loadManifest(file) {
-  const requested = path.resolve(file);
-  const stat = fs.lstatSync(requested);
-  if (stat.isSymbolicLink()) {
-    throw new Error("quality manifest must not be a symlink");
-  }
-  const manifestPath = fs.realpathSync(requested);
-  const manifest = parseJson(
-    fs.readFileSync(manifestPath, "utf8"),
-    "quality manifest",
-  );
-  if (manifest.schemaVersion !== SCHEMA_VERSION) {
-    throw new Error(
-      `unsupported quality manifest schema ${manifest.schemaVersion}`,
-    );
-  }
-  normalizeManifestCollections(manifest);
-  if (
-    !manifest.invocationId ||
-    !manifest.repo?.realpath ||
-    !manifest.revisions?.baseSha ||
-    !manifest.revisions?.currentHead
-  ) {
-    throw new Error("quality manifest is missing required identity fields");
-  }
-  const expectedPath = path.join(manifest.stateRoot, "invocation.json");
-  if (path.resolve(expectedPath) !== manifestPath) {
-    throw new Error("quality manifest path does not match its stateRoot");
-  }
-  const expectedStateRoot = path.join(
-    qualityTmpRoot(),
-    "bs-quality",
-    manifest.repo.key,
-    `pr-${manifest.repo.pr ?? "none"}`,
-    manifest.revisions.baseSha,
-    manifest.invocationId,
-  );
-  if (path.resolve(expectedStateRoot) !== path.resolve(manifest.stateRoot)) {
-    throw new Error("quality manifest stateRoot identity is invalid");
-  }
-  return { manifest, manifestPath };
-}
-
-function saveManifest(file, manifest) {
-  manifest.updatedAt = new Date().toISOString();
-  manifest.manifestRevision = (manifest.manifestRevision || 0) + 1;
-  atomicWrite(file, manifest);
-}
-
-// A mid-mutation persist for progress that must survive even if the rest of
-// the current mutation() callback later throws (withManifestLock() only
-// calls saveManifest() on a callback that returns normally). Unlike
-// saveManifest(), this does NOT bump manifestRevision: withManifestLock()
-// compares manifestRevision before/after the SAME mutation() call to detect
-// a genuinely concurrent writer, and bumping it here would make that check
-// misfire against our own in-progress transaction, not an actual concurrent
-// writer. updatedAt IS refreshed, though — worktree-manager.js's
-// qualityManifestReleaseState() reads it to judge whether a locked
-// campaign is abandoned, and an execution reconciled moments ago is
-// definitionally not abandoned (Codex review finding, 2026-08-01, medium).
-function saveManifestMidTransaction(file, manifest) {
-  manifest.updatedAt = new Date().toISOString();
-  atomicWrite(file, manifest);
-}
+const {
+  git,
+  reviewDiffBuffer,
+  canonicalRoot,
+  replayedTree,
+  isAncestorOf,
+  gitCommonDir,
+  originIdentity,
+  repoKey,
+  deterministicInvocationId,
+} = require("./quality-git-identity.js");
+const {
+  SCHEMA_VERSION,
+  EXECUTION_BUDGET_VERSION,
+  REQUIRED_GATES_POLICY_VERSION,
+  NEEDS_EXECUTION_BUDGET_MIGRATION,
+  NEEDS_REQUIRED_GATES_MIGRATION,
+  qualityTmpRoot,
+  atomicWrite,
+  atomicCreate,
+  loadManifest,
+  saveManifest,
+  saveManifestMidTransaction,
+} = require("./quality-manifest-io.js");
 
 // manifest.revisions.baseSha is an immutable creation-time snapshot (it also
 // namespaces stateRoot and anchors review-trailer provenance, so it is never
@@ -645,7 +291,13 @@ function changedFiles(root, baseSha, head) {
     // containing non-ASCII bytes (core.quotePath's default), which would
     // otherwise break a suffix check like .endsWith(".py") on a path such
     // as "café.py".
-    return git(root, ["diff", "-z", "--name-only", `${baseSha}..${head}`])
+    return git(root, [
+      "diff",
+      "-z",
+      "--name-only",
+      "--no-renames",
+      `${baseSha}..${head}`,
+    ])
       .split("\0")
       .filter(Boolean);
   } catch {
@@ -1130,7 +782,11 @@ function discoverRequiredGates(
   const verifyAppGate = discoverVerifyAppGate(options, nativeGates);
   if (verifyAppGate) required.push(verifyAppGate);
   return required.map((gate) => {
-    if (gate.source.startsWith("test-impact:")) return gate;
+    if (
+      gate.source.startsWith("test-impact:") &&
+      gate.testImpactMode !== "audit"
+    )
+      return gate;
     const timeoutSeconds = gateTimeouts.get(gate.name);
     return timeoutSeconds ? { ...gate, timeoutSeconds } : gate;
   });
@@ -1530,6 +1186,45 @@ function manifestIdentity(manifest) {
   };
 }
 
+function gateRequirementsDigest(requiredGates) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(canonicalJson(requiredGates)))
+    .digest("hex");
+}
+
+function gateEvidenceDigest(gates) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(canonicalJson(gates)))
+    .digest("hex");
+}
+
+function carryableGate(manifest, gate) {
+  const required = manifest.requiredGates.find(
+    (candidate) => candidate.name === gate.name,
+  );
+  if (!required || gate.policyDigest !== gateRequirementsDigest([required])) {
+    return false;
+  }
+  if (gate.name === "test") return validTestGate(manifest, gate);
+  return (
+    gate.status === "success" &&
+    gateMatchesRequirement(gate, required) &&
+    validGateArtifact(gate)
+  );
+}
+
+function gateEvidenceCarryEligible(manifest) {
+  const current = manifest.gates.filter(
+    (gate) => gate.head === manifest.revisions.currentHead,
+  );
+  return manifest.requiredGates.every((required) => {
+    const gate = current.find((candidate) => candidate.name === required.name);
+    return gate ? carryableGate(manifest, gate) : false;
+  });
+}
+
 function canFailOverProvider(existing, existingIdentity, campaignIdentity) {
   const sameWork =
     JSON.stringify(canonicalJson(identityWithoutProvider(existingIdentity))) ===
@@ -1587,6 +1282,15 @@ function supersedingManifest(
   const manifestPath = path.join(stateRoot, "invocation.json");
   if (fs.existsSync(manifestPath)) return manifestPath;
   const now = new Date().toISOString();
+  const carriesGateEvidence =
+    transition === "providerRecoveryOf" && gateEvidenceCarryEligible(existing);
+  const carriedGates = carriesGateEvidence
+    ? existing.gates.filter(
+        (gate) =>
+          gate.head === existing.revisions.currentHead &&
+          carryableGate(existing, gate),
+      )
+    : [];
   const manifest = {
     schemaVersion: SCHEMA_VERSION,
     reviewContractVersion: REVIEW_CONTRACT_VERSION,
@@ -1629,14 +1333,27 @@ function supersedingManifest(
     provider: campaignIdentity.provider,
     reviews: [],
     governor: buildGovernor(campaignIdentity.head),
-    requiredGates: discoverRequiredGates(
-      campaignIdentity.root,
-      campaignIdentity.options,
-      campaignIdentity.head,
-      campaignIdentity.baseSha,
-    ),
+    requiredGates: carriesGateEvidence
+      ? existing.requiredGates
+      : discoverRequiredGates(
+          campaignIdentity.root,
+          campaignIdentity.options,
+          campaignIdentity.head,
+          campaignIdentity.baseSha,
+        ),
     requiredGatesPolicyVersion: REQUIRED_GATES_POLICY_VERSION,
-    gates: [],
+    gates: carriedGates,
+    ...(carriesGateEvidence
+      ? {
+          gateEvidenceCarry: {
+            sourceInvocationId: existing.invocationId,
+            sourceManifestPath: existingPath,
+            head: existing.revisions.currentHead,
+            requiredGatesDigest: gateRequirementsDigest(existing.requiredGates),
+            gatesDigest: gateEvidenceDigest(carriedGates),
+          },
+        }
+      : {}),
     supersedes: {
       invocationId: existing.invocationId,
       manifestPath: existingPath,
@@ -2483,6 +2200,15 @@ function advanceHead(manifest, root, { acceptedConditions = [] } = {}) {
     }
   }
   if (replay) recordBaseRebaseCarry(manifest, priorHead, nextHead, replay);
+  if (manifest.gateEvidenceCarry) {
+    manifest.gateEvidenceCarryHistory ??= [];
+    manifest.gateEvidenceCarryHistory.push({
+      ...manifest.gateEvidenceCarry,
+      retiredAt: new Date().toISOString(),
+      retiredHead: nextHead,
+    });
+    delete manifest.gateEvidenceCarry;
+  }
   rearmExecutionForHead(manifest, priorHead, nextHead);
   supersedePriorHeadTerminal(manifest, root, nextHead, Boolean(replay));
   invalidateApproval(manifest, nextHead);
@@ -5515,6 +5241,15 @@ function recordGate(manifest, options) {
     (gate) =>
       gate.head !== manifest.revisions.currentHead || gate.name !== name,
   );
+  if (manifest.gateEvidenceCarry) {
+    manifest.gateEvidenceCarryHistory ??= [];
+    manifest.gateEvidenceCarryHistory.push({
+      ...manifest.gateEvidenceCarry,
+      retiredAt: new Date().toISOString(),
+      retiredReason: `gate-replaced:${name}`,
+    });
+    delete manifest.gateEvidenceCarry;
+  }
   manifest.gates.push({
     name,
     source,
@@ -5523,6 +5258,9 @@ function recordGate(manifest, options) {
     status,
     reason,
     failureCode,
+    policyDigest: gateRequirementsDigest(
+      manifest.requiredGates.filter((gate) => gate.name === name),
+    ),
     log,
     logSha256: sha256File(log),
     completedAt: new Date().toISOString(),
@@ -5551,17 +5289,89 @@ function executableAvailable(executable, environment) {
   return result.status === 0;
 }
 
+// Variables a build or test gate legitimately needs. Anything not named here,
+// and not matching GATE_ENVIRONMENT_PREFIXES, does not reach repository code.
+const GATE_ENVIRONMENT_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "PWD",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "CI",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "FORCE_COLOR",
+  "NO_COLOR",
+  "COLORTERM",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "VIRTUAL_ENV",
+  "JAVA_HOME",
+  "GOPATH",
+  "GOROOT",
+  "GOCACHE",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+]);
+
+// Toolchain namespaces whose values are caches, mirrors and feature flags
+// rather than credentials. Auth for these lives in separate files (.npmrc,
+// ~/.cargo/credentials) that a real sandbox must also address — see BUI-743.
+const GATE_ENVIRONMENT_PREFIXES = [
+  "npm_config_",
+  "npm_package_",
+  "npm_lifecycle_",
+  "NPM_CONFIG_",
+  "PNPM_",
+  "YARN_",
+  "VOLTA_",
+  "NVM_",
+  "ASDF_",
+  "XDG_",
+  "HOMEBREW_",
+];
+
+// Names that must never reach repository code even if a prefix above would
+// otherwise admit them. A token is a token whatever namespace it hides in.
+const GATE_ENVIRONMENT_SECRET_PATTERN =
+  /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY|APIKEY|API_KEY|AUTH|SESSION|COOKIE|PRIVATE)/i;
+
+// A quality gate runs repository-controlled code — a build script, a test
+// suite, a postinstall hook. Until that runs under a real OS boundary
+// (BUI-743), the process environment is the widest thing it inherits.
+//
+// This was a deny-list of six quality-internal names, which is an open
+// allowlist wearing a deny-list's clothes: every AWS_*, GITHUB_TOKEN,
+// OPENAI_API_KEY and operator .env export passed straight through. The
+// operator .env on the machine this was written from holds 106 entries.
+//
+// Invert it: nothing reaches repository code unless it is named, or sits in a
+// toolchain namespace, and never if it looks like a credential. This does not
+// replace a sandbox — it removes the cheapest exfiltration path while one is
+// built.
 function repositoryGateEnvironment(environment = process.env) {
-  const isolated = { ...environment };
-  for (const name of [
-    "BS_QUALITY_TERMINAL_EPOCH",
-    "BS_QUALITY_REPOSITORY_LEASE_TOKEN",
-    "QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY",
-    "QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY_FILE",
-    "QUALITY_APPROVAL_PRIVATE_KEY",
-    "QUALITY_APPROVAL_PRIVATE_KEY_FILE",
-  ]) {
-    delete isolated[name];
+  const isolated = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined) continue;
+    const allowed =
+      GATE_ENVIRONMENT_ALLOWLIST.has(name) ||
+      GATE_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix));
+    if (!allowed) continue;
+    if (GATE_ENVIRONMENT_SECRET_PATTERN.test(name)) continue;
+    isolated[name] = value;
   }
   return isolated;
 }
@@ -5790,12 +5600,46 @@ function gateMatchesRequirement(gate, required) {
   );
 }
 
+function testEvidenceChainValid(manifest, required, gateHead) {
+  let predecessor = required?.predecessorEvidence || null;
+  let descendantHead = gateHead;
+  const seen = new Set();
+  while (predecessor) {
+    if (
+      !predecessor.head ||
+      seen.has(predecessor.head) ||
+      predecessor.status !== "success" ||
+      !predecessor.log ||
+      !predecessor.logSha256 ||
+      !predecessor.source ||
+      !predecessor.command ||
+      !predecessor.policyDigest ||
+      !predecessor.requiredGatesDigest ||
+      !isAncestorOf(manifest.repo.realpath, predecessor.head, descendantHead) ||
+      !fs.existsSync(predecessor.log) ||
+      sha256File(predecessor.log) !== predecessor.logSha256
+    ) {
+      return false;
+    }
+    seen.add(predecessor.head);
+    descendantHead = predecessor.head;
+    predecessor = predecessor.predecessor || null;
+  }
+  return true;
+}
+
 function validTestGate(manifest, gate) {
   if (!validGateArtifact(gate)) return false;
   const required = manifest.requiredGates.find(
     (candidate) => candidate.name === "test",
   );
   if (!gateMatchesRequirement(gate, required)) return false;
+  if (
+    gate.policyDigest &&
+    gate.policyDigest !== gateRequirementsDigest([required])
+  )
+    return false;
+  if (!testEvidenceChainValid(manifest, required, gate.head)) return false;
   if (gate.status === "success") return true;
   return Boolean(
     manifest.requiredGates.find((required) => required.name === "test")
@@ -5806,10 +5650,62 @@ function validTestGate(manifest, gate) {
   );
 }
 
+function validReusableTestGate(manifest, gate, required) {
+  const predecessor = required?.predecessorEvidence;
+  if (
+    gateMatchesRequirement(gate, required) &&
+    gate.policyDigest === gateRequirementsDigest([required])
+  ) {
+    return validTestGate(manifest, gate);
+  }
+  if (!predecessor || !predecessor.policyDigest) return false;
+  if (
+    gate.status !== "success" ||
+    !validGateArtifact(gate) ||
+    predecessor.head !== gate.head ||
+    predecessor.source !== gate.source ||
+    predecessor.command !== gate.command ||
+    predecessor.policyDigest !== gate.policyDigest ||
+    predecessor.log !== gate.log ||
+    predecessor.logSha256 !== gate.logSha256
+  ) {
+    return false;
+  }
+  return testEvidenceChainValid(manifest, required, gate.head);
+}
+
+function verifyGateEvidenceCarry(manifest) {
+  const carry = manifest.gateEvidenceCarry;
+  if (!carry) return;
+  if (
+    carry.sourceInvocationId === manifest.invocationId ||
+    carry.head !== manifest.revisions.currentHead ||
+    carry.requiredGatesDigest !== gateRequirementsDigest(manifest.requiredGates)
+  ) {
+    throw new Error("gate evidence carry identity is invalid");
+  }
+  const current = manifest.gates.filter(
+    (gate) => gate.head === manifest.revisions.currentHead,
+  );
+  if (
+    current.length !== manifest.requiredGates.length ||
+    carry.gatesDigest !== gateEvidenceDigest(current)
+  ) {
+    throw new Error("gate evidence carry digest is invalid");
+  }
+  for (const required of manifest.requiredGates) {
+    const gate = current.find((candidate) => candidate.name === required.name);
+    if (!gate || !carryableGate(manifest, gate)) {
+      throw new Error(`carried ${required.name} gate evidence is invalid`);
+    }
+  }
+}
+
 // acceptedConditions is only ever non-empty on the operator-override path
 // (see reviewAuthorization); the normal path always calls this with no
 // arguments, so a caller cannot widen the normal merge path by accident.
 function verifyGateEvidence(manifest, acceptedConditions = []) {
+  verifyGateEvidenceCarry(manifest);
   const current = manifest.gates.filter(
     (gate) => gate.head === manifest.revisions.currentHead,
   );
@@ -5855,28 +5751,40 @@ function validMutationArtifact(manifest, artifact) {
   const candidateBase = artifact.candidateBase || artifact.base;
   if (candidateBase !== artifact.base) {
     const carry = manifest.mutationCarry;
+    const rebaseCarry = manifest.revisions.baseRebaseCarry;
+    const freshRebaseProof = Boolean(
+      rebaseCarry &&
+      rebaseCarry.head === artifact.head &&
+      rebaseCarry.baseSha === candidateBase &&
+      carry?.priorHead === rebaseCarry.priorHead &&
+      artifact.reusedArtifactSha256 === null &&
+      artifact.avoidedSeconds === 0,
+    );
     if (
-      !carry ||
-      carry.priorHead !== candidateBase ||
-      carry.artifactSha256 !== artifact.reusedArtifactSha256 ||
-      !fs.existsSync(carry.artifactPath) ||
-      sha256File(carry.artifactPath) !== carry.artifactSha256
+      !freshRebaseProof &&
+      (!carry ||
+        carry.priorHead !== candidateBase ||
+        carry.artifactSha256 !== artifact.reusedArtifactSha256 ||
+        !fs.existsSync(carry.artifactPath) ||
+        sha256File(carry.artifactPath) !== carry.artifactSha256)
     ) {
       return false;
     }
-    const prior = parseJson(
-      fs.readFileSync(carry.artifactPath, "utf8"),
-      "prior mutation evidence artifact",
-    );
-    if (
-      prior.invocationId !== manifest.invocationId ||
-      prior.base !== manifest.revisions.baseSha ||
-      prior.head !== candidateBase ||
-      prior.tier !== manifest.risk.tier ||
-      !validMutationPaths(prior.mutatedPaths) ||
-      prior.testFailureObserved !== true
-    ) {
-      return false;
+    if (!freshRebaseProof) {
+      const prior = parseJson(
+        fs.readFileSync(carry.artifactPath, "utf8"),
+        "prior mutation evidence artifact",
+      );
+      if (
+        prior.invocationId !== manifest.invocationId ||
+        prior.base !== manifest.revisions.baseSha ||
+        prior.head !== candidateBase ||
+        prior.tier !== manifest.risk.tier ||
+        !validMutationPaths(prior.mutatedPaths) ||
+        prior.testFailureObserved !== true
+      ) {
+        return false;
+      }
     }
   }
   if (["gitlink-skip", "no-mutable-source"].includes(artifact.method)) {
@@ -5916,6 +5824,18 @@ function mutationEvidenceValid(manifest, options = {}) {
   const tier = manifest.risk?.tier;
   if (["low", "medium"].includes(tier)) return true;
   if (!["high", "critical"].includes(tier)) return false;
+  // An operator may accept mutation:missing explicitly. BUI-914 added the
+  // acknowledgement flag but nothing consumed it, so the approval attached,
+  // validated, and then changed nothing — the campaign still blocked. The
+  // acceptance only counts when it is bound to the exact head under
+  // evaluation, so it cannot be carried across a rebase or a new commit.
+  if (
+    Array.isArray(manifest.approval?.acceptedConditions) &&
+    manifest.approval.acceptedConditions.includes("mutation:missing") &&
+    manifest.approval.head === manifest.revisions.currentHead
+  ) {
+    return true;
+  }
   const mutation = manifest.mutation;
   if (!mutation || mutation.head !== manifest.revisions.currentHead) {
     return false;
@@ -6202,11 +6122,80 @@ function reviewAuthorization(manifest) {
   };
 }
 
-function openManifestLock(lock) {
+function manifestLockSnapshot(lock) {
+  const descriptor = fs.openSync(
+    lock,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.uid !== process.geteuid?.()) return null;
+    return { stat, body: fs.readFileSync(descriptor, "utf8") };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function deadLocalManifestOwner(body) {
+  let owner;
+  try {
+    owner = JSON.parse(body);
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+  if (
+    owner?.hostname !== os.hostname() ||
+    !Number.isSafeInteger(owner.pid) ||
+    owner.pid < 1 ||
+    typeof owner.acquiredAt !== "string" ||
+    !Number.isFinite(Date.parse(owner.acquiredAt))
+  )
+    return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+}
+
+function recoverDeadManifestLock(lock, file) {
+  const { manifest } = loadManifest(file);
+  const lease = require("./quality-repo-lease");
+  if (!lease.hasMetadataGuard(manifest)) return false;
+  const observed = manifestLockSnapshot(lock);
+  if (!observed || !deadLocalManifestOwner(observed.body)) return false;
+  const current = manifestLockSnapshot(lock);
+  if (
+    !current ||
+    !lease.hasMetadataGuard(manifest) ||
+    current.stat.dev !== observed.stat.dev ||
+    current.stat.ino !== observed.stat.ino ||
+    current.body !== observed.body
+  )
+    return false;
+  fs.unlinkSync(lock);
+  return true;
+}
+
+function withManifestMetadataGuard(file, operation) {
+  const { manifest } = loadManifest(file);
+  if (manifest.options?.merge !== true || !manifest.repo?.githubRepository)
+    return operation();
+  const lease = require("./quality-repo-lease");
+  if (lease.hasMetadataGuard(manifest)) return operation();
+  return lease.withMetadataGuard(manifest, operation);
+}
+
+function openManifestLock(lock, file) {
   try {
     return fs.openSync(lock, "wx", 0o600);
   } catch (error) {
     if (error.code === "EEXIST") {
+      if (recoverDeadManifestLock(lock, file)) {
+        return fs.openSync(lock, "wx", 0o600);
+      }
       throw new Error(
         "quality manifest is locked; stale locks require explicit operator cleanup",
         { cause: error },
@@ -6216,15 +6205,18 @@ function openManifestLock(lock) {
   }
 }
 
-function withManifestLockRaw(file, mutation) {
+function withManifestLockRawGuarded(file, mutation) {
   const lock = `${path.resolve(file)}.lock`;
-  const descriptor = openManifestLock(lock);
+  const descriptor = openManifestLock(lock, file);
   try {
     fs.writeFileSync(
       descriptor,
       `${JSON.stringify({
         pid: process.pid,
         hostname: os.hostname(),
+        processStartedAt: new Date(
+          Date.now() - process.uptime() * 1000,
+        ).toISOString(),
         acquiredAt: new Date().toISOString(),
       })}\n`,
     );
@@ -6241,6 +6233,12 @@ function withManifestLockRaw(file, mutation) {
     fs.closeSync(descriptor);
     fs.unlinkSync(lock);
   }
+}
+
+function withManifestLockRaw(file, mutation) {
+  return withManifestMetadataGuard(file, () =>
+    withManifestLockRawGuarded(file, mutation),
+  );
 }
 
 function withManifestLock(file, mutation) {
@@ -6359,17 +6357,19 @@ function recordTerminalState(manifestPath, state, detail = null, options = {}) {
       write,
     ).terminalState.state;
   }
-  const lock = `${path.resolve(manifestPath)}.lock`;
-  const descriptor = openManifestLock(lock);
-  try {
-    const loaded = loadManifest(manifestPath);
-    const result = write(loaded.manifest);
-    saveManifestMidTransaction(loaded.manifestPath, loaded.manifest);
-    return result;
-  } finally {
-    fs.closeSync(descriptor);
-    fs.unlinkSync(lock);
-  }
+  return withManifestMetadataGuard(manifestPath, () => {
+    const lock = `${path.resolve(manifestPath)}.lock`;
+    const descriptor = openManifestLock(lock, manifestPath);
+    try {
+      const loaded = loadManifest(manifestPath);
+      const result = write(loaded.manifest);
+      saveManifestMidTransaction(loaded.manifestPath, loaded.manifest);
+      return result;
+    } finally {
+      fs.closeSync(descriptor);
+      fs.unlinkSync(lock);
+    }
+  });
 }
 
 function recordMergeAdmissionBlockedTerminal(
@@ -6602,6 +6602,502 @@ function recoveryScope(manifest, terminal) {
   // accepted-condition shape; recovery only requires that its blocked
   // admission conditions remain covered by that signed capability.
   return manifest.approval.scope;
+}
+
+const PRE_REVIEW_SELECTION_FAILURE = "pre-review-selection-failed";
+const SELECTION_RUNTIME_FILES = Object.freeze(["quality-select-agents.sh"]);
+const NON_SELECTION_RUNTIME_FILES = Object.freeze([
+  "quality-run.js",
+  "quality-risk-resolve.sh",
+  "quality-runtime-plan.js",
+  "quality-run-gate.sh",
+  "quality-run-review.sh",
+  "quality-mutation-check.sh",
+  "quality-authorize-review-round.sh",
+  "quality-stamp-and-merge.sh",
+]);
+
+function recoveryDigest(value) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(canonicalJson(value)))
+    .digest("hex");
+}
+
+function sameRuntimeInode(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readCanonicalRuntimeFile(runtimeDir, relative, cohort) {
+  const segments = relative.split("/");
+  const directories = [runtimeDir];
+  for (let index = 1; index < segments.length; index += 1) {
+    directories.push(path.join(runtimeDir, ...segments.slice(0, index)));
+  }
+  const openedDirectories = [];
+  let fileDescriptor = null;
+  try {
+    for (const directory of directories) {
+      const descriptor = fs.openSync(
+        directory,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NOFOLLOW |
+          fs.constants.O_NONBLOCK,
+      );
+      const stat = fs.fstatSync(descriptor);
+      if (!stat.isDirectory() || fs.realpathSync(directory) !== directory) {
+        fs.closeSync(descriptor);
+        throw new Error(`${cohort} runtime ancestry is not canonical`);
+      }
+      openedDirectories.push({ descriptor, directory, stat });
+    }
+    const candidate = path.join(runtimeDir, relative);
+    if (fs.realpathSync(candidate) !== candidate) {
+      throw new Error(`${cohort} runtime dependency is not canonical`);
+    }
+    fileDescriptor = fs.openSync(
+      candidate,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
+    const fileStat = fs.fstatSync(fileDescriptor);
+    if (!fileStat.isFile()) {
+      throw new Error(`${cohort} runtime dependency is not a regular file`);
+    }
+    for (const opened of openedDirectories) {
+      const current = fs.lstatSync(opened.directory);
+      if (!current.isDirectory() || !sameRuntimeInode(current, opened.stat)) {
+        throw new Error(`${cohort} runtime ancestry changed during inspection`);
+      }
+    }
+    const currentFile = fs.lstatSync(candidate);
+    if (!currentFile.isFile() || !sameRuntimeInode(currentFile, fileStat)) {
+      throw new Error(`${cohort} runtime dependency changed during inspection`);
+    }
+    return fs.readFileSync(fileDescriptor);
+  } finally {
+    if (fileDescriptor !== null) fs.closeSync(fileDescriptor);
+    for (const opened of openedDirectories.reverse()) {
+      fs.closeSync(opened.descriptor);
+    }
+  }
+}
+
+// The runner and its shell entrypoint can be upgraded while a terminal
+// manifest exists. Hash each explicitly owned source file by its canonical
+// relative name and bytes. The fixed cohorts are deliberate: an unlisted,
+// missing, linked, or non-regular file fails closed rather than becoming an
+// implicit recovery dependency.
+function runtimeCohortDigest(
+  files,
+  cohort,
+  discoverDependencies = false,
+  runtimeDir = __dirname,
+) {
+  const pending = [...files];
+  const seen = new Set();
+  const entries = [];
+  while (pending.length > 0) {
+    const relative = pending.pop();
+    if (seen.has(relative)) continue;
+    if (
+      !relative
+        .split("/")
+        .every((segment) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment))
+    ) {
+      throw new Error(`${cohort} runtime dependency name is malformed`);
+    }
+    const bytes = readCanonicalRuntimeFile(runtimeDir, relative, cohort);
+    const source = bytes.toString("utf8");
+    seen.add(relative);
+    entries.push([relative, bytes]);
+    if (!discoverDependencies) continue;
+    if (relative.endsWith(".js")) {
+      const calls = source.matchAll(/\brequire\(\s*([^)]*?)\s*\)/g);
+      for (const call of calls) {
+        const argument = call[1];
+        const match = argument.match(/^(["'])(\.\/[^"']+)\1$/);
+        if (!match) {
+          if (/^(["'])(?:node:)?[A-Za-z0-9:_-]+\1$/.test(argument)) {
+            continue;
+          }
+          throw new Error(`${cohort} runtime has an unknown dependency`);
+        }
+        const basename = match[2].slice(2);
+        const resolved = basename.endsWith(".js") ? basename : `${basename}.js`;
+        pending.push(resolved);
+      }
+    } else if (relative.endsWith(".sh")) {
+      const references = source.matchAll(
+        /\$(?:SCRIPT_DIR|script_dir)\/([A-Za-z0-9._/-]+)/g,
+      );
+      for (const reference of references) {
+        // Directory navigation computes KIT_ROOT; it does not read a source
+        // dependency. File references, including nested schemas, are sealed.
+        if (reference[1] === "..") continue;
+        pending.push(reference[1]);
+      }
+    } else if (!relative.endsWith(".json")) {
+      throw new Error(`${cohort} runtime dependency type is unsupported`);
+    }
+  }
+  const hash = crypto.createHash("sha256");
+  for (const [relative, bytes] of entries.sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    hash.update(relative).update("\0").update(bytes).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function selectionRuntimeDigests(runtimeDir = __dirname) {
+  return {
+    selector: runtimeCohortDigest(
+      SELECTION_RUNTIME_FILES,
+      "selector",
+      true,
+      runtimeDir,
+    ),
+    remaining: runtimeCohortDigest(
+      NON_SELECTION_RUNTIME_FILES,
+      "non-selector",
+      true,
+      runtimeDir,
+    ),
+  };
+}
+
+function zeroSelectionExecution(manifest) {
+  const governor = manifest.governor || {};
+  return (
+    manifest.panel == null &&
+    Array.isArray(manifest.gates) &&
+    manifest.gates.length === 0 &&
+    Array.isArray(manifest.reviews) &&
+    manifest.reviews.length === 0 &&
+    !manifest.mutation &&
+    !manifest.judge &&
+    !governor.activeExecution &&
+    governor.gateSecondsUsed === 0 &&
+    governor.providerSecondsUsed === 0 &&
+    governor.activeSecondsUsed === 0 &&
+    governor.roundsUsed === 0 &&
+    Array.isArray(governor.providerAttempts) &&
+    governor.providerAttempts.length === 0 &&
+    Array.isArray(governor.authorizedAttempts) &&
+    governor.authorizedAttempts.length === 0
+  );
+}
+
+function selectionRecoveryCheckpoint(manifest) {
+  const lease = manifest.merge?.repositoryLease;
+  if (
+    manifest.options?.merge !== true ||
+    !Number.isSafeInteger(lease?.generation) ||
+    lease.generation < 1
+  ) {
+    throw new Error("selection recovery requires the exact repository lease");
+  }
+  if (!zeroSelectionExecution(manifest)) {
+    throw new Error("selection recovery requires zero execution evidence");
+  }
+  const runtime = selectionRuntimeDigests();
+  return {
+    schemaVersion: 1,
+    repository: {
+      key: manifest.repo.key,
+      githubRepository: manifest.repo.githubRepository,
+      realpath: manifest.repo.realpath,
+    },
+    revisions: {
+      baseSha: manifest.revisions.baseSha,
+      head: manifest.revisions.currentHead,
+    },
+    terminalEpoch: terminalEpoch(manifest),
+    leaseGeneration: lease.generation,
+    riskDigest: recoveryDigest(manifest.risk),
+    reviewPolicyDigest: manifest.risk?.reviewPolicyDigest || null,
+    requiredGatesDigest: recoveryDigest(manifest.requiredGates),
+    selectorRuntimeDigest: runtime.selector,
+    remainingRuntimeDigest: runtime.remaining,
+    execution: {
+      gateCount: manifest.gates.length,
+      reviewCount: manifest.reviews.length,
+      gateSecondsUsed: manifest.governor.gateSecondsUsed,
+      providerSecondsUsed: manifest.governor.providerSecondsUsed,
+      activeSecondsUsed: manifest.governor.activeSecondsUsed,
+      providerAttempts: manifest.governor.providerAttempts.length,
+      authorizedAttempts: manifest.governor.authorizedAttempts.length,
+      roundsUsed: manifest.governor.roundsUsed,
+    },
+  };
+}
+
+function sameSelectionRecoveryCheckpoint(manifest, checkpoint) {
+  if (!checkpoint || checkpoint.schemaVersion !== 1) return false;
+  const current = selectionRecoveryCheckpoint(manifest);
+  return (
+    checkpoint.repository?.key === current.repository.key &&
+    checkpoint.repository?.githubRepository ===
+      current.repository.githubRepository &&
+    checkpoint.repository?.realpath === current.repository.realpath &&
+    checkpoint.revisions?.baseSha === current.revisions.baseSha &&
+    checkpoint.revisions?.head === current.revisions.head &&
+    checkpoint.terminalEpoch === current.terminalEpoch &&
+    checkpoint.leaseGeneration === current.leaseGeneration &&
+    checkpoint.riskDigest === current.riskDigest &&
+    checkpoint.reviewPolicyDigest === current.reviewPolicyDigest &&
+    checkpoint.requiredGatesDigest === current.requiredGatesDigest &&
+    checkpoint.remainingRuntimeDigest === current.remainingRuntimeDigest &&
+    JSON.stringify(checkpoint.execution) === JSON.stringify(current.execution)
+  );
+}
+
+function recordPreReviewSelectionFailure(manifestPath, detail, exitCode) {
+  if (!Number.isInteger(exitCode) || exitCode === 0) {
+    throw new Error(
+      "selection failure requires an actual nonzero selector exit",
+    );
+  }
+  let terminal;
+  withManifestLock(manifestPath, (manifest) => {
+    validateIdentity(manifest, manifest.repo.realpath);
+    if (manifest.terminalState) {
+      terminal = manifest.terminalState;
+      return;
+    }
+    const checkpoint = selectionRecoveryCheckpoint(manifest);
+    terminal = {
+      state: "blocked",
+      failureCode: PRE_REVIEW_SELECTION_FAILURE,
+      phase: "panel",
+      selectorExitCode: exitCode,
+      detail: String(detail).slice(0, 500),
+      head: manifest.revisions.currentHead,
+      terminalEpoch: terminalEpoch(manifest),
+      selectionRecovery: checkpoint,
+      recordedAt: new Date().toISOString(),
+    };
+    manifest.terminalState = terminal;
+  });
+  return terminal;
+}
+
+function resumePreReviewSelectionFailure(manifestPath) {
+  const initial = loadManifest(manifestPath).manifest;
+  const terminal = initial.terminalState;
+  if (
+    terminal?.state !== "blocked" ||
+    terminal.failureCode !== PRE_REVIEW_SELECTION_FAILURE ||
+    terminal.phase !== "panel" ||
+    terminal.head !== initial.revisions.currentHead ||
+    terminal.terminalEpoch !== terminalEpoch(initial) ||
+    initial.selectionRecovery
+  ) {
+    return null;
+  }
+  let resumed = null;
+  withManifestLock(manifestPath, (manifest) => {
+    const currentTerminal = manifest.terminalState;
+    const checkpointMatches = (() => {
+      try {
+        return sameSelectionRecoveryCheckpoint(
+          manifest,
+          currentTerminal?.selectionRecovery,
+        );
+      } catch {
+        // A malformed or changed runtime/execution cohort is ineligible. Keep
+        // its typed terminal intact so the operator can inspect the failure.
+        return false;
+      }
+    })();
+    if (
+      currentTerminal?.state !== "blocked" ||
+      currentTerminal.failureCode !== PRE_REVIEW_SELECTION_FAILURE ||
+      currentTerminal.phase !== "panel" ||
+      currentTerminal.head !== manifest.revisions.currentHead ||
+      currentTerminal.terminalEpoch !== terminalEpoch(manifest) ||
+      manifest.selectionRecovery ||
+      !checkpointMatches
+    ) {
+      return;
+    }
+    const currentRuntime = selectionRuntimeDigests();
+    if (
+      currentTerminal.selectionRecovery.selectorRuntimeDigest ===
+      currentRuntime.selector
+    ) {
+      return;
+    }
+    if (
+      manifest.terminalHistory !== undefined &&
+      !Array.isArray(manifest.terminalHistory)
+    ) {
+      throw new Error("terminal history is malformed");
+    }
+    const recoveredAt = new Date().toISOString();
+    const nextEpoch = terminalEpoch(manifest) + 1;
+    manifest.terminalHistory ??= [];
+    manifest.terminalHistory.push({
+      ...currentTerminal,
+      disposition: "superseded-by-selection-recovery",
+      recoveredAt,
+      newSelectorRuntimeDigest: currentRuntime.selector,
+    });
+    manifest.terminalHistory.push({
+      event: "reopened-by-selection-recovery",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: nextEpoch,
+      oldSelectorRuntimeDigest:
+        currentTerminal.selectionRecovery.selectorRuntimeDigest,
+      newSelectorRuntimeDigest: currentRuntime.selector,
+      recordedAt: recoveredAt,
+    });
+    manifest.selectionRecovery = {
+      schemaVersion: 1,
+      terminalEpoch: currentTerminal.terminalEpoch,
+      oldSelectorRuntimeDigest:
+        currentTerminal.selectionRecovery.selectorRuntimeDigest,
+      newSelectorRuntimeDigest: currentRuntime.selector,
+      recoveredAt,
+    };
+    manifest.terminalEpoch = nextEpoch;
+    delete manifest.terminalState;
+    delete manifest.panel;
+    resumed = {
+      head: manifest.revisions.currentHead,
+      terminalEpoch: nextEpoch,
+    };
+  });
+  return resumed;
+}
+
+function mergeReadRecoveryEligible(manifest) {
+  const terminal = manifest.terminalState;
+  const orchestration = manifest.orchestration;
+  const failure = manifest.merge?.readFailure;
+  const historical = terminal?.detail === "merge admission failed with exit 1";
+  const typed =
+    terminal?.detail === "ci-admission-read-failed" &&
+    failure?.kind === "ci-admission-read-failed" &&
+    failure.exitCode === 75 &&
+    failure.head === manifest.revisions.currentHead;
+  return Boolean(
+    manifest.options?.merge === true &&
+    manifest.merge?.repositoryLease &&
+    terminal?.state === "blocked" &&
+    terminal.head === manifest.revisions.currentHead &&
+    (historical || typed) &&
+    !manifest.merge.readRecovery &&
+    !manifest.merge.admissionBlock &&
+    !terminal.mergeAdmissionConditions &&
+    !manifest.governor?.activeExecution &&
+    orchestration?.head === terminal.head &&
+    orchestration.phase === "merge" &&
+    orchestration.steps?.merge?.status === "running" &&
+    orchestration.steps.merge.attempts === 1,
+  );
+}
+
+// Only the caller that commits this transition receives a continuation grant.
+// A persisted recovering sentinel cannot reconstruct that grant after a crash.
+function resumeMergeReadFailure(manifestPath, dependencies = {}) {
+  const initial = loadManifest(manifestPath).manifest;
+  if (!mergeReadRecoveryEligible(initial)) return null;
+  const readPullRequest =
+    dependencies.readPullRequest ||
+    ((manifest) =>
+      parseJson(
+        execFileSync(
+          "gh",
+          [
+            "pr",
+            "view",
+            String(manifest.repo.pr),
+            "--repo",
+            manifest.repo.githubRepository,
+            "--json",
+            "state,headRefOid",
+          ],
+          { cwd: manifest.repo.realpath, encoding: "utf8", timeout: 30000 },
+        ),
+        "current pull request",
+      ));
+  const readChecks =
+    dependencies.readChecks ||
+    ((manifest) =>
+      parseJson(
+        execFileSync(
+          "gh",
+          [
+            "pr",
+            "checks",
+            String(manifest.repo.pr),
+            "--repo",
+            manifest.repo.githubRepository,
+            "--json",
+            "state",
+          ],
+          { cwd: manifest.repo.realpath, encoding: "utf8", timeout: 30000 },
+        ),
+        "current pull request checks",
+      ));
+  let grant = null;
+  require("./quality-repo-lease").withManifestMutation(
+    manifestPath,
+    process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN,
+    (manifest) => {
+      if (!mergeReadRecoveryEligible(manifest)) return;
+      validateIdentity(manifest, manifest.repo.realpath);
+      verifyGateEvidence(manifest);
+      reviewAuthorization(manifest);
+      const pr = readPullRequest(manifest);
+      if (
+        pr?.state !== "OPEN" ||
+        pr.headRefOid !== manifest.revisions.currentHead
+      )
+        throw new Error("merge-read recovery requires the open exact-head PR");
+      const checks = readChecks(manifest);
+      if (
+        !Array.isArray(checks) ||
+        checks.length === 0 ||
+        checks.some(
+          (check) => !["SUCCESS", "SKIPPED", "NEUTRAL"].includes(check?.state),
+        )
+      )
+        throw new Error(
+          "merge-read recovery requires current nonempty green checks",
+        );
+      if (
+        manifest.terminalHistory !== undefined &&
+        !Array.isArray(manifest.terminalHistory)
+      )
+        throw new Error("terminal history is malformed");
+      const recordedAt = new Date().toISOString();
+      const epoch = terminalEpoch(manifest) + 1;
+      manifest.terminalHistory ??= [];
+      manifest.terminalHistory.push({
+        ...manifest.terminalState,
+        disposition: "reentered-merge-read-failure",
+        supersededAt: recordedAt,
+      });
+      manifest.terminalEpoch = epoch;
+      manifest.merge.readRecovery = {
+        head: manifest.revisions.currentHead,
+        terminalEpoch: epoch,
+        recordedAt,
+      };
+      manifest.terminalState = {
+        state: "recovering",
+        head: manifest.revisions.currentHead,
+        terminalEpoch: epoch,
+        recordedAt,
+        recovery: { kind: "merge-read-failure" },
+      };
+      grant = { head: manifest.revisions.currentHead, terminalEpoch: epoch };
+    },
+    { requireIdle: true },
+  );
+  return grant;
 }
 
 function resumeInterruptedTerminal(manifestPath) {
@@ -7101,19 +7597,28 @@ function advanceManifestTransaction(manifestArg, manifest, rawArgs) {
         { head: nextHead, acceptedConditions },
       );
     }
+    const priorTestRequirement = locked.requiredGates.find(
+      (required) => required.name === "test",
+    );
     advanceHead(locked, manifest.repo.realpath, { acceptedConditions });
     validateIdentity(locked, manifest.repo.realpath);
     const gateBase = isAncestorOf(locked.repo.realpath, priorHead, nextHead)
       ? priorHead
       : effectiveBaseSha(locked);
-    const reusableTestGate = [...locked.gates]
-      .reverse()
-      .find(
-        (gate) =>
-          gate.name === "test" &&
-          gate.status === "success" &&
-          isAncestorOf(locked.repo.realpath, gate.head, nextHead),
-      );
+    const testRequirement = locked.requiredGates.find(
+      (required) => required.name === "test",
+    );
+    const reusableTestGate = [...locked.gates].reverse().find(
+      (gate) =>
+        gate.name === "test" &&
+        gate.status === "success" &&
+        validReusableTestGate(
+          locked,
+          gate,
+          locked.requiredGates.find((required) => required.name === "test"),
+        ) &&
+        isAncestorOf(locked.repo.realpath, gate.head, nextHead),
+    );
     const reuseTestEvidence = Boolean(
       reusableTestGate &&
       nextHead !== reusableTestGate.head &&
@@ -7123,7 +7628,14 @@ function advanceManifestTransaction(manifestArg, manifest, rawArgs) {
         nextHead,
       ).includes(".buildproven/test-impact.json"),
     );
-    const discoveryBase = reuseTestEvidence ? reusableTestGate.head : gateBase;
+    const recomputeTestEvidence = Boolean(
+      testRequirement && nextHead !== priorHead && !reuseTestEvidence,
+    );
+    const discoveryBase = reuseTestEvidence
+      ? reusableTestGate.head
+      : recomputeTestEvidence
+        ? effectiveBaseSha(locked)
+        : gateBase;
     const discovered = discoverRequiredGates(
       locked.repo.realpath,
       {
@@ -7134,10 +7646,33 @@ function advanceManifestTransaction(manifestArg, manifest, rawArgs) {
       discoveryBase,
     );
     const replaceNames = new Set();
-    if (reuseTestEvidence) replaceNames.add("test");
+    if (reuseTestEvidence || recomputeTestEvidence) replaceNames.add("test");
     locked.requiredGates = locked[NEEDS_REQUIRED_GATES_MIGRATION]
       ? discovered
       : unionRequiredGates(locked.requiredGates, discovered, replaceNames);
+    if (reuseTestEvidence) {
+      const test = locked.requiredGates.find(
+        (required) => required.name === "test",
+      );
+      if (test) {
+        const priorPredecessor = priorTestRequirement?.predecessorEvidence;
+        test.predecessorEvidence = {
+          head: reusableTestGate.head,
+          status: reusableTestGate.status,
+          source: reusableTestGate.source,
+          command: reusableTestGate.command,
+          policyDigest: reusableTestGate.policyDigest,
+          requiredGatesDigest: gateRequirementsDigest([priorTestRequirement]),
+          log: reusableTestGate.log,
+          logSha256: reusableTestGate.logSha256,
+          evidenceDigest: gateEvidenceDigest([reusableTestGate]),
+          predecessor:
+            priorPredecessor?.head === reusableTestGate.head
+              ? priorPredecessor.predecessor || null
+              : priorPredecessor || null,
+        };
+      }
+    }
     locked.requiredGatesPolicyVersion = REQUIRED_GATES_POLICY_VERSION;
     locked[NEEDS_REQUIRED_GATES_MIGRATION] = false;
     if (priorMutation && nextHead !== priorHead) {
@@ -7354,7 +7889,11 @@ module.exports = {
   clearMergeAdmissionBlock,
   resolveGreenCiAdmissionBlock,
   recoveryScope,
+  selectionRuntimeDigests,
+  recordPreReviewSelectionFailure,
+  resumePreReviewSelectionFailure,
   resumeInterruptedTerminal,
+  resumeMergeReadFailure,
   resumeRecoverableTerminal,
   terminalEpoch,
   isTerminal,
@@ -7371,6 +7910,7 @@ module.exports = {
   reviewDiffBuffer,
   reviewInfo,
   reviewCoverage,
+  verifyGateEvidence,
   incompleteRetryStatus,
   reserveIncompleteRetry,
   reviewIdentity,
