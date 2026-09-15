@@ -32,6 +32,11 @@ todos/
 projects/
 .update_check
 
+# HUD state written by scripts/hud-update.sh. Generated per checkout, so
+# leaving it untracked makes every quality gate in that worktree fail the
+# clean-tree precondition and report it as "gate:lint failed".
+.claude/hud-state.json
+
 # Cost tracking (personal usage data)
 .claude/cost-tracking.json
 cost-tracking.json
