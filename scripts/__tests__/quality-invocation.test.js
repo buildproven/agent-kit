@@ -688,6 +688,47 @@ describe("quality changed-file coverage", () => {
   });
 });
 
+describe("mutationEvidenceValid — BUI-914 exact-head acknowledgement", () => {
+  const highTier = (approval) => ({
+    risk: { resolved: true, tier: "high" },
+    revisions: { currentHead: "a".repeat(40) },
+    approval,
+  });
+
+  it("accepts a mutation:missing acknowledgement bound to the current head", () => {
+    // BUI-914 added the --i-understand-missing-mutation flag, but nothing
+    // consumed acceptedConditions on this path: the approval attached,
+    // validated, and then changed nothing. The campaign still blocked.
+    const manifest = highTier({
+      acceptedConditions: ["mutation:missing"],
+      head: "a".repeat(40),
+    });
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(true);
+  });
+
+  it("refuses an acknowledgement bound to a different head", () => {
+    // An acceptance must not survive a rebase or a new commit: the operator
+    // judged the diff they were shown, not whatever replaced it.
+    const manifest = highTier({
+      acceptedConditions: ["mutation:missing"],
+      head: "b".repeat(40),
+    });
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(false);
+  });
+
+  it("refuses an approval that accepted some other condition", () => {
+    const manifest = highTier({
+      acceptedConditions: ["gate:security"],
+      head: "a".repeat(40),
+    });
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(false);
+  });
+
+  it("refuses when there is no approval at all", () => {
+    expect(invocation.mutationEvidenceValid(highTier(undefined))).toBe(false);
+  });
+});
+
 describe("mutationEvidenceValid — BUI-603 #1 fail-closed on unresolved risk", () => {
   it("returns false for an unresolved risk contract by default", () => {
     const manifest = { risk: { resolved: false } };
@@ -1392,21 +1433,77 @@ describe("quality invocation manifest", () => {
     expect(manifest.governor).not.toHaveProperty("validationDeadlineEpoch");
   });
 
-  it("keeps terminal fencing and signing secrets out of repository gates", () => {
+  it("passes only named build variables into repository gates", () => {
+    // This previously asserted that six quality-internal names were stripped
+    // while an arbitrary QUALITY_GATE_MARKER survived — an open allowlist
+    // wearing a deny-list's clothes. Every AWS_*, GITHUB_TOKEN and operator
+    // .env export passed straight through (BUI-743).
     const environment = invocation.repositoryGateEnvironment({
       PATH: "/bin",
-      QUALITY_GATE_MARKER: "visible",
+      HOME: "/Users/operator",
+      NODE_ENV: "test",
+      npm_config_cache: "/cache",
+      QUALITY_GATE_MARKER: "arbitrary",
       BS_QUALITY_TERMINAL_EPOCH: "3",
       BS_QUALITY_REPOSITORY_LEASE_TOKEN: "lease-secret",
       QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY: "review-secret",
-      QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY_FILE: "/private/review-key",
-      QUALITY_APPROVAL_PRIVATE_KEY: "approval-secret",
       QUALITY_APPROVAL_PRIVATE_KEY_FILE: "/private/approval-key",
     });
 
     expect(environment).toEqual({
       PATH: "/bin",
-      QUALITY_GATE_MARKER: "visible",
+      HOME: "/Users/operator",
+      NODE_ENV: "test",
+      npm_config_cache: "/cache",
+    });
+  });
+
+  it("withholds operator credentials from repository gates", () => {
+    // The names below are the shape of a real operator environment: cloud
+    // keys, provider tokens, and entries from a .env that holds 106 of them.
+    // None of them is a variable a build or test gate needs.
+    const secrets = {
+      AWS_ACCESS_KEY_ID: "leak",
+      AWS_SECRET_ACCESS_KEY: "leak",
+      GITHUB_TOKEN: "leak",
+      GH_TOKEN: "leak",
+      OPENAI_API_KEY: "leak",
+      ANTHROPIC_API_KEY: "leak",
+      STRIPE_SECRET_KEY: "leak",
+      TWITTER_ACCESS_TOKEN_SECRET: "leak",
+      LINKEDIN_PRIMARY_CLIENT_SECRET: "leak",
+      VERCEL_TOKEN: "leak",
+      NPM_TOKEN: "leak",
+      DATABASE_PASSWORD: "leak",
+      SESSION_COOKIE: "leak",
+      MY_APP_PRIVATE_KEY: "leak",
+    };
+    const environment = invocation.repositoryGateEnvironment({
+      PATH: "/bin",
+      ...secrets,
+    });
+
+    expect(environment).toEqual({ PATH: "/bin" });
+    for (const name of Object.keys(secrets)) {
+      expect(environment).not.toHaveProperty(name);
+    }
+  });
+
+  it("does not let a toolchain prefix smuggle a credential through", () => {
+    // npm_config_* and YARN_* are admitted as caches and feature flags, so a
+    // credential hiding in that namespace must still be refused by name.
+    const environment = invocation.repositoryGateEnvironment({
+      PATH: "/bin",
+      npm_config_cache: "/cache",
+      npm_config__authToken: "leak",
+      NPM_CONFIG_PASSWORD: "leak",
+      YARN_NPM_AUTH_TOKEN: "leak",
+      HOMEBREW_GITHUB_API_TOKEN: "leak",
+    });
+
+    expect(environment).toEqual({
+      PATH: "/bin",
+      npm_config_cache: "/cache",
     });
   });
 
@@ -9057,8 +9154,10 @@ exit 1
           lint: "node --check file.js",
           test: "node --test",
           "security:audit": "node --check file.js",
-          build:
-            "node -e \"require('fs').writeFileSync(process.env.QUALITY_GATE_MARKER, 'built')\"",
+          // The gate environment is a closed allowlist (BUI-743), so a gate
+          // cannot receive an ad-hoc marker variable. The path is known here,
+          // so write it into the script itself.
+          build: `node -e "require('fs').writeFileSync(process.argv[1], 'built')" ${JSON.stringify(marker)}`,
           typecheck: "node --check file.js",
           "test:consumer": "node --check file.js",
         },
@@ -9110,7 +9209,7 @@ exit 1
       [RUN_GATE, "--manifest", manifest, "--name", "build"],
       {
         cwd: root,
-        env: { ...process.env, QUALITY_GATE_MARKER: marker },
+        env: { ...process.env },
       },
     );
     expect(readFileSync(marker, "utf8")).toBe("built");
@@ -9130,7 +9229,7 @@ exit 1
     const gateScript = path.join(root, "gate-hang.sh");
     writeFileSync(
       gateScript,
-      '#!/usr/bin/env bash\n(sleep 3; printf late > "$QUALITY_GATE_MARKER") &\nwait\n',
+      `#!/usr/bin/env bash\n(sleep 3; printf late > ${JSON.stringify(marker)}) &\nwait\n`,
     );
     chmodSync(gateScript, 0o755);
     const packageFile = path.join(root, "package.json");
@@ -9151,7 +9250,7 @@ exit 1
       [RUN_GATE, "--manifest", manifestPath, "--name", "build"],
       {
         cwd: root,
-        env: { ...process.env, QUALITY_GATE_MARKER: marker },
+        env: { ...process.env },
         encoding: "utf8",
       },
     );
@@ -9300,7 +9399,7 @@ exit 1
     const gateScript = path.join(root, "gate-slow.sh");
     writeFileSync(
       gateScript,
-      '#!/usr/bin/env bash\nsleep 2\nprintf passed > "$QUALITY_GATE_MARKER"\n',
+      `#!/usr/bin/env bash\nsleep 2\nprintf passed > ${JSON.stringify(marker)}\n`,
     );
     chmodSync(gateScript, 0o755);
     const packageFile = path.join(root, "package.json");
@@ -9321,7 +9420,7 @@ exit 1
       [RUN_GATE, "--manifest", manifestPath, "--name", "build"],
       {
         cwd: root,
-        env: { ...process.env, QUALITY_GATE_MARKER: marker },
+        env: { ...process.env },
         encoding: "utf8",
       },
     );

@@ -19,11 +19,8 @@ const conditionTaxonomy = require("./quality-condition-taxonomy.js");
 const { evidenceDigestValid } = require("./quality-ci-billing-waiver.js");
 const testImpact = require("./test-impact.js");
 
-const SCHEMA_VERSION = 1;
 const REVIEW_CONTRACT_VERSION = 2;
-const EXECUTION_BUDGET_VERSION = 1;
 const RUNTIME_PLAN_VERSION = 2;
-const REQUIRED_GATES_POLICY_VERSION = 3;
 const MAX_AGENT_TARGET = 9;
 const DELIVERY_CLAIMS = new Set([
   "contract",
@@ -32,10 +29,6 @@ const DELIVERY_CLAIMS = new Set([
   "hosted",
   "validated",
 ]);
-const NEEDS_EXECUTION_BUDGET_MIGRATION = Symbol(
-  "needs-execution-budget-migration",
-);
-const NEEDS_REQUIRED_GATES_MIGRATION = Symbol("needs-required-gates-migration");
 
 class GateExecutionError extends Error {
   constructor(status, message, failureCode = null) {
@@ -46,27 +39,7 @@ class GateExecutionError extends Error {
   }
 }
 
-function parseJson(raw, label) {
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`${label} is not valid JSON: ${error.message}`, {
-      cause: error,
-    });
-  }
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((key) => [key, canonicalJson(value[key])]),
-    );
-  }
-  return value;
-}
+const { parseJson, canonicalJson } = require("./quality-canonical-json.js");
 
 function buildReviewPolicy(manifest) {
   const config = riskScore.loadConfig(manifest.repo.realpath);
@@ -85,358 +58,30 @@ function reviewPolicyDigest(policy) {
     .digest("hex");
 }
 
-function git(cwd, args) {
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-}
-
-// The review runner expands an initialized `core` gitlink into the exact
-// recursive submodule diff so a provider cannot approve an opaque control-
-// plane pointer. Canonical verification must hash the same byte stream or a
-// valid review is rejected after the provider has already spent its budget.
-function reviewDiffBuffer(root, from, to) {
-  const diff = execFileSync("git", ["diff", `${from}..${to}`], {
-    cwd: root,
-    encoding: "buffer",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 1024 * 1024 * 64,
-  });
-  const treeEntry = (commit) => {
-    const row = git(root, ["ls-tree", commit, "--", "core"]);
-    const fields = row.split(/\s+/);
-    return fields[0] === "160000" && fields[1] === "commit" ? fields[2] : "";
-  };
-  const baseCore = treeEntry(from);
-  const headCore = treeEntry(to);
-  const coreCheckout = fs.existsSync(path.join(root, "core", ".git"));
-  if (!baseCore && !headCore) return diff;
-  if (!baseCore || !headCore) {
-    throw new Error("core gitlink exists on only one side of the diff");
-  }
-  if (baseCore === headCore) return diff;
-  if (!coreCheckout) {
-    throw new Error(
-      "changed core gitlink requires an initialized checkout for recursive review",
-    );
-  }
-  for (const commit of [baseCore, headCore]) {
-    execFileSync(
-      "git",
-      ["-C", "core", "cat-file", "-e", `${commit}^{commit}`],
-      {
-        cwd: root,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-  }
-  const recursive = execFileSync(
-    "git",
-    ["-C", "core", "diff", "--submodule=diff", baseCore, headCore],
-    {
-      cwd: root,
-      encoding: "buffer",
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 1024 * 1024 * 64,
-    },
-  );
-  return Buffer.concat([
-    diff,
-    Buffer.from(
-      `\n===== recursive submodule diff: core ${baseCore}..${headCore} =====\n`,
-    ),
-    recursive,
-    Buffer.from("===== end recursive submodule diff: core =====\n"),
-  ]);
-}
-
-function canonicalRoot(input) {
-  const resolved = fs.realpathSync(input);
-  return fs.realpathSync(git(resolved, ["rev-parse", "--show-toplevel"]));
-}
-
-// Prove that applying the exact binary diff reviewed at oldHead onto newBase
-// produces nextHead's tree. This is stronger than git patch-id: patch-id
-// deliberately ignores whitespace and cannot safely authorize a carry.
-function replayedTree(root, oldBase, oldHead, newBase) {
-  try {
-    const diff = execFileSync(
-      "git",
-      ["diff", "--binary", "--full-index", oldBase, oldHead],
-      {
-        cwd: root,
-        encoding: "buffer",
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 1024 * 1024 * 64,
-      },
-    );
-    const indexFile = path.join(
-      fs.mkdtempSync(path.join(os.tmpdir(), "quality-rebase-index-")),
-      "index",
-    );
-    try {
-      const env = { ...process.env, GIT_INDEX_FILE: indexFile };
-      execFileSync("git", ["read-tree", newBase], {
-        cwd: root,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      execFileSync("git", ["apply", "--cached", "--whitespace=nowarn", "-"], {
-        cwd: root,
-        env,
-        input: diff,
-        stdio: ["pipe", "pipe", "pipe"],
-        maxBuffer: 1024 * 1024 * 64,
-      });
-      return execFileSync("git", ["write-tree"], {
-        cwd: root,
-        env,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }).trim();
-    } finally {
-      fs.rmSync(path.dirname(indexFile), { recursive: true, force: true });
-    }
-  } catch {
-    return null;
-  }
-}
-
-function isAncestorOf(root, ancestor, descendant) {
-  try {
-    git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function gitCommonDir(root) {
-  const value = git(root, ["rev-parse", "--git-common-dir"]);
-  return fs.realpathSync(path.resolve(root, value));
-}
-
-function originIdentity(root) {
-  const value = git(root, ["remote", "get-url", "origin"]);
-  if (!value) throw new Error("quality requires an origin remote identity");
-  return value;
-}
-
-function repoKey(root) {
-  return crypto
-    .createHash("sha256")
-    .update(gitCommonDir(root))
-    .digest("hex")
-    .slice(0, 16);
-}
-
-function deterministicInvocationId(identity) {
-  const digest = crypto
-    .createHash("sha256")
-    .update(JSON.stringify(canonicalJson(identity)))
-    .digest("hex")
-    .slice(0, 32)
-    .split("");
-  digest[12] = "5";
-  digest[16] = (8 + (parseInt(digest[16], 16) % 4)).toString(16);
-  const value = digest.join("");
-  return [
-    value.slice(0, 8),
-    value.slice(8, 12),
-    value.slice(12, 16),
-    value.slice(16, 20),
-    value.slice(20),
-  ].join("-");
-}
-
-function qualityTmpRoot() {
-  return fs.realpathSync(process.env.TMPDIR || os.tmpdir());
-}
-
-function atomicWrite(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = path.join(
-    path.dirname(file),
-    `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`,
-  );
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  fs.renameSync(temporary, file);
-  fs.chmodSync(file, 0o600);
-}
-
-function atomicCreate(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = path.join(
-    path.dirname(file),
-    `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.create`,
-  );
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  try {
-    fs.linkSync(temporary, file);
-    fs.chmodSync(file, 0o600);
-    return true;
-  } catch (error) {
-    if (error.code === "EEXIST") return false;
-    throw error;
-  } finally {
-    fs.unlinkSync(temporary);
-  }
-}
-
-function normalizeExecutionGovernor(manifest) {
-  if (manifest.governor.executionBudgetVersion === undefined) {
-    Object.defineProperty(manifest, NEEDS_EXECUTION_BUDGET_MIGRATION, {
-      value: true,
-      writable: true,
-    });
-  } else if (
-    manifest.governor.executionBudgetVersion !== EXECUTION_BUDGET_VERSION
-  ) {
-    throw new Error(
-      `unsupported execution budget version ${manifest.governor.executionBudgetVersion}`,
-    );
-  }
-  manifest.governor.lifecycleTTLSeconds ??= 24 * 60 * 60;
-  manifest.governor.lastActivityAt ??= new Date(
-    (manifest.governor.startedAtEpoch || Math.floor(Date.now() / 1000)) * 1000,
-  ).toISOString();
-  manifest.governor.gateSecondsLimit ??= 10 * 60;
-  manifest.governor.gateSecondsUsed ??= 0;
-  manifest.governor.providerSecondsLimit ??= 15 * 60;
-  manifest.governor.providerSecondsUsed ??= 0;
-  manifest.governor.activeExecution ??= null;
-}
-
-function normalizeGovernor(manifest) {
-  manifest.governor ??= {};
-  normalizeExecutionGovernor(manifest);
-  manifest.governor.authorizedAttempts ??= [];
-  manifest.governor.maxProviderAttempts ??= 6;
-  manifest.governor.providerWindowSeconds ??= 3600;
-  manifest.governor.providerAttempts ??= [];
-  manifest.governor.campaignSeconds ??=
-    manifest.governor.providerWindowSeconds +
-    manifest.governor.remediationSeconds +
-    manifest.governor.reReviewReserveSeconds;
-  manifest.governor.activeSecondsLimit ??= manifest.governor.campaignSeconds;
-  manifest.governor.activeSecondsUsed ??=
-    manifest.governor.gateSecondsUsed + manifest.governor.providerSecondsUsed;
-}
-
-function normalizeManifestCollections(manifest) {
-  manifest.reviews ??= [];
-  manifest.gates ??= [];
-  manifest.mutation ??= null;
-  manifest.merge ??= {};
-  manifest.merge.invalidatedStamps ??= [];
-  // Every campaign ends in exactly ONE recorded terminal state. Without this a
-  // campaign killed mid-flight (timeout, ^C, crashed provider) leaves a
-  // manifest byte-identical to one that is still running: activeExecution is
-  // null either way, so the only signal is a stale lastActivityAt. Nine PR-267
-  // manifests were in precisely that condition — interrupted before review,
-  // with no way to tell "paused" from "in progress" from disk.
-  //
-  // null = still open. Anything else is final and must never be overwritten
-  // (see recordTerminalState), so the first terminal cause wins and a late
-  // cleanup path cannot relabel a failure as success.
-  manifest.terminalState ??= null;
-  normalizeGovernor(manifest);
-  if (
-    manifest.requiredGatesPolicyVersion === undefined ||
-    manifest.requiredGatesPolicyVersion === 1 ||
-    manifest.requiredGatesPolicyVersion === 2
-  ) {
-    // v1->v2 and v2->v3 both migrate via full recompute (replace, not
-    // union) — v3 (BUI-467) changed inference semantics for the `type`
-    // gate specifically (mypy is no longer promoted merely because
-    // pyproject.toml declares [tool.mypy]; the diff must touch .py/.pyi
-    // too), so a v2 manifest that already inferred python:mypy must be
-    // recomputed under the new policy rather than keeping the stale entry
-    // via union.
-    Object.defineProperty(manifest, NEEDS_REQUIRED_GATES_MIGRATION, {
-      value: true,
-      writable: true,
-    });
-  } else if (
-    manifest.requiredGatesPolicyVersion !== REQUIRED_GATES_POLICY_VERSION
-  ) {
-    throw new Error(
-      `unsupported required-gates policy version ${manifest.requiredGatesPolicyVersion}`,
-    );
-  }
-  manifest.requiredGates ??= [];
-}
-
-function loadManifest(file) {
-  const requested = path.resolve(file);
-  const stat = fs.lstatSync(requested);
-  if (stat.isSymbolicLink()) {
-    throw new Error("quality manifest must not be a symlink");
-  }
-  const manifestPath = fs.realpathSync(requested);
-  const manifest = parseJson(
-    fs.readFileSync(manifestPath, "utf8"),
-    "quality manifest",
-  );
-  if (manifest.schemaVersion !== SCHEMA_VERSION) {
-    throw new Error(
-      `unsupported quality manifest schema ${manifest.schemaVersion}`,
-    );
-  }
-  normalizeManifestCollections(manifest);
-  if (
-    !manifest.invocationId ||
-    !manifest.repo?.realpath ||
-    !manifest.revisions?.baseSha ||
-    !manifest.revisions?.currentHead
-  ) {
-    throw new Error("quality manifest is missing required identity fields");
-  }
-  const expectedPath = path.join(manifest.stateRoot, "invocation.json");
-  if (path.resolve(expectedPath) !== manifestPath) {
-    throw new Error("quality manifest path does not match its stateRoot");
-  }
-  const expectedStateRoot = path.join(
-    qualityTmpRoot(),
-    "bs-quality",
-    manifest.repo.key,
-    `pr-${manifest.repo.pr ?? "none"}`,
-    manifest.revisions.baseSha,
-    manifest.invocationId,
-  );
-  if (path.resolve(expectedStateRoot) !== path.resolve(manifest.stateRoot)) {
-    throw new Error("quality manifest stateRoot identity is invalid");
-  }
-  return { manifest, manifestPath };
-}
-
-function saveManifest(file, manifest) {
-  manifest.updatedAt = new Date().toISOString();
-  manifest.manifestRevision = (manifest.manifestRevision || 0) + 1;
-  atomicWrite(file, manifest);
-}
-
-// A mid-mutation persist for progress that must survive even if the rest of
-// the current mutation() callback later throws (withManifestLock() only
-// calls saveManifest() on a callback that returns normally). Unlike
-// saveManifest(), this does NOT bump manifestRevision: withManifestLock()
-// compares manifestRevision before/after the SAME mutation() call to detect
-// a genuinely concurrent writer, and bumping it here would make that check
-// misfire against our own in-progress transaction, not an actual concurrent
-// writer. updatedAt IS refreshed, though — worktree-manager.js's
-// qualityManifestReleaseState() reads it to judge whether a locked
-// campaign is abandoned, and an execution reconciled moments ago is
-// definitionally not abandoned (Codex review finding, 2026-08-01, medium).
-function saveManifestMidTransaction(file, manifest) {
-  manifest.updatedAt = new Date().toISOString();
-  atomicWrite(file, manifest);
-}
+const {
+  git,
+  reviewDiffBuffer,
+  canonicalRoot,
+  replayedTree,
+  isAncestorOf,
+  gitCommonDir,
+  originIdentity,
+  repoKey,
+  deterministicInvocationId,
+} = require("./quality-git-identity.js");
+const {
+  SCHEMA_VERSION,
+  EXECUTION_BUDGET_VERSION,
+  REQUIRED_GATES_POLICY_VERSION,
+  NEEDS_EXECUTION_BUDGET_MIGRATION,
+  NEEDS_REQUIRED_GATES_MIGRATION,
+  qualityTmpRoot,
+  atomicWrite,
+  atomicCreate,
+  loadManifest,
+  saveManifest,
+  saveManifestMidTransaction,
+} = require("./quality-manifest-io.js");
 
 // manifest.revisions.baseSha is an immutable creation-time snapshot (it also
 // namespaces stateRoot and anchors review-trailer provenance, so it is never
@@ -5644,17 +5289,89 @@ function executableAvailable(executable, environment) {
   return result.status === 0;
 }
 
+// Variables a build or test gate legitimately needs. Anything not named here,
+// and not matching GATE_ENVIRONMENT_PREFIXES, does not reach repository code.
+const GATE_ENVIRONMENT_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "PWD",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "CI",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "FORCE_COLOR",
+  "NO_COLOR",
+  "COLORTERM",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "VIRTUAL_ENV",
+  "JAVA_HOME",
+  "GOPATH",
+  "GOROOT",
+  "GOCACHE",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+]);
+
+// Toolchain namespaces whose values are caches, mirrors and feature flags
+// rather than credentials. Auth for these lives in separate files (.npmrc,
+// ~/.cargo/credentials) that a real sandbox must also address — see BUI-743.
+const GATE_ENVIRONMENT_PREFIXES = [
+  "npm_config_",
+  "npm_package_",
+  "npm_lifecycle_",
+  "NPM_CONFIG_",
+  "PNPM_",
+  "YARN_",
+  "VOLTA_",
+  "NVM_",
+  "ASDF_",
+  "XDG_",
+  "HOMEBREW_",
+];
+
+// Names that must never reach repository code even if a prefix above would
+// otherwise admit them. A token is a token whatever namespace it hides in.
+const GATE_ENVIRONMENT_SECRET_PATTERN =
+  /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY|APIKEY|API_KEY|AUTH|SESSION|COOKIE|PRIVATE)/i;
+
+// A quality gate runs repository-controlled code — a build script, a test
+// suite, a postinstall hook. Until that runs under a real OS boundary
+// (BUI-743), the process environment is the widest thing it inherits.
+//
+// This was a deny-list of six quality-internal names, which is an open
+// allowlist wearing a deny-list's clothes: every AWS_*, GITHUB_TOKEN,
+// OPENAI_API_KEY and operator .env export passed straight through. The
+// operator .env on the machine this was written from holds 106 entries.
+//
+// Invert it: nothing reaches repository code unless it is named, or sits in a
+// toolchain namespace, and never if it looks like a credential. This does not
+// replace a sandbox — it removes the cheapest exfiltration path while one is
+// built.
 function repositoryGateEnvironment(environment = process.env) {
-  const isolated = { ...environment };
-  for (const name of [
-    "BS_QUALITY_TERMINAL_EPOCH",
-    "BS_QUALITY_REPOSITORY_LEASE_TOKEN",
-    "QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY",
-    "QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY_FILE",
-    "QUALITY_APPROVAL_PRIVATE_KEY",
-    "QUALITY_APPROVAL_PRIVATE_KEY_FILE",
-  ]) {
-    delete isolated[name];
+  const isolated = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined) continue;
+    const allowed =
+      GATE_ENVIRONMENT_ALLOWLIST.has(name) ||
+      GATE_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix));
+    if (!allowed) continue;
+    if (GATE_ENVIRONMENT_SECRET_PATTERN.test(name)) continue;
+    isolated[name] = value;
   }
   return isolated;
 }
@@ -6107,6 +5824,18 @@ function mutationEvidenceValid(manifest, options = {}) {
   const tier = manifest.risk?.tier;
   if (["low", "medium"].includes(tier)) return true;
   if (!["high", "critical"].includes(tier)) return false;
+  // An operator may accept mutation:missing explicitly. BUI-914 added the
+  // acknowledgement flag but nothing consumed it, so the approval attached,
+  // validated, and then changed nothing — the campaign still blocked. The
+  // acceptance only counts when it is bound to the exact head under
+  // evaluation, so it cannot be carried across a rebase or a new commit.
+  if (
+    Array.isArray(manifest.approval?.acceptedConditions) &&
+    manifest.approval.acceptedConditions.includes("mutation:missing") &&
+    manifest.approval.head === manifest.revisions.currentHead
+  ) {
+    return true;
+  }
   const mutation = manifest.mutation;
   if (!mutation || mutation.head !== manifest.revisions.currentHead) {
     return false;

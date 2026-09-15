@@ -231,12 +231,19 @@ function carriedBaseline(cwd, startSha, carries) {
   let current = startSha;
   const seen = new Set([current]);
   for (let step = 0; step < carries.length; step += 1) {
+    // Exact SHA equality, not a prefix test. A 7-character prefix match would
+    // accept any carry whose reviewedHead merely shares its first 7 hex
+    // characters with `current`, and Array.find returns the FIRST such entry —
+    // so after a few rebase/retry cycles the wrong carry could be selected and
+    // the baseline silently resolved to an unrelated commit, skewing the fix
+    // commit count that bounds an autonomous campaign. A carry asserts one
+    // proven exact replay; the lookup has to be exact too.
     const carry = carries.find(
       (entry) =>
         entry &&
         typeof entry.reviewedHead === "string" &&
         typeof entry.head === "string" &&
-        entry.reviewedHead.startsWith(current.slice(0, 7)),
+        entry.reviewedHead === current,
     );
     if (!carry) break;
     if (seen.has(carry.head)) return null;
