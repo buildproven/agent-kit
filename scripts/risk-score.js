@@ -710,7 +710,23 @@ function matchesSecurityFloor(file, cfg = DEFAULTS) {
     return true;
   }
   if (isProsePath(file)) return false;
-  return matchesPattern(normalized, effectiveSecurityFloor(cfg));
+  const floor = effectiveSecurityFloor(cfg);
+  if (matchesPattern(normalized, floor)) return true;
+  // isProsePath refuses to EXEMPT laundered key material, but refusing an
+  // exemption is not the same as applying the floor: the floor patterns are
+  // extension-anchored (`**/*.pem`), and `certs/server.pem.md` still ends in
+  // `.md`. Nothing re-tested the stripped path, so every prose-suffixed key
+  // extension scored as ordinary documentation — `.pem.md`, `.p12.txt`,
+  // `.pfx.md`, `.jks.md`, `.ppk.txt`, `.kdbx.md`.
+  //
+  // `.key` appeared to work only by accident: it matches the `**/*key*`
+  // substring pattern, not the extension path, which is why probing `.key`
+  // alone made the floor look healthy (BUI-640).
+  const basename = normalized.slice(normalized.lastIndexOf("/") + 1);
+  const stem = stripProseExtensions(basename);
+  if (stem === basename) return false;
+  const directory = normalized.slice(0, normalized.lastIndexOf("/") + 1);
+  return matchesPattern(`${directory}${stem}`, floor);
 }
 
 function securityFloorScore(cfg = DEFAULTS) {
