@@ -688,6 +688,47 @@ describe("quality changed-file coverage", () => {
   });
 });
 
+describe("mutationEvidenceValid — BUI-914 exact-head acknowledgement", () => {
+  const highTier = (approval) => ({
+    risk: { resolved: true, tier: "high" },
+    revisions: { currentHead: "a".repeat(40) },
+    approval,
+  });
+
+  it("accepts a mutation:missing acknowledgement bound to the current head", () => {
+    // BUI-914 added the --i-understand-missing-mutation flag, but nothing
+    // consumed acceptedConditions on this path: the approval attached,
+    // validated, and then changed nothing. The campaign still blocked.
+    const manifest = highTier({
+      acceptedConditions: ["mutation:missing"],
+      head: "a".repeat(40),
+    });
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(true);
+  });
+
+  it("refuses an acknowledgement bound to a different head", () => {
+    // An acceptance must not survive a rebase or a new commit: the operator
+    // judged the diff they were shown, not whatever replaced it.
+    const manifest = highTier({
+      acceptedConditions: ["mutation:missing"],
+      head: "b".repeat(40),
+    });
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(false);
+  });
+
+  it("refuses an approval that accepted some other condition", () => {
+    const manifest = highTier({
+      acceptedConditions: ["gate:security"],
+      head: "a".repeat(40),
+    });
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(false);
+  });
+
+  it("refuses when there is no approval at all", () => {
+    expect(invocation.mutationEvidenceValid(highTier(undefined))).toBe(false);
+  });
+});
+
 describe("mutationEvidenceValid — BUI-603 #1 fail-closed on unresolved risk", () => {
   it("returns false for an unresolved risk contract by default", () => {
     const manifest = { risk: { resolved: false } };
