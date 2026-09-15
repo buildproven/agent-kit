@@ -5824,6 +5824,18 @@ function mutationEvidenceValid(manifest, options = {}) {
   const tier = manifest.risk?.tier;
   if (["low", "medium"].includes(tier)) return true;
   if (!["high", "critical"].includes(tier)) return false;
+  // An operator may accept mutation:missing explicitly. BUI-914 added the
+  // acknowledgement flag but nothing consumed it, so the approval attached,
+  // validated, and then changed nothing — the campaign still blocked. The
+  // acceptance only counts when it is bound to the exact head under
+  // evaluation, so it cannot be carried across a rebase or a new commit.
+  if (
+    Array.isArray(manifest.approval?.acceptedConditions) &&
+    manifest.approval.acceptedConditions.includes("mutation:missing") &&
+    manifest.approval.head === manifest.revisions.currentHead
+  ) {
+    return true;
+  }
   const mutation = manifest.mutation;
   if (!mutation || mutation.head !== manifest.revisions.currentHead) {
     return false;
