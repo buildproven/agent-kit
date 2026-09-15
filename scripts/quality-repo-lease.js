@@ -14,6 +14,31 @@ const DEFAULT_WAIT_MS = 30_000;
 const SLEEP_BUFFER = new SharedArrayBuffer(4);
 const heldMetadataGuards = new Map();
 
+// One builder for every operator recovery invocation. Three hand-written
+// copies of this command used to exist, each interpolating whichever manifest
+// the surrounding function happened to have loaded. That is what made BUI-910
+// expensive: the two manifests play opposite roles, and a copy that reads
+// `loaded.manifestPath` is only correct when `loaded` happens to be the
+// successor. Naming both parameters forces the caller to say which is which.
+//
+// successorManifestPath — the campaign that should own the lease NEXT.
+// displacedOwner        — the record of the campaign being taken from.
+function recoveryInvocation(subcommand, successorManifestPath, displacedOwner) {
+  if (!successorManifestPath) {
+    throw new Error("recovery invocation requires the successor manifest path");
+  }
+  if (!displacedOwner?.invocationId || displacedOwner.pr === undefined) {
+    throw new Error("recovery invocation requires the displaced owner record");
+  }
+  return (
+    `node quality-repo-lease.js ${subcommand} ` +
+    `--manifest ${successorManifestPath} ` +
+    `--confirm-owner-invocation-id ${displacedOwner.invocationId} ` +
+    `--confirm-owner-pr ${displacedOwner.pr}`
+  );
+}
+
+
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(SLEEP_BUFFER), 0, 0, milliseconds);
 }
@@ -600,9 +625,21 @@ function acquireOnce(manifestPath, options = {}) {
                 identity,
               };
             }
+            // Print the command, not just the blocker. "recover or resume
+            // that exact campaign" reads as an instruction to point recovery
+            // AT the named campaign, which is the wrong --manifest and
+            // silently transfers the lease to itself. worktree-manager.js
+            // emits its literal unlock invocation and that worked first try
+            // every time; this now does the same (BUI-910).
             const error = new Error(
-              `repository merge lease is owned by ${current.repository} PR #${current.pr} ` +
-                `(${current.manifestPath}); recover or resume that exact campaign`,
+              `repository merge lease is owned by ${current.repository} ` +
+                `PR #${current.pr} (${current.manifestPath}).\n` +
+                `  Resume that campaign, or take the lease for THIS one:\n` +
+                `    ${recoveryInvocation("recover", tuple.manifestPath, current)}\n` +
+                `  --manifest names the campaign that should own the lease ` +
+                `NEXT; --confirm-owner-* names the one being displaced.\n` +
+                `  Add --override true --reason "..." with ` +
+                `${RECOVERY_OVERRIDE_ENV}=1 if the owner is still recent.`,
             );
             error.code = "LEASE_OWNED";
             throw error;
@@ -894,10 +931,14 @@ function status(manifestPath) {
       mergeGuard,
       mergeIntent: record.mergeIntent ?? null,
       lastRefCasRejection: record.lastRefCasRejection ?? null,
-      recoveryCommand: stale
-        ? `node quality-repo-lease.js recover --manifest ${loaded.manifestPath} ` +
-          `--confirm-owner-invocation-id ${record.invocationId} --confirm-owner-pr ${record.pr}`
-        : null,
+      // Emitted whether or not the owner is stale. A live owner is exactly
+      // the case an operator cannot otherwise get past, and the command is
+      // self-documenting about needing --override for a recent one.
+      recoveryCommand: recoveryInvocation(
+        "recover",
+        loaded.manifestPath,
+        record,
+      ),
     };
   });
 }
@@ -1852,9 +1893,11 @@ function performMerge(manifestPath, presentedToken, options = {}) {
   throw new Error(
     `merge outcome is ambiguous and quarantined (gh status ${merge.status ?? "timeout"}): ` +
       `${merge.stderr || remoteReadError?.message || `GitHub returned ${JSON.stringify(remote)}`}`.trim() +
-      `; after verifying GitHub, run node quality-repo-lease.js reconcile-merge ` +
-      `--manifest ${loaded.manifestPath} --confirm-owner-invocation-id ${loaded.manifest.invocationId} ` +
-      `--confirm-owner-pr ${loaded.manifest.repo.pr}`,
+      `; after verifying GitHub, run ` +
+      recoveryInvocation("reconcile-merge", loaded.manifestPath, {
+        invocationId: loaded.manifest.invocationId,
+        pr: loaded.manifest.repo.pr,
+      }),
   );
 }
 

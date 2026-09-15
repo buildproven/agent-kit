@@ -542,9 +542,47 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
         repoKey: first.repoKey,
         advanceHead: true,
       });
-      expect(() =>
-        lease.acquire(successor.manifestPath, { waitMs: 0 }),
-      ).toThrow(/recover or resume/);
+      // Pins the two manifests to their ROLES, not just the flag names.
+      // The old message said "recover or resume that exact campaign", which
+      // reads as an instruction to point --manifest at the BLOCKING
+      // campaign. That is the wrong argument: it transfers the lease to
+      // itself and silently changes nothing (BUI-910, 4 repos blocked, two
+      // for a month). An assertion that only greps for the flag name would
+      // still pass with the two manifests swapped — which is the whole bug —
+      // so this pins --manifest to the SUCCESSOR and --confirm-owner-* to the
+      // displaced owner.
+      let raised;
+      try {
+        lease.acquire(successor.manifestPath, { waitMs: 0 });
+      } catch (error) {
+        raised = error;
+      }
+      expect(raised, "acquire must refuse a held lease").toBeDefined();
+      expect(raised.code).toBe("LEASE_OWNED");
+      expect(raised.message).toContain(
+        `--manifest ${successor.manifestPath}`,
+      );
+      // The displaced ID must be the one the LEASE RECORD holds, which is
+      // what recoverFromOptions validates against -- not the successor's or
+      // the fixture manifest's. Printing any other ID yields "recovery
+      // requires the exact current owner invocation ID".
+      // status() emits the whole recoveryCommand, so the error and status
+      // must agree on the displaced ID -- they are now built by the same
+      // function, and this pins them together.
+      const fromStatus = lease.status(successor.manifestPath).recoveryCommand;
+      const heldBy = /--confirm-owner-invocation-id (\S+)/.exec(fromStatus)?.[1];
+      expect(heldBy, "status must emit a recovery command").toBeTruthy();
+      expect(raised.message).toContain(
+        `--confirm-owner-invocation-id ${heldBy}`,
+      );
+      expect(raised.message).not.toContain(
+        `--confirm-owner-invocation-id ${successor.invocationId}`,
+      );
+      // The displaced campaign's manifest must never be the --manifest
+      // argument; that is the no-op form.
+      expect(raised.message).not.toContain(
+        `--manifest ${first.manifestPath}`,
+      );
     } finally {
       process.env.PATH = previousPath;
     }
