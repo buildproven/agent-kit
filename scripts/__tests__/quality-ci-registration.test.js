@@ -1,12 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  closeSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTempDir } from "./helpers/tmp.js";
@@ -130,7 +123,7 @@ exit 1
     expect(result.stderr).toContain("treating this as a CI failure");
   });
 
-  it("bounds a watch that never returns", () => {
+  it("bounds a watch that never returns", async () => {
     // The `gh --watch` handoff was previously an exec with no deadline.
     const { root, bin } = harness(`
 printf '%s\n' "$*" >> "$QUALITY_TEST_CALLS"
@@ -145,31 +138,37 @@ esac
     // close. Redirecting via `bash -c` would build a shell command out of a
     // path, which CodeQL flags (correctly) as command construction from
     // uncontrolled input.
-    const stderrPath = path.join(root, "stderr.log");
-    const stderrFd = openSync(stderrPath, "w");
-    let result;
-    try {
-      result = spawnSync(
-        "bash",
-        [WAIT, "--pr", "17", "--interval", "0", "--deadline", "2"],
-        {
-          env: {
-            ...process.env,
-            PATH: `${bin}:${process.env.PATH}`,
-            QUALITY_TEST_CALLS: path.join(root, "calls.log"),
-          },
-          encoding: "utf8",
-          timeout: 60000,
-          stdio: ["ignore", "ignore", stderrFd],
+    // Collect stderr through a pipe that is drained and then detached, rather
+    // than a file: reopening a path we just wrote is a check-then-use shape,
+    // and closing stdio here is what lets the surviving `sleep` go unnoticed.
+    const child = spawn(
+      "bash",
+      [WAIT, "--pr", "17", "--interval", "0", "--deadline", "2"],
+      {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          QUALITY_TEST_CALLS: path.join(root, "calls.log"),
         },
-      );
-    } finally {
-      closeSync(stderrFd);
-    }
-    expect(result.status).toBe(75);
-    expect(readFileSync(stderrPath, "utf8")).toContain(
-      "watch exceeded the deadline",
+        stdio: ["ignore", "ignore", "pipe"],
+      },
     );
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const status = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        // The killed watcher's own `sleep` can outlive it and hold the pipe
+        // open, so resolve on exit rather than waiting for stream close.
+        child.stderr.destroy();
+        resolve(code);
+      });
+    });
+    expect(status).toBe(75);
+    expect(stderr).toContain("watch exceeded the deadline");
     expect(Date.now() - started).toBeLessThan(45000);
   });
 
