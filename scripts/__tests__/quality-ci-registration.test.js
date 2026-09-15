@@ -1,5 +1,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTempDir } from "./helpers/tmp.js";
@@ -133,29 +140,34 @@ case "$*" in
 esac
 `);
     const started = Date.now();
-    const result = spawnSync(
-      "bash",
-      [
-        "-c",
-        `exec bash "$0" --pr 17 --interval 0 --deadline 2 2> "$1"`,
-        WAIT,
-        path.join(root, "stderr.log"),
-      ],
-      {
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          QUALITY_TEST_CALLS: path.join(root, "calls.log"),
+    // The killed watcher's own `sleep` can outlive it and hold an inherited
+    // pipe open, so send stderr straight to a file descriptor and let stdio
+    // close. Redirecting via `bash -c` would build a shell command out of a
+    // path, which CodeQL flags (correctly) as command construction from
+    // uncontrolled input.
+    const stderrPath = path.join(root, "stderr.log");
+    const stderrFd = openSync(stderrPath, "w");
+    let result;
+    try {
+      result = spawnSync(
+        "bash",
+        [WAIT, "--pr", "17", "--interval", "0", "--deadline", "2"],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            QUALITY_TEST_CALLS: path.join(root, "calls.log"),
+          },
+          encoding: "utf8",
+          timeout: 60000,
+          stdio: ["ignore", "ignore", stderrFd],
         },
-        encoding: "utf8",
-        timeout: 60000,
-        // The killed watcher's own `sleep` can outlive it and hold the
-        // inherited pipe open, so read stderr from a file and let stdio close.
-        stdio: ["ignore", "ignore", "ignore"],
-      },
-    );
+      );
+    } finally {
+      closeSync(stderrFd);
+    }
     expect(result.status).toBe(75);
-    expect(readFileSync(path.join(root, "stderr.log"), "utf8")).toContain(
+    expect(readFileSync(stderrPath, "utf8")).toContain(
       "watch exceeded the deadline",
     );
     expect(Date.now() - started).toBeLessThan(45000);
