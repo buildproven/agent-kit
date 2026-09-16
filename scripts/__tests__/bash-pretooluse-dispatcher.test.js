@@ -217,6 +217,79 @@ describe("bash-pretooluse-dispatcher.js", () => {
   );
 
   it.each([
+    [
+      "after its deadline",
+      "120",
+      /CI budget admission did not finish within 100ms/,
+    ],
+    [
+      "before its deadline",
+      "0",
+      /could not execute CI budget admission:.*EPIPE/,
+    ],
+  ])(
+    "classifies an EPIPE %s without weakening the denial",
+    (_timing, delayMs, expected) => {
+      const guardDir = mkdtempSync(path.join(tmpdir(), "bounded-epipe-"));
+      try {
+        const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
+        const preload = path.join(guardDir, "epipe-after-deadline.cjs");
+        writeFileSync(staged, readFileSync(HOOK, "utf8"));
+        for (const name of [
+          "block-push-main.sh",
+          "block-destructive-paths.sh",
+          "block-commit-main.sh",
+          "branch-drift-guard.sh",
+        ]) {
+          writeFileSync(path.join(guardDir, name), "#!/bin/sh\nexit 0\n");
+        }
+        writeFileSync(
+          path.join(guardDir, "ci-budget-admission.js"),
+          "process.exit(0);\n",
+        );
+        writeFileSync(
+          preload,
+          `const child = require("node:child_process");
+let calls = 0;
+const realSpawnSync = child.spawnSync;
+child.spawnSync = (...args) => {
+  calls += 1;
+  if (calls !== 4) return realSpawnSync(...args);
+  const delayMs = Number(process.env.BS_TEST_EPIPE_DELAY_MS || "0");
+  if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+  const error = new Error("spawnSync node EPIPE");
+  error.code = "EPIPE";
+  return { error, pid: 999999, stdout: "", stderr: "" };
+};
+`,
+        );
+        const result = spawnSync(
+          process.execPath,
+          ["--require", preload, staged],
+          {
+            input: JSON.stringify({
+              tool_input: { command: "git push origin topic" },
+            }),
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              BS_GUARD_TIMEOUT_MS: "100",
+              BS_TEST_EPIPE_DELAY_MS: delayMs,
+            },
+            timeout: 2000,
+            killSignal: "SIGKILL",
+          },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(2);
+        expect(result.stderr).toMatch(expected);
+      } finally {
+        rmSync(guardDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
     "0",
     "-1",
     "not-a-number",

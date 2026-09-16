@@ -97,6 +97,7 @@ function runBounded(executable, args, options, name) {
   const remaining = Math.floor(4000 - (performance.now() - startedAt));
   if (remaining <= 0) deny("Bash safety checks exhausted their 4000ms budget.");
   const timeout = Math.min(GUARD_TIMEOUT_MS, remaining);
+  const childStartedAt = performance.now();
   const result = spawnSync(executable, args, {
     ...options,
     // POSIX guards need their own group: killing only bash leaves helpers alive.
@@ -104,7 +105,9 @@ function runBounded(executable, args, options, name) {
     timeout,
     killSignal: "SIGKILL",
   });
-  if (result.error?.code === "ETIMEDOUT" || result.signal) {
+  const elapsed = performance.now() - childStartedAt;
+  const deadlineEpipe = result.error?.code === "EPIPE" && elapsed >= timeout;
+  if (result.error?.code === "ETIMEDOUT" || result.signal || deadlineEpipe) {
     if (Number.isSafeInteger(result.pid) && result.pid > 1) {
       try {
         process.kill(-result.pid, "SIGKILL");
