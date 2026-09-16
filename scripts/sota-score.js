@@ -9,21 +9,63 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const Ajv = require("ajv");
 
-const ROOT = path.resolve(process.env.SOTA_ROOT || path.join(__dirname, ".."));
+let ROOT = path.resolve(process.env.SOTA_ROOT || path.join(__dirname, ".."));
+let LAYER = "public_kit";
+let READ_ERRORS = [];
+let READ_ROOTS = [fs.existsSync(ROOT) ? fs.realpathSync(ROOT) : ROOT];
 const SETTINGS_SCHEMA_URL =
   "https://json.schemastore.org/claude-code-settings.json";
 const CURRENT_BASELINE = "2.1.233";
 
+function sourcePath(relativePath) {
+  const own = path.join(ROOT, relativePath);
+  if (fs.existsSync(own) || LAYER !== "private_overlay") return own;
+  if (
+    /^(?:scripts|skills|agents)\/|^(?:README.md|package.json|package-lock.json)$/.test(
+      relativePath,
+    )
+  ) {
+    return path.join(ROOT, "core", relativePath);
+  }
+  return own;
+}
+
+function withinRoots(file, roots) {
+  return roots.some(
+    (root) => file === root || file.startsWith(`${root}${path.sep}`),
+  );
+}
+
+function safeSource(file) {
+  try {
+    const real = fs.realpathSync(file);
+    if (!withinRoots(real, READ_ROOTS))
+      throw new Error("link leaves explicitly selected source roots");
+    return real;
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      READ_ERRORS.push(
+        `${path.relative(ROOT, file)}: ${error.code || error.message}`,
+      );
+    return null;
+  }
+}
+
 function exists(relativePath) {
-  return fs.existsSync(path.join(ROOT, relativePath));
+  return safeSource(sourcePath(relativePath)) !== null;
 }
 
 function readText(relativePath) {
+  const file = safeSource(sourcePath(relativePath));
+  if (file === null) return "";
   try {
-    return fs.readFileSync(path.join(ROOT, relativePath), "utf8");
-  } catch {
+    return fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      READ_ERRORS.push(`${relativePath}: ${error.code || error.message}`);
     return "";
   }
 }
@@ -34,6 +76,17 @@ function readJSON(relativePath) {
   } catch {
     return null;
   }
+}
+
+function settingsPath() {
+  if (LAYER === "installed_composition") return "settings.json";
+  return exists("config/settings.json")
+    ? "config/settings.json"
+    : "settings.json";
+}
+
+function controlPath(name) {
+  return `scripts/${name}`;
 }
 
 // Directories that never hold repository sources. Scratch and coverage output
@@ -55,25 +108,78 @@ const WALK_SKIP_DIRS = new Set([
 ]);
 
 function walkFiles(relativeDir, predicate = () => true) {
-  const root = path.join(ROOT, relativeDir);
+  const own = walkSurface(relativeDir, predicate);
+  if (
+    LAYER !== "private_overlay" ||
+    !["skills", "agents", "commands"].includes(relativeDir)
+  )
+    return own;
+  const fallback = path.join(ROOT, "core", relativeDir);
+  const shared = walkSurface(relativeDir, predicate, fallback);
+  const files = new Map(
+    shared.map((file) => [path.relative(fallback, file), file]),
+  );
+  const ownRoot = path.join(ROOT, relativeDir);
+  for (const file of own) files.set(path.relative(ownRoot, file), file);
+  return [...new Set(files.values())];
+}
+
+function walkSurface(relativeDir, predicate, explicitRoot) {
+  let root = explicitRoot || sourcePath(relativeDir);
+  if (!fs.existsSync(root) && LAYER === "private_overlay")
+    root = path.join(ROOT, "core", relativeDir);
   if (!fs.existsSync(root)) return [];
+  root = safeSource(root);
+  if (root === null) return [];
   const results = [];
-  const visit = (dir) => {
+  const seen = new Set();
+  const allowed = READ_ROOTS;
+  let visited = 0;
+  const visit = (dir, depth = 0) => {
+    const real = safeSource(dir);
+    if (real === null) return;
+    if (seen.has(real) || depth > 32 || ++visited > 10000) {
+      READ_ERRORS.push(
+        `${relativeDir}: cyclic or excessive directory traversal`,
+      );
+      return;
+    }
+    seen.add(real);
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      // A directory can disappear mid-walk when a concurrent test run cleans up
-      // its temp tree. Skip it rather than aborting the whole score.
+    } catch (error) {
+      READ_ERRORS.push(`${dir}: ${error.code || error.message}`);
       return;
     }
     for (const entry of entries) {
       if (WALK_SKIP_DIRS.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
-      // Do not follow symlinks: a linked directory can point outside the repo
-      // (or back into it) and turn the walk into an unbounded or cyclic scan.
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) visit(full);
+      // Source scans do not follow links. Installed scans resolve only their
+      // declared linked surfaces and reject cycles or out-of-surface links.
+      if (entry.isSymbolicLink()) {
+        if (LAYER !== "installed_composition") continue;
+        try {
+          const target = fs.realpathSync(full);
+          if (
+            !allowed.some(
+              (base) =>
+                target === base || target.startsWith(`${base}${path.sep}`),
+            )
+          ) {
+            READ_ERRORS.push(
+              `${full}: link leaves declared installed surfaces`,
+            );
+            continue;
+          }
+          if (fs.statSync(target).isDirectory()) visit(target, depth + 1);
+          else if (predicate(target)) results.push(target);
+        } catch (error) {
+          READ_ERRORS.push(`${full}: ${error.code || error.message}`);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) visit(full, depth + 1);
       else if (entry.isFile() && predicate(full)) results.push(full);
     }
   };
@@ -96,9 +202,9 @@ async function fetchSettingsSchema() {
 }
 
 function scoreSettingsValidity(schema, schemaError) {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings)
-    return result(0, "config/settings.json is missing or invalid JSON");
+    return result(0, `${settingsPath()} is missing or invalid JSON`);
   if (!schema) {
     return result(0, `Live settings schema unavailable: ${schemaError}`);
   }
@@ -117,7 +223,7 @@ function scoreSettingsValidity(schema, schemaError) {
 }
 
 function scorePermissionPosture() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings) return result(0, "settings.json missing");
   const permissions = settings.permissions || {};
   const allow = permissions.allow || [];
@@ -179,7 +285,14 @@ function scoreNativeFirst() {
   );
 }
 
-function scoreDistribution() {
+function scoreDistribution(layer) {
+  if (layer !== "public_kit") {
+    return {
+      score: null,
+      gap: null,
+      notApplicable: "not a public distribution",
+    };
+  }
   const plugin = readJSON(".claude-plugin/plugin.json");
   const marketplace = readJSON(".claude-plugin/marketplace.json");
   let score = 0;
@@ -198,7 +311,7 @@ function notificationMatchers(settings) {
 }
 
 function scoreAgentOrchestration() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings) return result(0, "settings.json missing");
   const matchers = notificationMatchers(settings);
   const corpus = [
@@ -231,13 +344,23 @@ function scoreAgentOrchestration() {
 }
 
 function scoreClaudeMd() {
-  const content = readText("config/CLAUDE.md");
-  if (!content) return result(0, "config/CLAUDE.md missing");
+  const claudeMdPath = exists("config/CLAUDE.md")
+    ? "config/CLAUDE.md"
+    : "CLAUDE.md";
+  const content = readText(claudeMdPath);
+  if (!content) return result(0, `${claudeMdPath} missing`);
   const lines = content.split("\n").length;
-  const required = ["Action Defaults", "Code Quality", "Communication", "Git"];
-  const missing = required.filter((heading) => !content.includes(heading));
+  const requiredBehaviors = [
+    /act by default|continue.*autonom/i,
+    /\b(?:test|lint|quality)\b/i,
+    /\b(?:report|communicat)\b/i,
+    /\b(?:git|branch|commit)\b/i,
+  ];
+  const missing = requiredBehaviors
+    .map((behavior, index) => (behavior.test(content) ? null : index))
+    .filter((index) => index !== null);
   let score = lines < 100 ? 6 : lines <= 120 ? 5 : 3;
-  score += required.length - missing.length;
+  score += requiredBehaviors.length - missing.length;
   return result(
     score,
     lines >= 100 ? `${lines} lines (target <100)` : missing[0] || null,
@@ -246,12 +369,14 @@ function scoreClaudeMd() {
 }
 
 function scoreBoundedAutonomy() {
+  const governor = controlPath("quality-run-governor.js");
+  const ralph = controlPath("ralph-next-run.sh");
   const checks = [
-    exists("scripts/quality-run-governor.js"),
-    /MAX_TRANSITIONS=\d+/.test(readText("scripts/ralph-next-run.sh")),
-    exists("scripts/__tests__/quality-run-governor-bump.test.js"),
-    /max_wall_seconds/.test(readText("scripts/quality-run-governor.js")),
-    /max_review_rounds/.test(readText("scripts/quality-run-governor.js")),
+    exists(governor),
+    exists(ralph),
+    /MAX_TRANSITIONS=\d+/.test(readText(ralph)),
+    /max_wall_seconds/.test(readText(governor)),
+    /max_review_rounds/.test(readText(governor)),
   ];
   const passed = checks.filter(Boolean).length;
   return result(
@@ -261,7 +386,7 @@ function scoreBoundedAutonomy() {
 }
 
 function scoreHooks() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const hooks = settings?.hooks;
   if (!hooks) return result(0, "No hooks configured");
   const required = ["PreToolUse", "PostToolUse", "Notification"];
@@ -278,6 +403,7 @@ function scoreHooks() {
 
 function scoreSkillDesign() {
   const skillFiles = walkFiles("skills", (file) => file.endsWith("SKILL.md"));
+  if (!skillFiles.length) return result(0, "No readable skills");
   const oversized = [];
   const inert = [];
   let forked = 0;
@@ -327,7 +453,7 @@ function scanRetiredModels() {
 }
 
 function scoreModelConfig() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   if (!settings) return result(0, "settings.json missing");
   let score = 0;
   const gaps = [];
@@ -366,16 +492,16 @@ function scoreQualityGates() {
     exists("scripts/quality-run-bounded.sh")
   )
     score += 2;
-  if (exists("scripts/quality-run-governor.js")) score += 2;
+  if (exists(controlPath("quality-run-governor.js"))) score += 2;
   return result(score, missing[0] ? `Missing ${missing[0]} gate` : null, {
     missing,
   });
 }
 
-function scoreSecurity() {
+function scoreSecurity(layer) {
   const workflow = readText(".github/workflows/quality.yml");
   const semgrepRunner = readText("scripts/run-semgrep.sh");
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const checks = [
     exists("scripts/block-destructive-paths.sh"),
     /security:scan:ci/.test(workflow) && /--error/.test(semgrepRunner),
@@ -383,9 +509,11 @@ function scoreSecurity() {
     exists("package-lock.json") && /npm ci/.test(workflow),
     Boolean(settings?.sandbox?.credentials),
   ];
-  const privateLeak = /(?:\/Users\/brett|Projects\/internal|brettstark)/i.test(
-    [readText("README.md"), readText("config/settings.json")].join("\n"),
-  );
+  const privateLeak =
+    layer === "public_kit" &&
+    /(?:\/Users\/brett|Projects\/internal|brettstark)/i.test(
+      [readText("README.md"), readText("config/settings.json")].join("\n"),
+    );
   const passed = checks.filter(Boolean).length;
   return result(
     passed * 2 - (privateLeak ? 2 : 0),
@@ -394,6 +522,8 @@ function scoreSecurity() {
 }
 
 function scoreGitWorkflow() {
+  if (LAYER === "installed_composition")
+    return { score: null, gap: null, notApplicable: "not a source checkout" };
   const checks = [
     exists(".husky/pre-commit"),
     exists(".husky/pre-push"),
@@ -412,7 +542,7 @@ function scoreObservability() {
   const corpus = [readText("README.md"), readText("skills/sota/SKILL.md")].join(
     "\n",
   );
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const env = settings?.env || {};
   const hasUsage = corpus.includes("/usage");
   const hasOtel =
@@ -440,7 +570,7 @@ function compareVersions(left, right) {
 }
 
 function scoreCurrency() {
-  const settings = readJSON("config/settings.json");
+  const settings = readJSON(settingsPath());
   const pinned = settings?.requiredMinimumVersion;
   const rubric = readText("skills/sota/SKILL.md");
   const reviewedMatch = rubric.match(/Last reviewed:\s*(\d{4}-\d{2}-\d{2})/);
@@ -480,7 +610,183 @@ function overallScore(scores) {
   );
 }
 
-async function scoreRepository({ schema, schemaError } = {}) {
+function scoreLayer(root, layer, { schema, schemaError, sourceRoots = [] }) {
+  const priorRoot = ROOT;
+  const priorLayer = LAYER;
+  const priorErrors = READ_ERRORS;
+  const priorReadRoots = READ_ROOTS;
+  ROOT = root;
+  LAYER = layer;
+  READ_ERRORS = [];
+  READ_ROOTS = (layer === "public_kit" ? [root] : [root, ...sourceRoots])
+    .filter((file) => fs.existsSync(file))
+    .map((file) => fs.realpathSync(file));
+  try {
+    const categories = {
+      settings_validity: scoreSettingsValidity(schema, schemaError),
+      permission_posture: scorePermissionPosture(),
+      native_first: scoreNativeFirst(),
+      distribution: scoreDistribution(layer),
+      agent_orchestration: scoreAgentOrchestration(),
+      claude_md: scoreClaudeMd(),
+      bounded_autonomy: scoreBoundedAutonomy(),
+      hooks: scoreHooks(),
+      skill_design: scoreSkillDesign(),
+      model_config: scoreModelConfig(),
+      quality_gates: scoreQualityGates(),
+      security: scoreSecurity(layer),
+      git_workflow: scoreGitWorkflow(),
+      observability: scoreObservability(),
+      currency: scoreCurrency(),
+    };
+    const scores = Object.fromEntries(
+      Object.entries(categories).map(([name, value]) => [name, value.score]),
+    );
+    return {
+      label:
+        layer === "public_kit"
+          ? "Public kit"
+          : layer === "private_overlay"
+            ? "Private overlay"
+            : "Installed composition",
+      root,
+      overall: overallScore(scores),
+      scores,
+      topGaps: Object.values(categories)
+        .map((value) => value.gap)
+        .filter(Boolean)
+        .slice(0, 3),
+      categories,
+      assessmentKind: "structural",
+      readErrors: [...new Set(READ_ERRORS)],
+    };
+  } finally {
+    ROOT = priorRoot;
+    LAYER = priorLayer;
+    READ_ERRORS = priorErrors;
+    READ_ROOTS = priorReadRoots;
+  }
+}
+
+function layerRoots(options) {
+  const selections = [
+    ["public_kit", "publicRoot", "SOTA_PUBLIC_ROOT"],
+    ["private_overlay", "overlayRoot", "SOTA_OVERLAY_ROOT"],
+    ["installed_composition", "installedRoot", "SOTA_INSTALLED_ROOT"],
+  ];
+  const roots = {};
+  for (const [layer, option, variable] of selections) {
+    const value = options[option] ?? process.env[variable];
+    const rootSelection =
+      options[option] !== undefined ? "argument" : "environment";
+    if (!value) {
+      roots[layer] = {
+        state: layer === "public_kit" ? "invalid" : "not_assessed",
+        reason: "explicit root not supplied",
+      };
+      continue;
+    }
+    try {
+      const root = fs.realpathSync(value);
+      if (!fs.statSync(root).isDirectory())
+        throw new Error("root is not a directory");
+      if (layer === "installed_composition") {
+        if (!fs.statSync(path.join(root, "settings.json")).isFile())
+          throw new Error("installed settings.json required");
+        for (const surface of ["scripts", "skills", "agents", "commands"]) {
+          const target = path.join(root, surface);
+          if (
+            !fs.lstatSync(target).isSymbolicLink() ||
+            !fs.statSync(target).isDirectory()
+          )
+            throw new Error(`installed linked ${surface} required`);
+        }
+      }
+      roots[layer] = { state: "present", root, rootSelection };
+    } catch (error) {
+      roots[layer] = {
+        state: fs.existsSync(value) ? "invalid" : "missing",
+        reason: error.message,
+        root: path.resolve(value),
+        rootSelection,
+      };
+    }
+  }
+  const present = Object.entries(roots).filter(
+    ([, entry]) => entry.state === "present",
+  );
+  for (let i = 0; i < present.length; i++) {
+    for (let j = i + 1; j < present.length; j++) {
+      const [leftName, left] = present[i],
+        [rightName, right] = present[j];
+      const nested =
+        left.root === right.root ||
+        left.root.startsWith(`${right.root}${path.sep}`) ||
+        right.root.startsWith(`${left.root}${path.sep}`);
+      const expected =
+        leftName === "public_kit" &&
+        rightName === "private_overlay" &&
+        left.root === path.join(right.root, "core");
+      if (nested && !expected) {
+        left.state = right.state = "invalid";
+        left.reason = right.reason =
+          "layer roots overlap or identify the same tree";
+      }
+    }
+  }
+  const installed = roots.installed_composition;
+  const sources = [roots.public_kit, roots.private_overlay]
+    .filter((entry) => entry.state === "present")
+    .map((entry) => entry.root);
+  if (installed.state === "present") {
+    for (const surface of ["scripts", "skills", "agents", "commands"]) {
+      if (
+        !withinRoots(
+          fs.realpathSync(path.join(installed.root, surface)),
+          sources,
+        )
+      ) {
+        installed.state = "invalid";
+        installed.reason = `installed ${surface} link leaves explicitly selected source roots`;
+        break;
+      }
+    }
+  }
+  return roots;
+}
+
+function sourceRevision(root) {
+  const git = (args) =>
+    spawnSync("git", ["-c", "core.fsmonitor=false", "-C", root, ...args], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  const top = git(["rev-parse", "--show-toplevel"]);
+  if (top.status !== 0)
+    return { revision: null, reason: "root is not a Git source checkout" };
+  const checkoutRoot = fs.realpathSync(top.stdout.trim());
+  if (!withinRoots(root, [checkoutRoot]))
+    return {
+      revision: null,
+      reason: "root is outside its Git source checkout",
+    };
+  const status = git(["status", "--porcelain"]);
+  if (status.status !== 0 || status.stdout.trim())
+    return { revision: null, reason: "source status unavailable or dirty" };
+  const head = git(["rev-parse", "HEAD"]);
+  return head.status === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim())
+    ? {
+        revision: head.stdout.trim(),
+        reason: null,
+        checkoutRoot,
+        relativeRoot: path.relative(checkoutRoot, root) || ".",
+      }
+    : { revision: null, reason: "source revision unavailable" };
+}
+
+async function scoreRepository({ schema, schemaError, ...options } = {}) {
+  if (options.format !== undefined && options.format !== "layered-v2")
+    throw new Error("unsupported assessment format");
   let liveSchema = schema;
   let liveSchemaError = schemaError;
   if (!liveSchema && !liveSchemaError) {
@@ -490,49 +796,82 @@ async function scoreRepository({ schema, schemaError } = {}) {
       liveSchemaError = error.message;
     }
   }
-  const categories = {
-    settings_validity: scoreSettingsValidity(liveSchema, liveSchemaError),
-    permission_posture: scorePermissionPosture(),
-    native_first: scoreNativeFirst(),
-    distribution: scoreDistribution(),
-    agent_orchestration: scoreAgentOrchestration(),
-    claude_md: scoreClaudeMd(),
-    bounded_autonomy: scoreBoundedAutonomy(),
-    hooks: scoreHooks(),
-    skill_design: scoreSkillDesign(),
-    model_config: scoreModelConfig(),
-    quality_gates: scoreQualityGates(),
-    security: scoreSecurity(),
-    git_workflow: scoreGitWorkflow(),
-    observability: scoreObservability(),
-    currency: scoreCurrency(),
-  };
-  const scores = Object.fromEntries(
-    Object.entries(categories).map(([name, value]) => [name, value.score]),
-  );
-  const overall = overallScore(scores);
+  if (!options.format) {
+    const root = path.resolve(options.root || process.env.SOTA_ROOT || ROOT);
+    const scored = scoreLayer(root, "public_kit", {
+      schema: liveSchema,
+      schemaError: liveSchemaError,
+    });
+    return {
+      date: new Date().toISOString().split("T")[0],
+      rubricVersion: "3.0",
+      overall: scored.overall,
+      scores: scored.scores,
+      topGaps: scored.topGaps,
+      categories: scored.categories,
+    };
+  }
+  const roots = layerRoots(options);
+  const sourceRoots = [roots.public_kit, roots.private_overlay]
+    .filter((entry) => entry.state === "present")
+    .map((entry) => entry.root);
+  const layers = {};
+  const missingLayers = [];
+  for (const [layer, entry] of Object.entries(roots)) {
+    if (entry.state !== "present") {
+      missingLayers.push(layer);
+      continue;
+    }
+    const scored = scoreLayer(entry.root, layer, {
+      schema: liveSchema,
+      schemaError: liveSchemaError,
+      sourceRoots,
+    });
+    layers[layer] = {
+      ...scored,
+      rootSelection: entry.rootSelection,
+      source: sourceRevision(entry.root),
+    };
+    if (scored.readErrors.length) {
+      entry.state = "invalid";
+      entry.reason = "one or more control surfaces could not be read safely";
+    }
+  }
   return {
+    schemaVersion: 2,
+    assessmentKind: "structural",
+    scorer: sourceRevision(path.resolve(__dirname, "..")),
     date: new Date().toISOString().split("T")[0],
     rubricVersion: "3.0",
-    overall,
-    scores,
-    topGaps: Object.values(categories)
-      .map((value) => value.gap)
-      .filter(Boolean)
-      .slice(0, 3),
-    categories,
+    composite: null,
+    missingLayers,
+    layers,
+    layerStates: roots,
   };
 }
 
 async function main() {
-  const output = await scoreRepository();
+  const args = process.argv.slice(2);
+  if (
+    args.length &&
+    (args.length !== 2 || args[0] !== "--format" || args[1] !== "layered-v2")
+  )
+    throw new Error("usage: sota-score.js [--format layered-v2]");
+  const output = await scoreRepository(args.length ? { format: args[1] } : {});
   process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  if (
+    Object.values(output.layerStates || {}).some((entry) =>
+      ["missing", "invalid"].includes(entry.state),
+    )
+  )
+    process.exitCode = 1;
 }
 
 module.exports = {
   CURRENT_BASELINE,
   compareVersions,
   overallScore,
+  scoreLayer,
   scoreRepository,
   scoreSettingsValidity,
 };
