@@ -109,19 +109,34 @@ and `review`. Create a request:
 }
 ```
 
-Resolve without launching:
+For a schema-v2 write phase, create the signed Builder Dispatch receipt before
+launching. The external state directory keeps its campaign and key material out
+of the target repository. It reserves from one 900-second campaign budget and
+binds the plan to the exact prompt and clean target revision:
 
 ```bash
-node ~/.claude/scripts/compute-governor.js resolve-phase-execution \
-  phase-request.json prompt.md /path/to/clean/worktree
+BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-dispatch"
+node ~/.claude/scripts/builder-dispatch.js create \
+  --receipt /tmp/builder-receipt.json \
+  --request phase-request.json \
+  --task-id BUI-793 \
+  --prompt-file prompt.md \
+  --target-dir /path/to/clean/worktree \
+  --state-dir "$BUILDER_STATE_DIR"
 ```
+
+`--task-id` is the stable work-item or approved-plan reference selected before
+dispatch, never a prompt digest. Reusing it for a corrected or remediation
+prompt preserves the same 900-second campaign budget. A different task ID
+starts a different task, not a retry of the old one.
 
 Launch:
 
 ```bash
 bash ~/.claude/scripts/provider-run.sh \
   --prompt-file prompt.md \
-  --phase-request phase-request.json \
+  --builder-receipt /tmp/builder-receipt.json \
+  --builder-state-dir "$BUILDER_STATE_DIR" \
   --caller interactive-ralph \
   --provider codex \
   --fallback none \
@@ -153,6 +168,12 @@ passes a minimal environment, and binds the execution-profile digest into the
 plan and receipt. This is a target mutation-integrity boundary, not a host
 confidentiality boundary.
 
+Read-only v2 phases may use `--phase-request` directly. Every workspace-write
+v2 phase must use `--builder-receipt`; direct v2 write requests and plans fail
+before provider discovery. The runner settles the signed campaign reservation
+from its exact terminal run record. A failed settlement is fail-closed and
+keeps the reservation rather than giving a later attempt new budget.
+
 Approval is pinned with `-c 'approval_policy="never"'`. Do not pass the
 top-level `-a` option after `codex exec`: that subcommand rejects it before
 starting the worker. Removing the option without the configuration override
@@ -181,9 +202,11 @@ policy, resolver, plan, record, and validation behavior. Legacy `test` remains
 and Ralph/steward workers with no explicit provider stay on v1 until Claude has
 the required v2 OS sandbox. Explicit Codex selection opts those workers into v2.
 
-Every call to `provider-run.sh` must choose one mode: `--phase-request`,
-`--execution-facts`, `--execution-plan`, or a policy-known specialized exemption
-for the quality or strategy panel. Raw unclassified provider launches fail.
+Every call to `provider-run.sh` must choose one mode: `--builder-receipt`,
+`--phase-request`, `--execution-facts`, `--execution-plan`, or a policy-known
+specialized exemption for the quality or strategy panel. Raw unclassified
+provider launches fail. `--execution-facts` and `--execution-plan` remain
+frozen schema-v1 interfaces; a workspace-write schema-v2 plan needs a receipt.
 
 See [ADR-phase-adaptive-worker-routing.md](decisions/ADR-phase-adaptive-worker-routing.md)
 for the reviewed decision and deferred automatic-economy control plane.
