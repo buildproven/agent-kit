@@ -538,6 +538,12 @@ describe("repository merge lease", () => {
     expect(lease.acquire(first.manifestPath, { waitMs: 0 }).token).toBe(
       owner.token,
     );
+    const resumedManifest = invocation.loadManifest(
+      first.manifestPath,
+    ).manifest;
+    const resumedPaths = lease._pathsFor(FIXTURE_REPOSITORY, resumedManifest);
+    expect(resumedManifest.merge.repositoryLease.scope).toBeUndefined();
+    expect(resumedPaths.lease).toBe(resumedPaths.legacyLease);
     expect(lease.verify(first.manifestPath, owner.token)).toMatchObject({
       token: owner.token,
       generation: owner.generation,
