@@ -121,6 +121,7 @@ EOF
     if ! node "$KIT_ROOT/scripts/builder-dispatch.js" create \
       --receipt "$builder_receipt" \
       --request "$phase_request" \
+      --task-id "$invocation" \
       --prompt-file "$prompt" \
       --target-dir "$worktree" \
       --state-dir "$BUILDER_STATE_DIR"; then

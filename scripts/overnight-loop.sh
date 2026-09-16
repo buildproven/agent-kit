@@ -296,6 +296,7 @@ main() {
       if ! node "$SCRIPT_DIR/builder-dispatch.js" create \
         --receipt "$builder_receipt" \
         --request "$execution_facts_file" \
+        --task-id "$current_issue" \
         --prompt-file "$prompt_file" \
         --target-dir "$TARGET_DIR" \
         --state-dir "$BUILDER_STATE_DIR" >> "$iteration_log" 2>&1; then

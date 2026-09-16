@@ -79,6 +79,7 @@ BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-disp
 node "$SCRIPT_DIR/builder-dispatch.js" create \
   --receipt "$EVIDENCE_DIR/builder-receipt.json" \
   --request "$EVIDENCE_DIR/item-phase-request.json" \
+  --task-id "$ITEM_ID" \
   --prompt-file "$EVIDENCE_DIR/item-prompt.md" \
   --target-dir "$TARGET_DIR" \
   --state-dir "$BUILDER_STATE_DIR"

@@ -1,5 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { makeTempDir } from "./helpers/tmp.js";
@@ -54,7 +60,9 @@ function subject() {
   return { target, prompt, request, state, receipt };
 }
 
-function run(subject, command, extra = []) {
+function run(subject, command, extra = [], taskId = "BUI-793") {
+  const taskArgs =
+    command === "create" && taskId !== null ? ["--task-id", taskId] : [];
   return spawnSync(
     "node",
     [
@@ -64,6 +72,7 @@ function run(subject, command, extra = []) {
       subject.receipt,
       "--request",
       subject.request,
+      ...taskArgs,
       "--prompt-file",
       subject.prompt,
       "--target-dir",
@@ -96,6 +105,9 @@ describe("builder dispatch", () => {
       campaign: { budget: { limitSeconds: 900, reservedSeconds: 900 } },
     });
     expect(receipt.signature).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(receipt.payload.campaign).toMatchObject({
+      taskReference: "BUI-793",
+    });
 
     const verified = run(value, "verify");
     expect(verified.status, verified.stderr).toBe(0);
@@ -112,6 +124,14 @@ describe("builder dispatch", () => {
     const verified = run(value, "verify");
     expect(verified.status).toBe(2);
     expect(verified.stderr).toContain("not bound to this prompt and target");
+  });
+
+  it("requires a stable task reference before creating a campaign", () => {
+    const value = subject();
+    const created = run(value, "create", [], null);
+    expect(created.status).toBe(2);
+    expect(created.stderr).toContain("--task-id is required for create");
+    expect(existsSync(value.receipt)).toBe(false);
   });
 
   it("settles an exact terminal attempt and releases only unused shared budget", () => {
@@ -147,26 +167,101 @@ describe("builder dispatch", () => {
     });
   });
 
+  it("keeps a changed remediation prompt in its stable task campaign", () => {
+    const value = subject();
+    expect(run(value, "create").status).toBe(0);
+    const firstReceipt = JSON.parse(readFileSync(value.receipt, "utf8"));
+    const runRecord = path.join(
+      makeTempDir("builder-dispatch-remediation-record-"),
+      "record.json",
+    );
+    const identity = {
+      provider: firstReceipt.payload.plan.provider,
+      model: firstReceipt.payload.plan.model,
+      effort: firstReceipt.payload.plan.effort,
+      executionProfileSha256: firstReceipt.payload.plan.executionProfile.sha256,
+    };
+    writeFileSync(
+      runRecord,
+      JSON.stringify({
+        schemaVersion: 2,
+        plan: firstReceipt.payload.plan,
+        requested: identity,
+        effective: identity,
+        timing: { startedAtEpochMs: 1000, finishedAtEpochMs: 2000 },
+        outcome: { status: "completed", exitCode: 0, category: null },
+        usage: null,
+      }),
+    );
+    expect(run(value, "settle", ["--run-record", runRecord]).status).toBe(0);
+
+    value.receipt = path.join(
+      makeTempDir("builder-dispatch-remediation-receipt-"),
+      "receipt.json",
+    );
+    writeFileSync(
+      value.prompt,
+      "repair the exact finding from the first attempt\n",
+    );
+    const remediated = run(value, "create");
+    expect(remediated.status, remediated.stderr).toBe(0);
+    const remediationReceipt = JSON.parse(readFileSync(value.receipt, "utf8"));
+    expect(remediationReceipt.payload.campaign).toMatchObject({
+      id: firstReceipt.payload.campaign.id,
+      taskReference: "BUI-793",
+      budget: { limitSeconds: 900, reservedSeconds: 899 },
+    });
+    expect(remediationReceipt.payload.attempt.promptSha256).not.toBe(
+      firstReceipt.payload.attempt.promptSha256,
+    );
+  });
+
+  it("rejects a non-write phase before it can reserve a dispatch campaign", () => {
+    const value = subject();
+    writeFileSync(
+      value.request,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(value.request, "utf8")),
+        phase: "verify",
+      }),
+    );
+    const created = run(value, "create");
+    expect(created.status).toBe(2);
+    expect(created.stderr).toContain(
+      "only required for schema-v2 write phases",
+    );
+    expect(existsSync(value.receipt)).toBe(false);
+    expect(
+      readdirSync(path.join(value.state, "campaigns")).filter((entry) =>
+        entry.endsWith(".json"),
+      ),
+    ).toEqual([]);
+  });
+
   it("keeps every known schema-v2 write caller behind builder dispatch", () => {
-    for (const [relative, dispatch, launch] of [
+    for (const [relative, dispatch, task, launch] of [
       [
         "scripts/overnight-loop.sh",
         'builder-dispatch.js" create',
+        '--task-id "$current_issue"',
         '--builder-receipt "$builder_receipt"',
       ],
       [
         "scripts/steward/orchestrate.sh",
         'builder-dispatch.js" create',
+        '--task-id "$invocation"',
         '--builder-receipt "$builder_receipt"',
       ],
       [
         "skills/ralph/reference.md",
         'builder-dispatch.js" create',
+        '--task-id "$ITEM_ID"',
         '--builder-receipt "$EVIDENCE_DIR/builder-receipt.json"',
       ],
     ]) {
       const source = readFileSync(path.join(ROOT, relative), "utf8");
       expect(source, relative).toContain(dispatch);
+      expect(source, relative).toContain(task);
       expect(source, relative).toContain(launch);
     }
   });

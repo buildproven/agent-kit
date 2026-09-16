@@ -119,10 +119,16 @@ BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-disp
 node ~/.claude/scripts/builder-dispatch.js create \
   --receipt /tmp/builder-receipt.json \
   --request phase-request.json \
+  --task-id BUI-793 \
   --prompt-file prompt.md \
   --target-dir /path/to/clean/worktree \
   --state-dir "$BUILDER_STATE_DIR"
 ```
+
+`--task-id` is the stable work-item or approved-plan reference selected before
+dispatch, never a prompt digest. Reusing it for a corrected or remediation
+prompt preserves the same 900-second campaign budget. A different task ID
+starts a different task, not a retry of the old one.
 
 Launch:
 

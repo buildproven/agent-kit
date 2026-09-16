@@ -100,17 +100,22 @@ holdout writes a revocation record immediately; selection then returns to
 standard until a new complete admission is valid.
 
 The public interface is a small builder-dispatch request. Callers provide only
-the prompt, target, fixed caller ID, phase, and an immutable approved-plan
-reference. The reference is a governor- or creator-signed plan receipt whose
-provenance, task binding, immutable digest, and exact worker-prompt digest the
-governor verifies before it derives eligibility from that plan, the exact
-target, deterministic test selection, and trusted verification receipts. The
-supplied prompt must match that signed digest; otherwise dispatch fails before
-route selection. Caller-declared booleans, changed-file counts, and paths can
-retain a safety route or force escalation, but can never down-route work. The
-governor owns identity construction, route selection, durable receipts, caps,
-retry classification, admission, revocation, and the provider invocation.
-Callers do not choose a model or reasoning effort.
+the prompt, target, fixed caller ID, phase, and a stable task reference. The
+task reference is the immutable work-item or approved-plan identity already
+selected by the caller (for example, the Linear item or lifecycle invocation),
+never a prompt digest. The dispatcher hashes it with the repository, caller,
+and phase into the signed campaign receipt. A changed prompt can therefore
+make a new exact attempt but cannot create a fresh budget lineage for the same
+task reference. A new task reference is a new work item; it is not a retry
+mechanism. Production admission will replace this local caller binding with a
+trusted signed plan source. The supplied prompt must match the receipt's exact
+prompt digest; otherwise dispatch fails before route selection.
+
+Caller-declared booleans, changed-file counts, and paths can retain a safety
+route or force escalation, but can never down-route work. The governor owns
+identity construction, route selection, durable receipts, caps, retry
+classification, admission, revocation, and the provider invocation. Callers
+do not choose a model or reasoning effort.
 
 `builder-dispatch` is the only schema-v2 ingress for a write phase. It creates
 the campaign and signed plan receipt before `provider-run.sh` can launch.

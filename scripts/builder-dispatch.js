@@ -25,6 +25,19 @@ const CAMPAIGN_BUDGET_SECONDS = 900;
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_MS = 25;
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
+const REQUIRED_OPTIONS = {
+  create: [
+    "receipt",
+    "prompt-file",
+    "target-dir",
+    "state-dir",
+    "request",
+    "task-id",
+  ],
+  verify: ["receipt", "prompt-file", "target-dir", "state-dir"],
+  reservation: ["receipt", "prompt-file", "target-dir", "state-dir"],
+  settle: ["receipt", "prompt-file", "target-dir", "state-dir", "run-record"],
+};
 
 class DispatchError extends Error {}
 
@@ -54,11 +67,19 @@ function stateDirectory(environment = process.env) {
   return path.join(root, "claude-kit", "builder-dispatch");
 }
 
+function assertRequiredOptions(command, options) {
+  for (const key of REQUIRED_OPTIONS[command]) {
+    if (!options[key]) {
+      throw new DispatchError(`--${key} is required for ${command}`);
+    }
+  }
+}
+
 function parseArguments(argv) {
   const [command, ...rest] = argv;
   if (!["create", "verify", "reservation", "settle"].includes(command)) {
     throw new DispatchError(
-      "usage: builder-dispatch.js create|verify|reservation|settle --receipt file --prompt-file file --target-dir dir --state-dir dir [--request file] [--run-record file]",
+      "usage: builder-dispatch.js create|verify|reservation|settle --receipt file --prompt-file file --target-dir dir --state-dir dir [--request file --task-id id] [--run-record file]",
     );
   }
   const options = {};
@@ -76,6 +97,7 @@ function parseArguments(argv) {
         "target-dir",
         "state-dir",
         "run-record",
+        "task-id",
       ].includes(key)
     ) {
       throw new DispatchError(`unknown argument: ${token}`);
@@ -88,16 +110,20 @@ function parseArguments(argv) {
     options[key] = value;
     index += 1;
   }
-  for (const key of ["receipt", "prompt-file", "target-dir", "state-dir"]) {
-    if (!options[key]) throw new DispatchError(`--${key} is required`);
-  }
-  if (command === "create" && !options.request) {
-    throw new DispatchError("--request is required for create");
-  }
-  if (command === "settle" && !options["run-record"]) {
-    throw new DispatchError("--run-record is required for settle");
-  }
+  assertRequiredOptions(command, options);
   return { command, options };
+}
+
+function taskReference(value) {
+  if (
+    typeof value !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,191}$/.test(value)
+  ) {
+    throw new DispatchError(
+      "--task-id must be a stable, non-prompt task or approved-plan reference",
+    );
+  }
+  return value;
 }
 
 function assertRegularFile(file, label) {
@@ -356,7 +382,8 @@ function validCampaignIdentity(campaign) {
       "kind",
       "id",
       "repositoryIdentity",
-      "taskIntentSha256",
+      "taskReference",
+      "taskReferenceSha256",
       "caller",
       "phase",
       "policyVersion",
@@ -365,11 +392,13 @@ function validCampaignIdentity(campaign) {
       "budget",
       "attempts",
     ]) &&
-    campaign.schemaVersion === 1 &&
-    campaign.kind === "builder-dispatch-campaign/v1" &&
+    campaign.schemaVersion === 2 &&
+    campaign.kind === "builder-dispatch-campaign/v2" &&
     /^[a-f0-9]{64}$/.test(campaign.id) &&
     /^[a-f0-9]{64}$/.test(campaign.repositoryIdentity) &&
-    /^[a-f0-9]{64}$/.test(campaign.taskIntentSha256) &&
+    typeof campaign.taskReference === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,191}$/.test(campaign.taskReference) &&
+    /^[a-f0-9]{64}$/.test(campaign.taskReferenceSha256) &&
     /^[a-f0-9]{64}$/.test(campaign.policySha256) &&
     typeof campaign.caller === "string" &&
     typeof campaign.phase === "string" &&
@@ -477,15 +506,26 @@ function create(input) {
       "builder dispatch is only required for schema-v2 write phases",
     );
   }
-  const intent = plan.executionBinding.promptSha256;
+  const promptSha256 = plan.executionBinding.promptSha256;
+  const reference = taskReference(input.taskId);
   const policySha256 = policyDigest();
   const repository = repositoryIdentity(target);
-  const campaignId = sha256(
+  const taskReferenceSha256 = sha256(
     canonicalString({
       schemaVersion: 1,
-      kind: "builder-dispatch-campaign/v1",
+      kind: "builder-dispatch-task/v1",
       repository,
-      taskIntentSha256: intent,
+      caller: plan.caller,
+      phase: plan.phase,
+      reference,
+    }),
+  );
+  const campaignId = sha256(
+    canonicalString({
+      schemaVersion: 2,
+      kind: "builder-dispatch-campaign/v2",
+      repository,
+      taskReferenceSha256,
       caller: plan.caller,
       phase: plan.phase,
       policyVersion: plan.policyVersion,
@@ -506,11 +546,12 @@ function create(input) {
     let campaign = readCampaign(layout, campaignId);
     if (!campaign) {
       campaign = {
-        schemaVersion: 1,
-        kind: "builder-dispatch-campaign/v1",
+        schemaVersion: 2,
+        kind: "builder-dispatch-campaign/v2",
         id: campaignId,
         repositoryIdentity: repository,
-        taskIntentSha256: intent,
+        taskReference: reference,
+        taskReferenceSha256,
         caller: plan.caller,
         phase: plan.phase,
         policyVersion: plan.policyVersion,
@@ -564,7 +605,8 @@ function create(input) {
       campaign: {
         id: campaign.id,
         repositoryIdentity: campaign.repositoryIdentity,
-        taskIntentSha256: campaign.taskIntentSha256,
+        taskReference: campaign.taskReference,
+        taskReferenceSha256: campaign.taskReferenceSha256,
         policyVersion: campaign.policyVersion,
         policySha256: campaign.policySha256,
         budget: {
@@ -576,7 +618,7 @@ function create(input) {
         id: attemptId,
         campaignId,
         targetHead: plan.executionBinding.targetHead,
-        promptSha256: intent,
+        promptSha256,
         planSha256,
         reservedSeconds,
       },
@@ -590,7 +632,7 @@ function create(input) {
       status: "reserved",
       targetHead: plan.executionBinding.targetHead,
       planSha256,
-      promptSha256: intent,
+      promptSha256,
       reservedSeconds,
       receipt: envelope,
     };
@@ -611,7 +653,8 @@ function assertReceiptMatchesLedger(
     !attempt ||
     payload.attempt.campaignId !== campaign.id ||
     payload.campaign.repositoryIdentity !== campaign.repositoryIdentity ||
-    payload.campaign.taskIntentSha256 !== campaign.taskIntentSha256 ||
+    payload.campaign.taskReference !== campaign.taskReference ||
+    payload.campaign.taskReferenceSha256 !== campaign.taskReferenceSha256 ||
     payload.campaign.policyVersion !== campaign.policyVersion ||
     payload.campaign.policySha256 !== campaign.policySha256 ||
     attempt.targetHead !== payload.attempt.targetHead ||
@@ -738,6 +781,7 @@ function main(argv) {
     targetDir: options["target-dir"],
     stateDir: options["state-dir"] || stateDirectory(),
     runRecord: options["run-record"],
+    taskId: options["task-id"],
   };
   const result =
     command === "create"

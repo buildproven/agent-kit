@@ -2649,6 +2649,8 @@ describe("provider-native platform", () => {
         receipt,
         "--request",
         request,
+        "--task-id",
+        "BUI-793",
         "--prompt-file",
         prompt,
         "--target-dir",
