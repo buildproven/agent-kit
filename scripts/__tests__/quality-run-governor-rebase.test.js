@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -30,6 +30,7 @@ function rebasedRepo() {
   const startSha = git(root, ["rev-parse", "HEAD"]);
   writeFileSync(path.join(root, "work.txt"), "work more\n");
   git(root, ["commit", "-qam", "fix commit"]);
+  const beforeRebase = git(root, ["rev-parse", "HEAD"]);
 
   // main advances, then the feature branch is replayed onto it. startSha is
   // now orphaned even though its content survives at a new SHA.
@@ -41,10 +42,80 @@ function rebasedRepo() {
   git(root, ["rebase", "-q", "main"]);
 
   const carriedStart = git(root, ["rev-parse", "HEAD~1"]);
-  return { root, startSha, carriedStart };
+  return { root, startSha, carriedStart, beforeRebase };
 }
 
 describe("governor commit resolution across a rebase", () => {
+  it("retains a repair made before the first rebase", () => {
+    const { root, startSha, beforeRebase } = rebasedRepo();
+    const carries = [
+      { reviewedHead: beforeRebase, head: git(root, ["rev-parse", "HEAD"]) },
+    ];
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: carries,
+      }),
+    ).toBe(1);
+  });
+
+  it("counts repairs before, between and after two rebases through the CLI", () => {
+    const { root, startSha, beforeRebase } = rebasedRepo();
+    const carries = [
+      { reviewedHead: beforeRebase, head: git(root, ["rev-parse", "HEAD"]) },
+    ];
+    writeFileSync(path.join(root, "work.txt"), "second repair\n");
+    git(root, ["commit", "-qam", "second repair"]);
+    const secondSource = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(path.join(root, "other.txt"), "upstream again\n");
+    git(root, ["commit", "-qam", "unrelated upstream"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["rebase", "-q", "main"]);
+    carries.push({
+      reviewedHead: secondSource,
+      head: git(root, ["rev-parse", "HEAD"]),
+    });
+    writeFileSync(path.join(root, "work.txt"), "third repair\n");
+    git(root, ["commit", "-qam", "third repair"]);
+    const statePath = path.join(root, "governor.json");
+    const state = {
+      start_epoch: Math.floor(Date.now() / 1000),
+      max_wall_seconds: 3600,
+      max_fix_commits: 4,
+      max_review_rounds: 2,
+      rounds_used: 2,
+      start_commit_sha: startSha,
+      review_rebase_carries: carries,
+    };
+    const run = () =>
+      spawnSync(
+        process.execPath,
+        [
+          path.resolve(__dirname, "../quality-run-governor.js"),
+          "check",
+          statePath,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: { ...process.env, QUALITY_CWD: root },
+        },
+      );
+    writeFileSync(statePath, JSON.stringify(state));
+    const allowed = run();
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(JSON.parse(allowed.stdout).commitsUsed).toBe(3);
+    writeFileSync(statePath, JSON.stringify({ ...state, max_fix_commits: 3 }));
+    const blocked = run();
+    expect(blocked.status).toBe(1);
+    expect(JSON.parse(blocked.stdout)).toMatchObject({
+      commitsUsed: 3,
+      commitTripped: true,
+      configInvalid: false,
+    });
+  });
+
   it("resolves the baseline through a proven carry chain", () => {
     const { root, startSha, carriedStart } = rebasedRepo();
 
@@ -103,6 +174,68 @@ describe("governor commit resolution across a rebase", () => {
     ).toBeNull();
   });
 
+  it("fails closed on duplicate exact carry sources instead of picking the first", () => {
+    const { root, startSha, carriedStart } = rebasedRepo();
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: [
+          { reviewedHead: startSha, head: carriedStart },
+          { reviewedHead: startSha, head: git(root, ["rev-parse", "HEAD"]) },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it("fails closed when more than one descendant source is eligible", () => {
+    const { root, startSha, beforeRebase, carriedStart } = rebasedRepo();
+    git(root, ["switch", "-q", "-c", "old-extra", beforeRebase]);
+    writeFileSync(path.join(root, "work.txt"), "old extra repair\n");
+    git(root, ["commit", "-qam", "old extra repair"]);
+    const anotherSource = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "feature"]);
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: [
+          { reviewedHead: beforeRebase, head: carriedStart },
+          {
+            reviewedHead: anotherSource,
+            head: git(root, ["rev-parse", "HEAD"]),
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it("does not let an exact carry hide a descendant repair carry", () => {
+    const { root, startSha, beforeRebase, carriedStart } = rebasedRepo();
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: [
+          { reviewedHead: beforeRebase, head: carriedStart },
+          { reviewedHead: startSha, head: git(root, ["rev-parse", "HEAD"]) },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses a recovery interval that merges unrelated upstream history", () => {
+    const { root, startSha, beforeRebase } = rebasedRepo();
+    const target = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "-c", "old-merged", beforeRebase]);
+    git(root, ["merge", "-q", "--no-ff", "-m", "merge upstream", "main"]);
+    const mergedSource = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "feature"]);
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: [{ reviewedHead: mergedSource, head: target }],
+      }),
+    ).toBeNull();
+  });
+
   it("fails closed on a cyclic carry chain", () => {
     // A cycle must not become a way to relocate the baseline indefinitely.
     const { root, startSha, carriedStart } = rebasedRepo();
@@ -114,6 +247,21 @@ describe("governor commit resolution across a rebase", () => {
           { reviewedHead: startSha, head: carriedStart },
           { reviewedHead: carriedStart, head: startSha },
         ],
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses a merge in the final carried target to HEAD interval", () => {
+    const { root, startSha, carriedStart } = rebasedRepo();
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(path.join(root, "other.txt"), "more upstream\n");
+    git(root, ["commit", "-qam", "upstream"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["merge", "-q", "--no-ff", "-m", "merge upstream", "main"]);
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: [{ reviewedHead: startSha, head: carriedStart }],
       }),
     ).toBeNull();
   });
@@ -146,5 +294,13 @@ describe("governor commit resolution across a rebase", () => {
     git(root, ["commit", "-qm", "one fix"]);
 
     expect(resolveCommitCount(root, { start_commit_sha: startSha })).toBe(1);
+    expect(
+      resolveCommitCount(root, {
+        start_commit_sha: startSha,
+        review_rebase_carries: [
+          { reviewedHead: startSha, head: "not-a-commit" },
+        ],
+      }),
+    ).toBe(1);
   });
 });
