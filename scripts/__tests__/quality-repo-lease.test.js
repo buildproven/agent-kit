@@ -301,6 +301,38 @@ function fixture(name, overrides = {}) {
 }
 
 describe("repository merge lease", () => {
+  it("keeps an exact active legacy credential in its repository namespace", () => {
+    const f = fixture("legacy-path-selection");
+    const { manifest } = invocation.loadManifest(f.manifestPath);
+    const token = "a".repeat(64);
+    const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+    fs.mkdirSync(paths.legacyLease, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(paths.legacyLease, "owner.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: FIXTURE_REPOSITORY,
+        invocationId: manifest.invocationId,
+        manifestPath: f.manifestPath,
+        gitCommonDir: manifest.repo.gitCommonDir,
+        pr: manifest.repo.pr,
+        headRef: manifest.repo.headRefName,
+        disposition: "active",
+        generation: 1,
+        token,
+      }),
+    );
+    invocation.withManifestLockRaw(f.manifestPath, (locked) => {
+      locked.merge.repositoryLease = {
+        repository: FIXTURE_REPOSITORY,
+        generation: 1,
+        token,
+      };
+    });
+    const resumed = invocation.loadManifest(f.manifestPath).manifest;
+    expect(lease._pathsFor(FIXTURE_REPOSITORY, resumed).scope).toBeNull();
+  });
+
   it.each(["missing", "version", "scope", "repository"])(
     "refuses active scoped writers after protocol marker becomes %s",
     (change) => {
@@ -549,6 +581,7 @@ describe("repository merge lease", () => {
     ).manifest;
     const resumedPaths = lease._pathsFor(FIXTURE_REPOSITORY, resumedManifest);
     expect(resumedManifest.merge.repositoryLease.scope).toBeUndefined();
+    expect(resumedPaths.scope).toBeNull();
     expect(resumedPaths.lease).toBe(resumedPaths.legacyLease);
     expect(lease.verify(first.manifestPath, owner.token)).toMatchObject({
       token: owner.token,
