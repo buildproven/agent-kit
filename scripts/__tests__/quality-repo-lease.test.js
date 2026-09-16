@@ -11,7 +11,34 @@ const FIXTURE_REPOSITORY = `vitest/${"a".repeat(16)}`;
 let sandbox;
 let originalTmpdir;
 let originalTelemetryFile;
+let originalTerminalEpoch;
 const stateRoots = [];
+let legacyRuntime;
+let legacyLease;
+
+function priorRuntime() {
+  if (legacyLease) return legacyLease;
+  const source = path.resolve(__dirname, "../..");
+  legacyRuntime = path.join(sandbox, "legacy-runtime");
+  // Frozen protected schema-v1 implementation; CI fetches full history.
+  git(source, [
+    "worktree",
+    "add",
+    "--detach",
+    "-q",
+    legacyRuntime,
+    "3f091855bc34571066eefd7f233dc0ca08629c54",
+  ]);
+  fs.symlinkSync(
+    path.join(source, "node_modules"),
+    path.join(legacyRuntime, "node_modules"),
+    "dir",
+  );
+  legacyLease = require(
+    path.join(legacyRuntime, "scripts/quality-repo-lease.js"),
+  );
+  return legacyLease;
+}
 
 function git(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -151,6 +178,8 @@ function attachRefCasCapability(
 beforeAll(() => {
   originalTmpdir = process.env.TMPDIR;
   originalTelemetryFile = process.env.BS_QUALITY_TELEMETRY_FILE;
+  originalTerminalEpoch = process.env.BS_QUALITY_TERMINAL_EPOCH;
+  delete process.env.BS_QUALITY_TERMINAL_EPOCH;
   sandbox = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "quality-repo-lease-test-")),
   );
@@ -162,6 +191,13 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (legacyRuntime)
+    git(path.resolve(__dirname, "../.."), [
+      "worktree",
+      "remove",
+      "--force",
+      legacyRuntime,
+    ]);
   for (const stateRoot of stateRoots) {
     fs.rmSync(stateRoot, { recursive: true, force: true });
   }
@@ -171,6 +207,9 @@ afterAll(() => {
   if (originalTelemetryFile === undefined)
     delete process.env.BS_QUALITY_TELEMETRY_FILE;
   else process.env.BS_QUALITY_TELEMETRY_FILE = originalTelemetryFile;
+  if (originalTerminalEpoch === undefined)
+    delete process.env.BS_QUALITY_TERMINAL_EPOCH;
+  else process.env.BS_QUALITY_TERMINAL_EPOCH = originalTerminalEpoch;
 });
 
 function fixture(name, overrides = {}) {
@@ -208,7 +247,7 @@ function fixture(name, overrides = {}) {
     sandbox,
     "bs-quality",
     repoKey,
-    "pr-7",
+    `pr-${overrides.pr || 7}`,
     head,
     invocationId,
   );
@@ -228,7 +267,7 @@ function fixture(name, overrides = {}) {
           realpath: root,
           gitCommonDir,
           key: repoKey,
-          pr: 7,
+          pr: overrides.pr || 7,
           origin: "git@github.com:buildproven/fixture.git",
           githubRepository,
           headRepository: githubRepository,
@@ -262,6 +301,528 @@ function fixture(name, overrides = {}) {
 }
 
 describe("repository merge lease", () => {
+  it("loads the lease implementation from this runtime", () => {
+    expect(fs.realpathSync(require.resolve("../quality-repo-lease"))).toBe(
+      fs.realpathSync(LEASE_CLI),
+    );
+  });
+
+  it("keeps an exact active legacy credential in its repository namespace", () => {
+    const f = fixture("legacy-path-selection");
+    const { manifest } = invocation.loadManifest(f.manifestPath);
+    const token = "a".repeat(64);
+    const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+    fs.mkdirSync(paths.legacyLease, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(paths.legacyLease, "owner.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: FIXTURE_REPOSITORY,
+        invocationId: manifest.invocationId,
+        manifestPath: f.manifestPath,
+        gitCommonDir: manifest.repo.gitCommonDir,
+        pr: manifest.repo.pr,
+        headRef: manifest.repo.headRefName,
+        disposition: "active",
+        generation: 1,
+        token,
+      }),
+    );
+    invocation.withManifestLockRaw(f.manifestPath, (locked) => {
+      locked.merge.repositoryLease = {
+        repository: FIXTURE_REPOSITORY,
+        generation: 1,
+        token,
+      };
+    });
+    const resumed = invocation.loadManifest(f.manifestPath).manifest;
+    expect(lease._pathsFor(FIXTURE_REPOSITORY, resumed).scope).toBeNull();
+  });
+
+  it.each(["missing", "version", "scope", "repository"])(
+    "refuses active scoped writers after protocol marker becomes %s",
+    (change) => {
+      const f = fixture(`marker-${change}`);
+      const owner = lease.acquire(f.manifestPath);
+      const successor = fixture(`marker-${change}-successor`, {
+        linkedFrom: f,
+        repoKey: f.repoKey,
+      });
+      const manifest = invocation.loadManifest(f.manifestPath).manifest;
+      const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+      const recordFile = path.join(paths.lease, "owner.json");
+      const record = JSON.parse(fs.readFileSync(recordFile, "utf8"));
+      record.renewedAt = new Date(
+        Date.now() - lease.STALE_MS - 1000,
+      ).toISOString();
+      fs.writeFileSync(recordFile, JSON.stringify(record));
+      const markerFile = path.join(paths.legacyLease, "owner.json");
+      const original = fs.readFileSync(markerFile, "utf8");
+      const marker = JSON.parse(original);
+      if (change === "missing")
+        fs.renameSync(paths.legacyLease, `${paths.legacyLease}.saved`);
+      else {
+        if (change === "version") marker.schemaVersion = 999;
+        if (change === "scope") marker.scope = "unknown";
+        if (change === "repository") marker.repository = "other/repository";
+        fs.writeFileSync(markerFile, JSON.stringify(marker));
+      }
+      const before = fs.readFileSync(f.manifestPath, "utf8");
+      try {
+        expect(() => lease.verify(f.manifestPath, owner.token)).toThrow(
+          /ownership protocol/,
+        );
+        expect(() =>
+          lease.recover(successor.manifestPath, owner.token),
+        ).toThrow(/ownership protocol/);
+        expect(() =>
+          lease.withManifestMutation(f.manifestPath, owner.token, () => {
+            throw new Error("writer must not run");
+          }),
+        ).toThrow(/ownership protocol/);
+        expect(fs.readFileSync(f.manifestPath, "utf8")).toBe(before);
+      } finally {
+        if (change === "missing")
+          fs.renameSync(`${paths.legacyLease}.saved`, paths.legacyLease);
+        else fs.writeFileSync(markerFile, original);
+        const current = JSON.parse(fs.readFileSync(recordFile, "utf8"));
+        lease.release(current.manifestPath, current.token, "test-complete");
+      }
+    },
+  );
+
+  it("refuses stale-token recovery of a released owner", () => {
+    const f = fixture("released-recovery");
+    const owner = lease.acquire(f.manifestPath);
+    lease.release(f.manifestPath, owner.token, "test-complete");
+    const manifest = invocation.loadManifest(f.manifestPath).manifest;
+    const ownerFile = path.join(
+      lease._pathsFor(FIXTURE_REPOSITORY, manifest).lease,
+      "owner.json",
+    );
+    const record = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
+    record.renewedAt = new Date(
+      Date.now() - lease.STALE_MS - 1000,
+    ).toISOString();
+    fs.writeFileSync(ownerFile, JSON.stringify(record));
+    const before = fs.readFileSync(f.manifestPath, "utf8");
+    expect(() => lease.recover(f.manifestPath, owner.token)).toThrow(
+      /released.*acquire/,
+    );
+    expect(fs.readFileSync(f.manifestPath, "utf8")).toBe(before);
+    expect(lease.status(f.manifestPath).state).toBe("released");
+    const next = lease.acquire(f.manifestPath);
+    expect(next.generation).toBe(owner.generation + 1);
+    lease.release(f.manifestPath, next.token, "test-complete");
+  });
+
+  it.each(["before-marker", "after-marker"])(
+    "recovers an interrupted protocol activation at %s without admitting legacy mutation",
+    (point) => {
+      const f = fixture(`activation-${point}`);
+      const manifest = invocation.loadManifest(f.manifestPath).manifest;
+      const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+      const before = fs.readFileSync(f.manifestPath, "utf8");
+      const method = point === "before-marker" ? "renameSync" : "mkdirSync";
+      const original = fs[method];
+      const spy = vi.spyOn(fs, method).mockImplementation((...args) => {
+        const target = point === "before-marker" ? args[1] : args[0];
+        if (
+          target ===
+          (point === "before-marker" ? paths.legacyLease : paths.lease)
+        )
+          throw new Error("injected activation interruption");
+        return original(...args);
+      });
+      try {
+        expect(() => lease.acquire(f.manifestPath, { waitMs: 0 })).toThrow(
+          /injected activation interruption/,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      expect(fs.readFileSync(f.manifestPath, "utf8")).toBe(before);
+      expect(fs.existsSync(paths.lease)).toBe(false);
+      const old = priorRuntime();
+      if (point === "after-marker")
+        expect(() => old.acquire(f.manifestPath, { waitMs: 0 })).toThrow(
+          /unsupported repository lease schema/,
+        );
+      else {
+        const legacy = fixture("interposed-legacy", {
+          linkedFrom: f,
+          repoKey: f.repoKey,
+          pr: 8,
+        });
+        const owner = old.acquire(legacy.manifestPath, { waitMs: 0 });
+        expect(() => lease.acquire(f.manifestPath, { waitMs: 0 })).toThrow(
+          /legacy repository ownership must drain/,
+        );
+        old.release(legacy.manifestPath, owner.token, "test-complete");
+      }
+      const recovered = lease.acquire(f.manifestPath, { waitMs: 0 });
+      expect(lease.verify(f.manifestPath, recovered.token).scope).toBe(
+        "pull-request-v2",
+      );
+      lease.release(f.manifestPath, recovered.token, "test-complete");
+    },
+  );
+
+  it.each(["callback", "gate-run"])(
+    "allows two fenced %s executions to overlap across PRs",
+    async (mode) => {
+      const a = fixture(`overlap-${mode}-a`);
+      const b = fixture(`overlap-${mode}-b`, {
+        linkedFrom: a,
+        repoKey: a.repoKey,
+        pr: 8,
+      });
+      const ownerA = lease.acquire(a.manifestPath, { waitMs: 0 });
+      const ownerB = lease.acquire(b.manifestPath, { waitMs: 0 });
+      const markerA = path.join(sandbox, `overlap-${mode}-a.started`);
+      const markerB = path.join(sandbox, `overlap-${mode}-b.started`);
+      const worker = (f, owner, marker, peer) =>
+        new Promise((resolve) => {
+          const source =
+            'const fs=require("fs"), q=require(process.argv[1]); q.withManifestLock(process.argv[2], m => { fs.writeFileSync(process.argv[3], "started"); const end=Date.now()+2500; while(!fs.existsSync(process.argv[4]) && Date.now()<end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); if(!fs.existsSync(process.argv[4])) throw new Error("peer fenced gate could not enter"); m.risk.score=20; });';
+          let args = [
+            "-e",
+            source,
+            path.resolve(__dirname, "../quality-invocation.js"),
+            f.manifestPath,
+            marker,
+            peer,
+          ];
+          if (mode === "gate-run") {
+            const gateSource =
+              'const fs=require("fs"); fs.writeFileSync(process.argv[1], "started"); const end=Date.now()+2500; while(!fs.existsSync(process.argv[2]) && Date.now()<end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); if(!fs.existsSync(process.argv[2])) throw new Error("peer gate could not enter");';
+            invocation.withManifestLockRaw(f.manifestPath, (m) => {
+              m.revisions.baseRef = m.revisions.baseSha;
+              m.requiredGatesPolicyVersion = 3;
+              m.governor = {
+                executionBudgetVersion: 1,
+                gateSecondsLimit: 30,
+                gateSecondsUsed: 0,
+                providerSecondsLimit: 30,
+                providerSecondsUsed: 0,
+                activeSecondsLimit: 60,
+                activeSecondsUsed: 0,
+                activeExecution: null,
+                lifecycleTTLSeconds: 3600,
+                lastActivityAt: new Date().toISOString(),
+              };
+              m.requiredGates = [
+                {
+                  name: "lint",
+                  source: "fixture:overlap",
+                  command: "fixture overlap lint",
+                  executable: process.execPath,
+                  args: ["-e", gateSource, marker, peer],
+                },
+              ];
+            });
+            args = [
+              path.resolve(__dirname, "../quality-invocation.js"),
+              "gate-run",
+              f.manifestPath,
+              "--name",
+              "lint",
+            ];
+          }
+          const child = spawn(process.execPath, args, {
+            env: {
+              ...process.env,
+              BS_QUALITY_REPOSITORY_LEASE_TOKEN: owner.token,
+            },
+            stdio: ["ignore", "ignore", "pipe"],
+            timeout: 8000,
+          });
+          let stderr = "";
+          child.stderr.on("data", (data) => {
+            stderr += data;
+          });
+          child.on("close", (code) => resolve({ code, stderr }));
+        });
+      const results = await Promise.all([
+        worker(a, ownerA, markerA, markerB),
+        worker(b, ownerB, markerB, markerA),
+      ]);
+      expect(
+        results.map((result) => result.code),
+        JSON.stringify(results),
+      ).toEqual([0, 0]);
+      if (mode === "gate-run") {
+        for (const f of [a, b]) {
+          const m = invocation.loadManifest(f.manifestPath).manifest;
+          expect(m.gates).toHaveLength(1);
+          expect(m.gates[0]).toMatchObject({
+            status: "success",
+            head: m.revisions.currentHead,
+          });
+          expect(m.governor.activeExecution).toBeNull();
+          expect(m.governor.gateSecondsUsed).toBeGreaterThan(0);
+        }
+      }
+      lease.release(a.manifestPath, ownerA.token, "test-complete");
+      lease.release(b.manifestPath, ownerB.token, "test-complete");
+    },
+    12000,
+  );
+
+  it("drains a real legacy owner before activating scoped ownership without losing history", () => {
+    const old = priorRuntime();
+    const first = fixture("legacy-first");
+    const second = fixture("legacy-second", {
+      linkedFrom: first,
+      repoKey: first.repoKey,
+      pr: 8,
+    });
+    const owner = old.acquire(first.manifestPath, { waitMs: 0 });
+    const before = invocation.loadManifest(first.manifestPath).manifest;
+    expect(lease.acquire(first.manifestPath, { waitMs: 0 }).token).toBe(
+      owner.token,
+    );
+    const resumedManifest = invocation.loadManifest(
+      first.manifestPath,
+    ).manifest;
+    const resumedPaths = lease._pathsFor(FIXTURE_REPOSITORY, resumedManifest);
+    expect(resumedManifest.merge.repositoryLease.scope).toBeUndefined();
+    expect(resumedPaths.scope).toBeNull();
+    expect(resumedPaths.lease).toBe(resumedPaths.legacyLease);
+    expect(lease.verify(first.manifestPath, owner.token)).toMatchObject({
+      token: owner.token,
+      generation: owner.generation,
+    });
+    let mutationRan = false;
+    lease.withManifestMutation(first.manifestPath, owner.token, () => {
+      mutationRan = true;
+    });
+    expect(mutationRan).toBe(true);
+    expect(() => lease.acquire(second.manifestPath, { waitMs: 0 })).toThrow(
+      /legacy repository ownership must drain/,
+    );
+    lease.release(first.manifestPath, owner.token, "test-complete");
+    const migrated = lease.acquire(first.manifestPath, { waitMs: 0 });
+    const after = invocation.loadManifest(first.manifestPath).manifest;
+    expect(migrated.generation).toBe(owner.generation + 1);
+    expect(after.merge.repositoryLease.scope).toBe("pull-request-v2");
+    expect(after.merge.repositoryLeaseHistory[0].token).toBe(owner.token);
+    expect(after.governor).toEqual(before.governor);
+    expect(after.revisions).toEqual(before.revisions);
+    expect(after.invocationId).toBe(before.invocationId);
+    lease.release(first.manifestPath, migrated.token, "test-complete");
+  });
+
+  it("fences real legacy mutators without changing the scoped owner or merge guard", () => {
+    const old = priorRuntime();
+    const f = fixture("scoped-before-legacy");
+    const owner = lease.acquire(f.manifestPath, { waitMs: 0 });
+    lease.acquireMergeGuard(f.manifestPath, owner.token);
+    const manifest = invocation.loadManifest(f.manifestPath).manifest;
+    const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+    const files = [paths.legacyLease, paths.lease, paths.mergeGuard].map(
+      (directory) => path.join(directory, "owner.json"),
+    );
+    const before = files.map((file) => fs.readFileSync(file, "utf8"));
+    for (const attempt of [
+      () => old.acquire(f.manifestPath, { waitMs: 0 }),
+      () => old.verify(f.manifestPath, owner.token),
+      () => old.recover(f.manifestPath, owner.token),
+      () => old.release(f.manifestPath, owner.token),
+      () => old.acquireMergeGuard(f.manifestPath, owner.token),
+    ])
+      expect(attempt).toThrow();
+    expect(files.map((file) => fs.readFileSync(file, "utf8"))).toEqual(before);
+    lease.releaseMergeGuard(f.manifestPath, owner.token, "not-started");
+    lease.release(f.manifestPath, owner.token, "test-complete");
+  });
+
+  it("releases and reacquires A without changing B's merge guard", () => {
+    const a = fixture("foreign-guard-a");
+    const b = fixture("foreign-guard-b", {
+      linkedFrom: a,
+      repoKey: a.repoKey,
+      pr: 8,
+    });
+    const ownerA = lease.acquire(a.manifestPath, { waitMs: 0 });
+    const ownerB = lease.acquire(b.manifestPath, { waitMs: 0 });
+    const guard = lease.acquireMergeGuard(b.manifestPath, ownerB.token);
+    const file = path.join(guard, "owner.json");
+    const before = fs.readFileSync(file, "utf8");
+    lease.release(a.manifestPath, ownerA.token, "test-complete");
+    const successor = lease.acquire(a.manifestPath, { waitMs: 0 });
+    expect(successor.generation).toBe(ownerA.generation + 1);
+    expect(() => lease.verify(a.manifestPath, ownerA.token)).toThrow(/stale/);
+    expect(() =>
+      lease.acquireMergeGuard(a.manifestPath, successor.token),
+    ).toThrow();
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    lease.releaseMergeGuard(b.manifestPath, ownerB.token, "not-started");
+    lease.release(a.manifestPath, successor.token, "test-complete");
+    lease.release(b.manifestPath, ownerB.token, "test-complete");
+  });
+
+  it.each(["merged", "unknown"])(
+    "keeps concurrent PR ref writers exclusive through a %s outcome",
+    async (outcome) => {
+      const a = fixture(`concurrent-merge-${outcome}`);
+      const b = fixture(`concurrent-merge-${outcome}-b`, {
+        linkedFrom: a,
+        repoKey: a.repoKey,
+        pr: 8,
+      });
+      git(a.root, ["remote", "set-url", "origin", a.root]);
+      const ownerA = lease.acquire(a.manifestPath);
+      const ownerB = lease.acquire(b.manifestPath);
+      const manifest = invocation.loadManifest(a.manifestPath).manifest;
+      const bin = path.join(a.root, "fixture-bin");
+      fs.mkdirSync(bin);
+      const calls = path.join(bin, "ref-writers");
+      const finish = path.join(bin, "finish");
+      const remote = {
+        state: outcome === "merged" ? "MERGED" : "OPEN",
+        mergedAt: outcome === "merged" ? "2026-09-16T00:00:00Z" : null,
+        mergeCommit:
+          outcome === "merged" ? { oid: manifest.revisions.currentHead } : null,
+        headRefName: manifest.repo.headRefName,
+        headRefOid: manifest.revisions.currentHead,
+        baseRefName: "main",
+      };
+      fs.writeFileSync(
+        path.join(bin, "gh"),
+        `#!${process.execPath}\nconst fs=require('fs'); const args=process.argv.slice(2);
+if(args[0]==='pr' && args[1]==='merge') {
+ fs.appendFileSync(${JSON.stringify(calls)}, args[2]+'\\n');
+ const end=Date.now()+5000; while(!fs.existsSync(${JSON.stringify(finish)})) { if(Date.now()>end) process.exit(3); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); }
+ process.exit(${outcome === "merged" ? 0 : 1});
+}
+if(args[0]==='pr' && args[1]==='view') { process.stdout.write(${JSON.stringify(JSON.stringify(remote))}); process.exit(0); }
+process.exit(4);\n`,
+        { mode: 0o700 },
+      );
+      const worker = (f, owner) =>
+        new Promise((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            [
+              "-e",
+              `const l=require(process.argv[1]); try { l.performMerge(process.argv[2],process.argv[3],{expectedHead:process.argv[4]}); } catch(e) { console.error(e.message); process.exitCode=2; }`,
+              LEASE_CLI,
+              f.manifestPath,
+              owner.token,
+              manifest.revisions.currentHead,
+            ],
+            {
+              env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+              stdio: ["ignore", "ignore", "pipe"],
+              timeout: 8000,
+            },
+          );
+          let stderr = "";
+          child.stderr.on("data", (data) => {
+            stderr += data;
+          });
+          child.on("error", reject);
+          child.on("close", (code) => resolve({ code, stderr }));
+        });
+      const first = worker(a, ownerA);
+      const deadline = Date.now() + 5000;
+      while (!fs.existsSync(calls) && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      const reachedWriter = fs.existsSync(calls);
+      let second;
+      try {
+        second = await worker(b, ownerB);
+      } finally {
+        fs.writeFileSync(finish, "done");
+      }
+      const result = await first;
+      expect(reachedWriter).toBe(true);
+      expect(second.code, second.stderr).toBe(2);
+      expect(second.stderr).toMatch(/metadata is busy/);
+      expect(fs.readFileSync(calls, "utf8")).toBe("7\n");
+      expect(result.code, result.stderr).toBe(outcome === "merged" ? 0 : 2);
+      if (outcome === "unknown") {
+        expect(result.stderr).toMatch(/ambiguous and quarantined/);
+        const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+        const guardFile = path.join(paths.mergeGuard, "owner.json");
+        const before = fs.readFileSync(guardFile, "utf8");
+        expect(() =>
+          lease.acquireMergeGuard(b.manifestPath, ownerB.token),
+        ).toThrow();
+        expect(() => lease.recover(a.manifestPath, ownerA.token)).toThrow(
+          /quarantined/,
+        );
+        lease.release(b.manifestPath, ownerB.token, "test-complete");
+        expect(fs.readFileSync(guardFile, "utf8")).toBe(before);
+      } else {
+        expect(lease.status(a.manifestPath).state).toBe("released");
+        lease.acquireMergeGuard(b.manifestPath, ownerB.token);
+        lease.releaseMergeGuard(b.manifestPath, ownerB.token, "not-started");
+        lease.release(b.manifestPath, ownerB.token, "test-complete");
+      }
+    },
+    15000,
+  );
+
+  it("refuses token-only recreation and symlinked scoped ownership", () => {
+    const f = fixture("missing-scoped-owner");
+    const owner = lease.acquire(f.manifestPath, { waitMs: 0 });
+    const manifest = invocation.loadManifest(f.manifestPath).manifest;
+    const paths = lease._pathsFor(FIXTURE_REPOSITORY, manifest);
+    const held = `${paths.lease}.held`;
+    fs.renameSync(paths.lease, held);
+    expect(() => lease.acquire(f.manifestPath, { waitMs: 0 })).toThrow(
+      /token-only recreation/,
+    );
+    fs.symlinkSync(held, paths.lease, "dir");
+    expect(() => lease.verify(f.manifestPath, owner.token)).toThrow(
+      /non-symlink directory/,
+    );
+    fs.unlinkSync(paths.lease);
+    fs.renameSync(held, paths.lease);
+    lease.release(f.manifestPath, owner.token, "test-complete");
+  });
+
+  it("rolls back only after scoped ownership drains and preserves campaign evidence", () => {
+    const f = fixture("protocol-rollback");
+    const owner = lease.acquire(f.manifestPath, { waitMs: 0 });
+    expect(() => lease.rollbackProtocol(f.manifestPath)).toThrow(/drain/);
+    lease.release(f.manifestPath, owner.token, "test-complete");
+    const before = fs.readFileSync(f.manifestPath, "utf8");
+    expect(lease.rollbackProtocol(f.manifestPath).rolledBack).toBe(true);
+    expect(fs.readFileSync(f.manifestPath, "utf8")).toBe(before);
+    const next = fixture("legacy-after-rollback", {
+      linkedFrom: f,
+      repoKey: f.repoKey,
+      pr: 9,
+    });
+    const old = priorRuntime();
+    const restored = old.acquire(next.manifestPath, { waitMs: 0 });
+    old.release(next.manifestPath, restored.token, "test-complete");
+  });
+
+  it("allows independent PR ownership while preserving separate credentials", () => {
+    const first = fixture("parallel-pr-first");
+    const second = fixture("parallel-pr-second", {
+      linkedFrom: first,
+      repoKey: first.repoKey,
+      pr: 8,
+    });
+    const a = lease.acquire(first.manifestPath, { waitMs: 0 });
+    let b;
+    expect(() => {
+      b = lease.acquire(second.manifestPath, { waitMs: 0 });
+    }).not.toThrow();
+    expect(b.token).not.toBe(a.token);
+    expect(lease.verify(first.manifestPath, a.token).pr).toBe(7);
+    expect(lease.verify(second.manifestPath, b.token).pr).toBe(8);
+    expect(() => lease.verify(second.manifestPath, a.token)).toThrow();
+    lease.release(first.manifestPath, a.token, "test-complete");
+    expect(lease.verify(second.manifestPath, b.token).pr).toBe(8);
+    lease.release(second.manifestPath, b.token, "test-complete");
+  });
+
   it("recovers a ref-CAS block with a signed optional CI condition", () => {
     const { manifestPath } = fixture("refcas-recovery-optional-ci");
     const protectionDigest = "c".repeat(64);
@@ -512,7 +1073,7 @@ printf '%s\\n' '${JSON.stringify({ state: "CLOSED", mergedAt: null })}'
       expect(
         lease.acquire(successor.manifestPath, { waitMs: 0 }),
       ).toMatchObject({
-        generation: 1,
+        generation: 2,
         identity: manifest.repo.githubRepository,
       });
     } finally {
@@ -901,15 +1462,18 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
     lease.release(manifestPath, owner.token, "test-complete");
   });
 
-  it("uses crash-atomic namespace removal on release", () => {
+  it("retains a durable released receipt and refuses stale writers", () => {
     const { manifestPath } = fixture("atomic-release");
     const owner = lease.acquire(manifestPath);
     expect(lease.release(manifestPath, owner.token, "test-complete")).toBe(
       true,
     );
-    expect(lease.status(manifestPath)).toEqual({
+    expect(lease.status(manifestPath)).toMatchObject({
       required: true,
-      state: "missing",
+      state: "released",
+      owned: false,
+      recoveryCommand: null,
+      recoveryOverrideRequired: false,
     });
   });
 
@@ -1011,6 +1575,7 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
       if (crashPoint === "after-manifest") {
         invocation.withManifestLockRaw(manifestPath, (manifest) => {
           manifest.merge.repositoryLease = {
+            ...manifest.merge.repositoryLease,
             repository: FIXTURE_REPOSITORY,
             generation: pending.generation,
             token: nextToken,
@@ -1123,9 +1688,9 @@ printf '%s\\n' '${JSON.stringify({
           ),
         ),
       ).toMatchObject({ reconciled: true, outcome: "merged" });
-      expect(lease.status(manifestPath)).toEqual({
+      expect(lease.status(manifestPath)).toMatchObject({
         required: true,
-        state: "missing",
+        state: "released",
       });
       expect(
         invocation.loadManifest(manifestPath).manifest.terminalState,
@@ -1209,9 +1774,9 @@ printf '%s\n' '${JSON.stringify({
         ),
       ),
     ).toMatchObject({ reconciled: true, outcome: "merged" });
-    expect(lease.status(campaign.manifestPath)).toEqual({
+    expect(lease.status(campaign.manifestPath)).toMatchObject({
       required: true,
-      state: "missing",
+      state: "released",
     });
     expect(
       invocation.loadManifest(campaign.manifestPath).manifest.terminalState,
@@ -1244,7 +1809,7 @@ printf '%s\n' '${JSON.stringify({
       advanceHead: true,
     });
     const successor = lease.acquire(second.manifestPath, { waitMs: 0 });
-    expect(successor.generation).toBe(1);
+    expect(successor.generation).toBe(2);
     expect(
       invocation.loadManifest(first.manifestPath).manifest.terminalState,
     ).toMatchObject({ state: "merged", head: manifest.revisions.currentHead });
@@ -1260,7 +1825,7 @@ printf '%s\n' '${JSON.stringify({
     process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = owner.token;
     try {
       expect(() => invocation.withManifestLock(manifestPath, () => {})).toThrow(
-        /missing or has already been released/,
+        /stale at manifest mutation/,
       );
     } finally {
       if (previous === undefined)
@@ -1430,9 +1995,9 @@ esac
       expect(log).toContain(`"sha":"${head}"`);
       expect(log).toContain('"force":false');
       expect(log).not.toContain("pr merge");
-      expect(lease.status(candidate.manifestPath)).toEqual({
+      expect(lease.status(candidate.manifestPath)).toMatchObject({
         required: true,
-        state: "missing",
+        state: "released",
       });
     } finally {
       process.env.PATH = priorPath;

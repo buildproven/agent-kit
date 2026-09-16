@@ -193,6 +193,8 @@ function create(root, extra = [], env = {}) {
       root,
       "--base-ref",
       "origin/main",
+      // Production merge bootstrap requires an open PR before lease admission.
+      ...(mergeFixture && !extra.includes("--pr") ? ["--pr", "7"] : []),
       ...prIdentity,
       ...extra,
     ],
@@ -3767,14 +3769,12 @@ exec "${realGit}" "$@"
     expect(final.governor.activeExecution).toBeNull();
   });
 
-  it("reserves bounded discovery headroom and verification capacity before another gate", () => {
+  it("reserves verification capacity before another gate", () => {
     const root = repo("shared-active-provider-reserve");
     const manifestPath = create(root, ["--level", "medium"]);
     execFileSync("bash", [RISK, "--manifest", manifestPath], { cwd: root });
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const providerReserve =
-      manifest.risk.runtime.reviewReserveSeconds +
-      manifest.risk.runtime.verificationSeconds;
+    const providerReserve = manifest.risk.runtime.verificationSeconds;
     manifest.governor.activeSecondsUsed =
       manifest.governor.activeSecondsLimit - providerReserve;
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -3795,14 +3795,12 @@ exec "${realGit}" "$@"
     expect(final.governor.activeExecution).toBeNull();
   });
 
-  it("retains the provider reserve after an incomplete review attempt", () => {
+  it("retains the verification reserve after an incomplete review attempt", () => {
     const root = repo("shared-active-incomplete-review-reserve");
     const manifestPath = create(root, ["--level", "medium"]);
     execFileSync("bash", [RISK, "--manifest", manifestPath], { cwd: root });
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const providerReserve =
-      manifest.risk.runtime.reviewReserveSeconds +
-      manifest.risk.runtime.verificationSeconds;
+    const providerReserve = manifest.risk.runtime.verificationSeconds;
     manifest.reviews.push({
       status: "incomplete",
       provider: "review-incomplete",
@@ -3824,7 +3822,7 @@ exec "${realGit}" "$@"
     );
   });
 
-  it("does not confuse a critical provider watchdog with idle gate capacity", () => {
+  it("does not reserve discovery headroom as idle gate capacity", () => {
     const manifest = {
       risk: {
         agentTarget: 2,
@@ -3847,7 +3845,33 @@ exec "${realGit}" "$@"
       },
     };
 
-    expect(invocation.executionRemaining(manifest, "gate")).toBe(626);
+    expect(invocation.executionRemaining(manifest, "gate")).toBe(776);
+  });
+
+  it("BUI-919: lets a high fixed-cost test use discovery headroom", () => {
+    const manifest = {
+      risk: {
+        agentTarget: 1,
+        runtime: {
+          workload: "large",
+          reviewSeconds: 330,
+          reviewReserveSeconds: 210,
+          verificationSeconds: 180,
+        },
+      },
+      reviews: [],
+      revisions: { currentHead: "a".repeat(40) },
+      governor: {
+        activeSecondsLimit: 900,
+        activeSecondsUsed: 6,
+        gateSecondsLimit: 3480,
+        gateSecondsUsed: 6,
+        providerSecondsLimit: 2160,
+        providerSecondsUsed: 0,
+      },
+    };
+
+    expect(invocation.executionRemaining(manifest, "gate")).toBe(714);
   });
 
   it("does not reserve provider capacity for a zero-review campaign", () => {
@@ -4215,9 +4239,10 @@ exit 1
       state: "blocked",
       detail: "prior-failure",
     });
-    expect(lease.status(manifest)).toEqual({
+    expect(lease.status(manifest)).toMatchObject({
       required: true,
-      state: "missing",
+      state: "released",
+      owned: false,
     });
   });
 
