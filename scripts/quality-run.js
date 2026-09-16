@@ -1143,6 +1143,13 @@ async function runManifest(manifestPath, dependencies = {}) {
     pinTerminalEpoch(manifest);
     quality.validateIdentity(manifest, manifest.repo.realpath);
     if (manifest.terminalState) {
+      const mutationRecovery =
+        quality.resumeAcceptedMutationFailure(manifestPath);
+      if (mutationRecovery) {
+        const resumed = manifestAt(manifestPath);
+        pinTerminalEpoch(resumed);
+        return await runOpenCampaign(context, manifestPath, resumed);
+      }
       const mergeReadRecovery = quality.resumeMergeReadFailure(manifestPath);
       if (mergeReadRecovery) {
         context.mergeReadRecoveryGranted = true;

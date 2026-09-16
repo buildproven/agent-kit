@@ -345,111 +345,170 @@ describe("quality-wrapper override command surface", () => {
 });
 
 describe("operator override end-to-end", () => {
-  it("attaches an override to the explicitly selected existing manifest", () => {
-    const root = repo("existing-manifest");
-    const head = git(root, ["rev-parse", "HEAD"]);
-    const base = git(root, ["rev-parse", "origin/main"]);
-    const repository = `vitest/${"a".repeat(16)}`;
-    const bin = githubShimBin(head, base, 20, repository);
-    const manifest = execFileSync(
-      "node",
-      [
-        INVOCATION,
-        "create",
-        "--repo",
-        root,
-        "--base-ref",
-        "origin/main",
-        "--pr",
-        "20",
-        "--github-repo",
-        repository,
-        "--head-ref",
-        "feature",
-        "--head-repository",
-        repository,
-        "--cross-repository",
-        "false",
-        "--merge",
-      ],
-      { cwd: root, encoding: "utf8" },
-    ).trim();
-    const initialManifest = JSON.parse(readFileSync(manifest, "utf8"));
-    writeFileSync(
-      path.resolve(
-        root,
-        git(root, ["rev-parse", "--git-common-dir"]),
-        ".quality-vitest-fixture",
-      ),
-      `${initialManifest.repo.key}\n`,
-    );
-    const lease = require(
-      path.join(ROOT, "scripts", "quality-repo-lease.js"),
-    ).acquire(manifest, { waitMs: 0 });
-    const previousLeaseToken = process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
-    process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = lease.token;
-    try {
-      execFileSync("bash", [RISK, "--manifest", manifest], { cwd: root });
-      for (const gate of ["lint", "test", "security"]) {
-        recordGateFixtureLocal(manifest, gate);
-      }
-      invocation.withManifestLock(manifest, (state) => {
-        state.risk.tier = "high";
-      });
-      invocation.recordTerminalState(
-        manifest,
-        "provider-incomplete",
-        "bounded provider failure",
-      );
-    } finally {
-      if (previousLeaseToken === undefined) {
-        delete process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
-      } else {
-        process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = previousLeaseToken;
-      }
-    }
-    const original = JSON.parse(readFileSync(manifest, "utf8"));
-
-    const result = spawnSync("node", [WRAPPER, BOOTSTRAP], {
-      cwd: root,
-      input: JSON.stringify({
-        argv: [
-          "override",
-          "--manifest",
-          manifest,
+  it.each([
+    "provider",
+    "mutation",
+    "expired",
+    "wrong-head",
+    "tampered",
+    "missing",
+    "active",
+    "unrelated",
+  ])(
+    "attaches an exact override and recovers only accepted mutation (%s)",
+    (scenario) => {
+      const root = repo("existing-manifest");
+      const head = git(root, ["rev-parse", "HEAD"]);
+      const base = git(root, ["rev-parse", "origin/main"]);
+      const repository = `vitest/${"a".repeat(16)}`;
+      const bin = githubShimBin(head, base, 20, repository);
+      const manifest = execFileSync(
+        "node",
+        [
+          INVOCATION,
+          "create",
+          "--repo",
+          root,
+          "--base-ref",
+          "origin/main",
           "--pr",
           "20",
-          "--head",
-          head,
-          "--reason",
-          "the exact campaign exhausted mutation capacity",
-          "--accept",
-          "mutation:missing",
-          // Was --i-understand-security-risk: mutation:missing had no
-          // acknowledgement of its own, so this fixture borrowed an unrelated
-          // flag. It now names the risk the operator is actually accepting
-          // (BUI-914).
-          "--i-understand-missing-mutation",
-          "--i-understand-security-risk",
+          "--github-repo",
+          repository,
+          "--head-ref",
+          "feature",
+          "--head-repository",
+          repository,
+          "--cross-repository",
+          "false",
+          "--merge",
         ],
-      }),
-      encoding: "utf8",
-      env: withoutAmbientGitHubIdentity({
-        BREAK_GLASS_APPROVER: "brett",
-        CLAUDE_SETUP_ROOT: ROOT,
-        PATH: `${bin}:${process.env.PATH}`,
-      }),
-    });
+        { cwd: root, encoding: "utf8" },
+      ).trim();
+      const initialManifest = JSON.parse(readFileSync(manifest, "utf8"));
+      writeFileSync(
+        path.resolve(
+          root,
+          git(root, ["rev-parse", "--git-common-dir"]),
+          ".quality-vitest-fixture",
+        ),
+        `${initialManifest.repo.key}\n`,
+      );
+      const lease = require(
+        path.join(ROOT, "scripts", "quality-repo-lease.js"),
+      ).acquire(manifest, { waitMs: 0 });
+      const previousLeaseToken = process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
+      process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = lease.token;
+      try {
+        execFileSync("bash", [RISK, "--manifest", manifest], { cwd: root });
+        for (const gate of ["lint", "test", "security"]) {
+          recordGateFixtureLocal(manifest, gate);
+        }
+        invocation.withManifestLock(manifest, (state) => {
+          state.risk.tier = "high";
+          state.orchestration = { head, phase: "mutation", status: "running" };
+          state.governor.activeSecondsUsed = 17;
+        });
+        invocation.recordTerminalState(
+          manifest,
+          scenario === "provider" ? "provider-incomplete" : "blocked",
+          scenario === "provider"
+            ? "bounded provider failure"
+            : "mutation failed with exit 1",
+        );
+      } finally {
+        if (previousLeaseToken === undefined) {
+          delete process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
+        } else {
+          process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = previousLeaseToken;
+        }
+      }
+      const original = JSON.parse(readFileSync(manifest, "utf8"));
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(manifestPathFromStdout(result.stdout)).toBe(manifest);
-    const updated = JSON.parse(readFileSync(manifest, "utf8"));
-    expect(updated.invocationId).toBe(original.invocationId);
-    expect(updated.stateRoot).toBe(original.stateRoot);
-    expect(updated.approval.invocationId).toBe(original.invocationId);
-    expect(updated.approval.acceptedConditions).toEqual(["mutation:missing"]);
-    expect(updated.terminalState.state).toBe("provider-incomplete");
-  }, 120_000);
+      const result = spawnSync("node", [WRAPPER, BOOTSTRAP], {
+        cwd: root,
+        input: JSON.stringify({
+          argv: [
+            "override",
+            "--manifest",
+            manifest,
+            "--pr",
+            "20",
+            "--head",
+            head,
+            "--reason",
+            "the exact campaign exhausted mutation capacity",
+            "--accept",
+            "mutation:missing",
+            // Was --i-understand-security-risk: mutation:missing had no
+            // acknowledgement of its own, so this fixture borrowed an unrelated
+            // flag. It now names the risk the operator is actually accepting
+            // (BUI-914).
+            "--i-understand-missing-mutation",
+            "--i-understand-security-risk",
+          ],
+        }),
+        encoding: "utf8",
+        env: withoutAmbientGitHubIdentity({
+          BREAK_GLASS_APPROVER: "brett",
+          CLAUDE_SETUP_ROOT: ROOT,
+          PATH: `${bin}:${process.env.PATH}`,
+        }),
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(manifestPathFromStdout(result.stdout)).toBe(manifest);
+      const updated = JSON.parse(readFileSync(manifest, "utf8"));
+      expect(updated.invocationId).toBe(original.invocationId);
+      expect(updated.stateRoot).toBe(original.stateRoot);
+      expect(updated.approval.invocationId).toBe(original.invocationId);
+      expect(updated.approval.acceptedConditions).toEqual(["mutation:missing"]);
+      expect(updated.terminalState.state).toBe(
+        scenario === "provider" ? "provider-incomplete" : "blocked",
+      );
+      process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = lease.token;
+      try {
+        invocation.withManifestLock(manifest, (state) => {
+          if (scenario === "expired")
+            state.approval.expiresAt = "2000-01-01T00:00:00Z";
+          if (scenario === "wrong-head") state.approval.head = "b".repeat(40);
+          if (scenario === "tampered")
+            writeFileSync(state.approval.artifactPath, "{}");
+          if (scenario === "missing") state.approval = null;
+          if (scenario === "active")
+            state.governor.activeExecution = { kind: "gate", name: "mutation" };
+          if (scenario === "unrelated")
+            state.approval.acceptedConditions = ["gate:lint"];
+        });
+        const recovery = invocation.resumeAcceptedMutationFailure(manifest);
+        if (scenario !== "mutation") {
+          expect(recovery).toBeNull();
+        } else {
+          expect(recovery).toMatchObject({
+            state: "recovering",
+            head,
+            terminalEpoch: 1,
+          });
+          const resumed = invocation.loadManifest(manifest).manifest;
+          expect(resumed.governor.activeSecondsUsed).toBe(17);
+          expect(resumed.terminalHistory).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                state: "blocked",
+                detail: "mutation failed with exit 1",
+              }),
+            ]),
+          );
+          expect(() => invocation.reviewAuthorization(resumed)).toThrow();
+        }
+      } finally {
+        if (previousLeaseToken === undefined)
+          delete process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
+        else process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = previousLeaseToken;
+      }
+    },
+    120_000,
+  );
 
   it("rejects stale exact-head identity without mutating the selected manifest", () => {
     const root = repo("existing-manifest-stale-head");

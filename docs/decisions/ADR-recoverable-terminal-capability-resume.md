@@ -111,7 +111,10 @@ command.
 4. Recovery cannot mutate or waive existing gate/review evidence.
 5. Recovery never resets counters, provider attempts, or active-time budget.
 6. Merged, superseded, interrupted, provider-incomplete, provider-contract,
-   gate-failed, and identity-failed campaigns do not reopen.
+   gate-failed, and identity-failed campaigns do not reopen through this
+   merge-admission transition. BUI-922 adds a separate, narrowly typed
+   [accepted mutation-failure transition](ADR-test-remediation-mutation-recovery.md)
+   that resumes unfinished phases and does not waive review or CI.
 7. The only merge authority remains `quality-stamp-and-merge.sh`.
 8. Telemetry records each terminal state once per terminal epoch. Legacy
    records without an epoch are epoch zero; later recovery outcomes cannot be

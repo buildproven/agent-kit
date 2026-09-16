@@ -1293,6 +1293,86 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     expect(state.mutationCarry.priorHead).toBe(priorHead);
   });
 
+  it("does not replace a weakened prior mutation with another covered source", () => {
+    const { root, manifest } = fixture(
+      "replay-no-substitution",
+      `${"// expensive fixture padding\n".repeat(500)}if (!require('./aaa-expensive').isAllowed('admin')) process.exit(1);\n`,
+      {
+        sourcePath: "aaa-expensive.js",
+        testPath: "aaa-expensive.test.js",
+        testScript: "node aaa-expensive.test.js && node zzz-cheap.test.js",
+        focusedMapping: true,
+        costRanking: true,
+      },
+    );
+    runMutation(root, manifest);
+    const prior = JSON.parse(readFileSync(manifest, "utf8"));
+    expect(
+      JSON.parse(readFileSync(prior.mutation.artifactPath, "utf8"))
+        .mutatedPaths,
+    ).toEqual(["zzz-cheap.js"]);
+    writeFileSync(
+      path.join(root, "zzz-cheap.test.js"),
+      "// assertion removed\n",
+    );
+    git(root, ["add", "zzz-cheap.test.js"]);
+    git(root, ["commit", "-qm", "test: weaken cheap proof"]);
+    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+    const result = runMutationProcess(root, manifest);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(
+      /tests remained green after 1 controlled revert/,
+    );
+  });
+
+  it.each([false, true])(
+    "re-proves test-only remediation (weakened=%s)",
+    (weakened) => {
+      const testPath = "scripts/__tests__/behavior.test.js";
+      const { root, manifest } = fixture(
+        "test-only-repair",
+        "if (!require('../../logic').isAllowed('admin')) process.exit(1);\n",
+        {
+          testPath,
+          testScript: `node ${testPath}`,
+        },
+      );
+      runMutation(root, manifest);
+      const prior = JSON.parse(readFileSync(manifest, "utf8"));
+      writeFileSync(
+        path.join(root, testPath),
+        weakened
+          ? "// Regression: no behavioral assertion remains.\n"
+          : "if (!require('../../logic').isAllowed('admin')) process.exit(1);\nif (require('../../logic').isAllowed('guest')) process.exit(1);\n",
+      );
+      git(root, ["add", testPath]);
+      git(root, ["commit", "-qm", "test: repair behavior coverage"]);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      const result = runMutationProcess(root, manifest);
+      if (weakened) {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/tests remained green/);
+        return;
+      }
+      expect(result.status, result.stderr).toBe(0);
+      const state = JSON.parse(readFileSync(manifest, "utf8"));
+      const artifact = JSON.parse(
+        readFileSync(state.mutation.artifactPath, "utf8"),
+      );
+      expect(artifact).toMatchObject({
+        head: git(root, ["rev-parse", "HEAD"]),
+        candidateBase: prior.revisions.baseSha,
+        reusedArtifactSha256: null,
+        avoidedSeconds: 0,
+        mutatedPaths: ["logic.js"],
+        testFailureObserved: true,
+      });
+      expect(readFileSync(prior.mutation.artifactPath, "utf8")).toContain(
+        prior.revisions.currentHead,
+      );
+    },
+  );
+
   it("excludes protected-base paths from an exact rebase-carry mutation", () => {
     const { root, manifest } = fixture(
       "rebase-live-patch",
