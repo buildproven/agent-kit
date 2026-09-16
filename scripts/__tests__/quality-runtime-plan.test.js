@@ -100,6 +100,16 @@ describe("quality runtime planning", () => {
     expect(plan(100, 500, 100000).campaignSeconds).toBeLessThanOrEqual(3600);
   });
 
+  it("rejects a default high-risk gate ledger above the campaign maximum", () => {
+    expect(() =>
+      planRuntime({
+        riskScore: 62,
+        diffStats: { files: 2, lines: 101, repositoryFiles: 400 },
+        gateCount: 20,
+      }),
+    ).toThrow(/required gate, mutation, and review reserves require/);
+  });
+
   it("reserves every required gate before the mandatory discovery review", () => {
     const plan = planRuntime({
       riskScore: 60,

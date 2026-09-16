@@ -199,15 +199,17 @@ function gateCampaignBudget({
     reviewSeconds +
     ORCHESTRATION_SECONDS;
   if (declaredGateExtraSeconds === 0) {
+    if (minimumCampaignSeconds > MAX_CAMPAIGN_SECONDS) {
+      throw new Error(
+        `required gate, mutation, and review reserves require ${minimumCampaignSeconds}s, above the bounded ${MAX_CAMPAIGN_SECONDS}s campaign maximum`,
+      );
+    }
     return {
       gateReserveSeconds,
-      campaignSeconds: Math.min(
-        MAX_CAMPAIGN_SECONDS,
-        Math.max(
-          band.campaignSeconds,
-          riskFloor.campaignSeconds,
-          minimumCampaignSeconds,
-        ),
+      campaignSeconds: Math.max(
+        band.campaignSeconds,
+        riskFloor.campaignSeconds,
+        minimumCampaignSeconds,
       ),
     };
   }
