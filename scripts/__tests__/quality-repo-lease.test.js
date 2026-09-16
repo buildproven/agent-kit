@@ -538,10 +538,19 @@ describe("repository merge lease", () => {
     expect(lease.acquire(first.manifestPath, { waitMs: 0 }).token).toBe(
       owner.token,
     );
+    expect(lease.verify(first.manifestPath, owner.token)).toMatchObject({
+      token: owner.token,
+      generation: owner.generation,
+    });
+    let mutationRan = false;
+    lease.withManifestMutation(first.manifestPath, owner.token, () => {
+      mutationRan = true;
+    });
+    expect(mutationRan).toBe(true);
     expect(() => lease.acquire(second.manifestPath, { waitMs: 0 })).toThrow(
       /legacy repository ownership must drain/,
     );
-    old.release(first.manifestPath, owner.token, "test-complete");
+    lease.release(first.manifestPath, owner.token, "test-complete");
     const migrated = lease.acquire(first.manifestPath, { waitMs: 0 });
     const after = invocation.loadManifest(first.manifestPath).manifest;
     expect(migrated.generation).toBe(owner.generation + 1);

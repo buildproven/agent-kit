@@ -133,6 +133,43 @@ function repositoryKey(identity) {
   return crypto.createHash("sha256").update(identity).digest("hex");
 }
 
+// A pre-v2 campaign stored its exact credential in the repository-wide lease.
+// During rollout it must keep using that lease for every operation, not merely
+// acquire().  A positive PR number alone is not sufficient to select the
+// legacy namespace: require the durable credential and every stable owner
+// field to match before treating it as the active legacy owner.
+function activeLegacyCredentialMatches(manifest, legacyLease, identity) {
+  const credential = manifest?.merge?.repositoryLease;
+  if (
+    !credential ||
+    credential.scope !== undefined ||
+    typeof credential.token !== "string" ||
+    !Number.isSafeInteger(credential.generation) ||
+    !fs.existsSync(legacyLease)
+  ) {
+    return false;
+  }
+  let record;
+  try {
+    record = readOwnershipRecord(legacyLease, "legacy repository lease owner");
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+  return (
+    record.schemaVersion === SCHEMA_VERSION &&
+    record.scope === undefined &&
+    record.disposition === "active" &&
+    record.repository === identity &&
+    record.invocationId === manifest.invocationId &&
+    record.gitCommonDir === recordedGitCommonDir(manifest) &&
+    record.pr === manifest.repo?.pr &&
+    record.headRef === manifest.repo?.headRefName &&
+    record.token === credential.token &&
+    record.generation === credential.generation
+  );
+}
+
 function pathsFor(identity, manifest = null) {
   const root =
     manifest && isVitestFixture(manifest)
@@ -148,11 +185,14 @@ function pathsFor(identity, manifest = null) {
     throw new Error("unsupported campaign ownership scope");
   }
   const pr = manifest?.repo?.pr;
+  const legacyLease = path.join(root, `${key}.lease`);
+  const activeLegacy =
+    manifest && activeLegacyCredentialMatches(manifest, legacyLease, identity);
   const scoped =
     Number.isSafeInteger(pr) &&
     pr > 0 &&
-    (!credential || credential.scope === PR_SCOPE);
-  const legacyLease = path.join(root, `${key}.lease`);
+    (!credential || credential.scope === PR_SCOPE) &&
+    !activeLegacy;
   return {
     root,
     key,
