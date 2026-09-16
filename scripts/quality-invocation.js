@@ -5823,11 +5823,12 @@ function validMutationArtifact(manifest, artifact) {
   } else if (candidateBase !== artifact.base) {
     const carry = manifest.mutationCarry;
     const rebaseCarry = manifest.revisions.baseRebaseCarry;
+    // Fresh execution is bound to the validated rebase head/base, not the
+    // last reusable mutation head (which may precede a test-only repair).
     const freshRebaseProof = Boolean(
       rebaseCarry &&
       rebaseCarry.head === artifact.head &&
       rebaseCarry.baseSha === candidateBase &&
-      carry?.priorHead === rebaseCarry.priorHead &&
       artifact.reusedArtifactSha256 === null &&
       artifact.avoidedSeconds === 0,
     );

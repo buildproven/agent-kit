@@ -1373,49 +1373,101 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     },
   );
 
-  it("excludes protected-base paths from an exact rebase-carry mutation", () => {
-    const { root, manifest } = fixture(
-      "rebase-live-patch",
-      "const { isAllowed } = require('./logic');\nif (!isAllowed('admin')) process.exit(1);\n",
-    );
-    runMutation(root, manifest);
-    const priorState = JSON.parse(readFileSync(manifest, "utf8"));
-    const priorHead = priorState.revisions.currentHead;
+  it.each([false, true])(
+    "excludes protected-base paths from an exact rebase-carry mutation (test repair=%s)",
+    (testRepair) => {
+      const { root, manifest } = fixture(
+        "rebase-live-patch",
+        "const { isAllowed } = require('./logic');\nif (!isAllowed('admin')) process.exit(1);\n",
+      );
+      runMutation(root, manifest);
+      const priorState = JSON.parse(readFileSync(manifest, "utf8"));
+      if (testRepair) {
+        writeFileSync(
+          path.join(root, "logic.test.js"),
+          "const { isAllowed } = require('./logic');\nif (!isAllowed('admin') || isAllowed('guest')) process.exit(1);\n",
+        );
+        git(root, ["add", "logic.test.js"]);
+        git(root, ["commit", "-qm", "test: repair coverage before rebase"]);
+        execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      }
+      const priorHead = git(root, ["rev-parse", "HEAD"]);
 
-    git(root, ["switch", "-q", "main"]);
-    writeFileSync(
-      path.join(root, "upstream-only.js"),
-      "exports.protectedBase = true;\n",
-    );
-    git(root, ["add", "upstream-only.js"]);
-    git(root, ["commit", "-qm", "fix: protected base change"]);
-    const freshBase = git(root, ["rev-parse", "HEAD"]);
-    git(root, ["update-ref", "refs/remotes/origin/main", freshBase]);
-    git(root, ["switch", "-q", "feature"]);
-    git(root, ["rebase", "origin/main"]);
-    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      git(root, ["switch", "-q", "main"]);
+      writeFileSync(
+        path.join(root, "upstream-only.js"),
+        "exports.protectedBase = true;\n",
+      );
+      git(root, ["add", "upstream-only.js"]);
+      git(root, ["commit", "-qm", "fix: protected base change"]);
+      const freshBase = git(root, ["rev-parse", "HEAD"]);
+      git(root, ["update-ref", "refs/remotes/origin/main", freshBase]);
+      git(root, ["switch", "-q", "feature"]);
+      git(root, ["rebase", "origin/main"]);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
 
-    const advanced = JSON.parse(readFileSync(manifest, "utf8"));
-    expect(advanced.revisions.baseRebaseCarry).toMatchObject({
-      priorHead,
-      baseSha: freshBase,
-      head: advanced.revisions.currentHead,
-    });
-    expect(runMutation(root, manifest)).toMatch(
-      /mutation evidence: revert-diff caught by logic\.js/,
-    );
-    const state = JSON.parse(readFileSync(manifest, "utf8"));
-    const artifact = JSON.parse(
-      readFileSync(state.mutation.artifactPath, "utf8"),
-    );
-    expect(artifact).toMatchObject({
-      candidateBase: freshBase,
-      reusedArtifactSha256: null,
-      avoidedSeconds: 0,
-      mutatedPaths: ["logic.js"],
-      testFailureObserved: true,
-    });
-  });
+      const advanced = JSON.parse(readFileSync(manifest, "utf8"));
+      if (testRepair) {
+        expect(advanced.mutationCarry.priorHead).toBe(
+          priorState.revisions.currentHead,
+        );
+        expect(advanced.mutationCarry.priorHead).not.toBe(priorHead);
+      }
+      expect(advanced.revisions.baseRebaseCarry).toMatchObject({
+        priorHead,
+        baseSha: freshBase,
+        head: advanced.revisions.currentHead,
+      });
+      expect(runMutation(root, manifest)).toMatch(
+        /mutation evidence: revert-diff caught by logic\.js/,
+      );
+      const state = JSON.parse(readFileSync(manifest, "utf8"));
+      const artifact = JSON.parse(
+        readFileSync(state.mutation.artifactPath, "utf8"),
+      );
+      expect(artifact).toMatchObject({
+        candidateBase: freshBase,
+        reusedArtifactSha256: null,
+        avoidedSeconds: 0,
+        mutatedPaths: ["logic.js"],
+        testFailureObserved: true,
+      });
+      const rejectedArtifact = path.join(
+        makeTempDir("invalid-rebase-proof-"),
+        "artifact.json",
+      );
+      for (const invalid of [
+        { head: priorHead },
+        { candidateBase: "f".repeat(40) },
+        { reusedArtifactSha256: priorState.mutation.artifactSha256 },
+        { avoidedSeconds: 1 },
+        { testFailureObserved: false },
+      ]) {
+        writeFileSync(
+          rejectedArtifact,
+          JSON.stringify({ ...artifact, ...invalid }),
+        );
+        const rejected = spawnSync(
+          "node",
+          [
+            INVOCATION,
+            "mutation-record",
+            manifest,
+            "--artifact",
+            rejectedArtifact,
+          ],
+          { cwd: root, encoding: "utf8" },
+        );
+        expect(rejected.status, JSON.stringify(invalid)).not.toBe(0);
+        expect(rejected.stderr).toContain(
+          "mutation evidence artifact identity or result is invalid",
+        );
+        expect(JSON.parse(readFileSync(manifest, "utf8")).mutation).toEqual(
+          state.mutation,
+        );
+      }
+    },
+  );
 
   it("proves a submodule pointer change when a changed behavioral test observes it", () => {
     const submodule = makeTempDir(
