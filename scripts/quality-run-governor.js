@@ -177,7 +177,7 @@ function currentCommitCount(cwd) {
  * new work. Returns `null` on any git failure (same fail-closed contract as
  * `currentCommitCount`), so `evaluateBudget`'s `Number.isFinite` guard halts.
  */
-function commitsSinceBaseline(cwd, startSha) {
+function commitsSinceBaseline(cwd, startSha, endSha = "HEAD", linear = false) {
   if (typeof startSha !== "string" || !/^[0-9a-f]{7,40}$/i.test(startSha)) {
     return null;
   }
@@ -188,13 +188,22 @@ function commitsSinceBaseline(cwd, startSha) {
     // range counts unrelated history and can reproduce the very false-trip this
     // fix exists to kill. Fail CLOSED in that case (return null → evaluateBudget
     // halts via its Number.isFinite guard) rather than trusting a bogus count.
-    execFileSync("git", ["merge-base", "--is-ancestor", startSha, "HEAD"], {
+    execFileSync("git", ["merge-base", "--is-ancestor", startSha, endSha], {
       cwd,
       stdio: ["ignore", "ignore", "ignore"],
     });
+    if (
+      linear &&
+      execFileSync("git", ["rev-list", "--merges", `${startSha}..${endSha}`], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim()
+    )
+      return null;
     const out = execFileSync(
       "git",
-      ["rev-list", "--count", `${startSha}..HEAD`],
+      ["rev-list", "--count", `${startSha}..${endSha}`],
       { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
     const parsed = parseInt(out.trim(), 10);
@@ -218,45 +227,48 @@ function commitsSinceBaseline(cwd, startSha) {
  * let `evaluateBudget` do the subtraction (the old, rebase-fragile behavior —
  * but no worse than before, and only for in-flight pre-upgrade runs).
  */
-// Follow a validated rebase-carry chain from the original baseline to the head
-// that actually survives in current history. Each carry records
-// `reviewedHead -> head` for one proven exact replay, so walking the links from
-// the start SHA yields the carried equivalent of that commit.
-//
-// Fails closed on a discontinuous or cyclic chain: an unproven jump is exactly
-// what the ancestry check exists to refuse, and a malformed chain must not
-// become a way to relocate the baseline anywhere convenient.
-function carriedBaseline(cwd, startSha, carries) {
+// Count linear repair intervals around trusted exact-replay carries. Moving
+// across a carry costs zero; moving to its source does not erase prior repairs.
+// Ambiguous sources and merged intervals cannot establish a reliable count.
+function carriedCommitCount(cwd, startSha, carries, endSha) {
   if (!Array.isArray(carries) || carries.length === 0) return null;
   let current = startSha;
+  let consumed = 0;
   const seen = new Set([current]);
   for (let step = 0; step < carries.length; step += 1) {
-    // Exact SHA equality, not a prefix test. A 7-character prefix match would
-    // accept any carry whose reviewedHead merely shares its first 7 hex
-    // characters with `current`, and Array.find returns the FIRST such entry —
-    // so after a few rebase/retry cycles the wrong carry could be selected and
-    // the baseline silently resolved to an unrelated commit, skewing the fix
-    // commit count that bounds an autonomous campaign. A carry asserts one
-    // proven exact replay; the lookup has to be exact too.
-    const carry = carries.find(
+    const eligible = carries.filter(
       (entry) =>
         entry &&
         typeof entry.reviewedHead === "string" &&
         typeof entry.head === "string" &&
-        entry.reviewedHead === current,
+        /^[0-9a-f]{40}$/.test(entry.reviewedHead) &&
+        /^[0-9a-f]{40}$/.test(entry.head) &&
+        (entry.reviewedHead === current ||
+          isAncestorOfHead(cwd, current, entry.reviewedHead)),
     );
-    if (!carry) break;
+    if (eligible.length === 0) break;
+    if (eligible.length !== 1) return null;
+    const carry = eligible[0];
+    const interval = commitsSinceBaseline(
+      cwd,
+      current,
+      carry.reviewedHead,
+      true,
+    );
+    if (interval === null) return null;
     if (seen.has(carry.head)) return null;
+    consumed += interval;
     seen.add(carry.head);
     current = carry.head;
   }
   if (current === startSha) return null;
-  return isAncestorOfHead(cwd, current) ? current : null;
+  const remaining = commitsSinceBaseline(cwd, current, endSha, true);
+  return remaining === null ? null : consumed + remaining;
 }
 
-function isAncestorOfHead(cwd, sha) {
+function isAncestorOfHead(cwd, sha, endSha = "HEAD") {
   try {
-    execFileSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
+    execFileSync("git", ["merge-base", "--is-ancestor", sha, endSha], {
       cwd,
       stdio: ["ignore", "ignore", "ignore"],
     });
@@ -266,19 +278,19 @@ function isAncestorOfHead(cwd, sha) {
   }
 }
 
-function resolveCommitCount(cwd, state) {
+function resolveCommitCount(cwd, state, endSha = "HEAD") {
+  if (endSha !== "HEAD" && !/^[0-9a-f]{40}$/.test(endSha)) return null;
   if (state && typeof state.start_commit_sha === "string") {
-    const direct = commitsSinceBaseline(cwd, state.start_commit_sha);
+    const direct = commitsSinceBaseline(cwd, state.start_commit_sha, endSha);
     if (direct !== null) return direct;
     // The original baseline is no longer in history. Before failing closed,
     // see whether a proven rebase carried it to a commit that still is.
-    const carried = carriedBaseline(
+    return carriedCommitCount(
       cwd,
       state.start_commit_sha,
       state.review_rebase_carries,
+      endSha,
     );
-    if (carried === null) return null;
-    return commitsSinceBaseline(cwd, carried);
   }
   return currentCommitCount(cwd);
 }
@@ -642,17 +654,16 @@ function mandatoryValidationHasReservedBudget(
     if (!providerBudgetIsActive(manifest)) {
       return false;
     }
-    execFileSync(
-      "git",
-      [
-        "merge-base",
-        "--is-ancestor",
-        reviewedHead,
+    return (
+      resolveCommitCount(
+        manifest.repo.realpath,
+        {
+          start_commit_sha: reviewedHead,
+          review_rebase_carries: state.review_rebase_carries,
+        },
         manifest.revisions.currentHead,
-      ],
-      { cwd: manifest.repo.realpath, stdio: "ignore" },
+      ) !== null
     );
-    return true;
   } catch {
     return false;
   }
@@ -726,7 +737,11 @@ function reviewBudgetDecision(context, sentinelPath) {
   const { state, priorRounds, cwd } = context;
   const result = evaluateBudget(state, {
     nowEpoch: Math.floor(Date.now() / 1000),
-    commitCount: resolveCommitCount(cwd, state),
+    commitCount: resolveCommitCount(
+      cwd,
+      state,
+      state._manifest ? context.authorizedHead : "HEAD",
+    ),
   });
   if (result.configInvalid) {
     return {

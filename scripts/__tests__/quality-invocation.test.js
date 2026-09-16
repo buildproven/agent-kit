@@ -4692,6 +4692,79 @@ exit 1
     expect(result.stderr).toMatch(/not authorized by the governor/);
   });
 
+  it("does not substitute ambient HEAD for a manifest-bound review target", () => {
+    const root = repo("reserved-rereview-target-drift");
+    const manifestPath = create(root);
+    prepareCodexReview(root, manifestPath);
+    writeFileSync(
+      path.join(root, "repair.js"),
+      "export const repaired = true;\n",
+    );
+    git(root, ["add", "repair.js"]);
+    git(root, ["commit", "-q", "-m", "fix: repair"]);
+    execFileSync("node", [INVOCATION, "advance", manifestPath], { cwd: root });
+    // Isolated malformed-state fixture: HEAD is a valid descendant, but the
+    // bound target is not. The public authorization must not substitute HEAD.
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.revisions.currentHead = git(root, ["rev-parse", "main"]);
+    });
+    const before = readFileSync(manifestPath, "utf8");
+    const attempt = spawnSync("node", [GOVERNOR, "bump-round", manifestPath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(attempt.status).toBe(1);
+    expect(
+      invocation.loadManifest(manifestPath).manifest.governor
+        .authorizedAttempts,
+    ).toEqual(JSON.parse(before).governor.authorizedAttempts);
+  });
+
+  it("authorizes only the reserved delta review after a repair and exact rebase", () => {
+    const root = repo("reserved-rereview-repair-rebase");
+    const manifestPath = create(root);
+    const firstReview = prepareCodexReview(root, manifestPath);
+    writeFileSync(
+      path.join(root, "review-fix.js"),
+      "export const fixed = 1;\n",
+    );
+    git(root, ["add", "review-fix.js"]);
+    git(root, ["commit", "-q", "-m", "fix: address review"]);
+    execFileSync("node", [INVOCATION, "advance", manifestPath], { cwd: root });
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "upstream.js"),
+      "export const upstream = 1;\n",
+    );
+    git(root, ["add", "upstream.js"]);
+    git(root, ["commit", "-q", "-m", "unrelated protected change"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["rebase", "-q", "origin/main"]);
+    execFileSync("node", [INVOCATION, "advance", manifestPath], { cwd: root });
+    const before = invocation.loadManifest(manifestPath).manifest;
+    const attempt = spawnSync("node", [GOVERNOR, "bump-round", manifestPath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(attempt.status, attempt.stderr).toBe(0);
+    const after = invocation.loadManifest(manifestPath).manifest;
+    expect(after.governor.startCommitSha).toBe(firstReview.to);
+    expect(after.governor.providerSecondsUsed).toBe(
+      before.governor.providerSecondsUsed,
+    );
+    expect(after.governor.maxFixCommits).toBe(before.governor.maxFixCommits);
+    expect(after.governor.roundsUsed).toBe(2);
+    prepareCodexReview(root, manifestPath);
+    const exhausted = spawnSync(
+      "node",
+      [GOVERNOR, "bump-round", manifestPath],
+      { cwd: root, encoding: "utf8" },
+    );
+    expect(exhausted.status).toBe(1);
+    expect(exhausted.stderr).toMatch(/ROUND BUDGET EXHAUSTED/);
+  });
+
   it("carries an unused mandatory rereview round across descendant fixes", () => {
     const root = repo("reserved-rereview-descendant");
     const manifestPath = create(root);
