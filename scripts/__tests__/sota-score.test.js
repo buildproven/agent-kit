@@ -1,3 +1,5 @@
+const { readFileSync } = require("node:fs");
+const path = require("node:path");
 const {
   CURRENT_BASELINE,
   compareVersions,
@@ -44,14 +46,37 @@ describe("SOTA rubric 3.0 scorer", () => {
     expect(output.categories.agent_orchestration.score).toBe(10);
   });
 
-  it("pins currency scoring to the required Claude Code baseline", async () => {
-    const output = await scoreRepository({ schema: SETTINGS_SCHEMA });
+  it.each([
+    [0, 10, null],
+    [30, 10, null],
+    [31, 6, "SOTA rubric is older than 30 days"],
+  ])(
+    "scores currency at day %i from the documented review date",
+    async (days, expectedScore, expectedGap) => {
+      const rubric = readFileSync(
+        path.resolve(__dirname, "../../skills/sota/SKILL.md"),
+        "utf8",
+      );
+      const reviewed = rubric.match(/Last reviewed:\s*(\d{4}-\d{2}-\d{2})/);
+      expect(reviewed).not.toBeNull();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(
+        new Date(Date.parse(`${reviewed[1]}T00:00:00Z`) + days * 86_400_000),
+      );
+      try {
+        const output = await scoreRepository({ schema: SETTINGS_SCHEMA });
 
-    expect(CURRENT_BASELINE).toBe("2.1.233");
-    expect(output.categories.currency.details).toBeUndefined();
-    expect(output.categories.currency.pinned).toBe("2.1.233");
-    expect(output.categories.currency.score).toBe(10);
-  });
+        expect(CURRENT_BASELINE).toBe("2.1.233");
+        expect(output.categories.currency.details).toBeUndefined();
+        expect(output.categories.currency.pinned).toBe("2.1.233");
+
+        expect(output.categories.currency.score).toBe(expectedScore);
+        expect(output.categories.currency.gap).toBe(expectedGap);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("fails settings validity closed when the live schema is unavailable", () => {
     const scored = scoreSettingsValidity(null, "network unavailable");

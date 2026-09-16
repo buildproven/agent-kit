@@ -61,6 +61,13 @@ coalescer retains all coverage in one run. Two public-selector regression cases
 fail before this mapping and pass afterward. Because selector policy changes,
 the resulting exact-head gate must execute the complete regression audit.
 
+That audit completed in 446.21 seconds with 3,894 passing tests and one existing
+date-dependent currency assertion failing. Reuse the already-reviewed test
+repair from dependent PR #538: freeze Date at days 0, 30 and 31 relative to the
+rubric review date and assert both score and gap. This keeps the production
+scorer unchanged and avoids making this prerequisite depend on its dependent
+PR. The focused scorer suite passes all 10 tests with the repaired fixture.
+
 Architecture review: Sol/high returned CLEAN on 2026-09-16 before production
 implementation. The first repository review emitted CLEAN but timed out during
 completion; a bounded decision-and-validator-excerpt review completed with exit
