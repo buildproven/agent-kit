@@ -4692,6 +4692,34 @@ exit 1
     expect(result.stderr).toMatch(/not authorized by the governor/);
   });
 
+  it("does not substitute ambient HEAD for a manifest-bound review target", () => {
+    const root = repo("reserved-rereview-target-drift");
+    const manifestPath = create(root);
+    prepareCodexReview(root, manifestPath);
+    writeFileSync(
+      path.join(root, "repair.js"),
+      "export const repaired = true;\n",
+    );
+    git(root, ["add", "repair.js"]);
+    git(root, ["commit", "-q", "-m", "fix: repair"]);
+    execFileSync("node", [INVOCATION, "advance", manifestPath], { cwd: root });
+    // Isolated malformed-state fixture: HEAD is a valid descendant, but the
+    // bound target is not. The public authorization must not substitute HEAD.
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.revisions.currentHead = git(root, ["rev-parse", "main"]);
+    });
+    const before = readFileSync(manifestPath, "utf8");
+    const attempt = spawnSync("node", [GOVERNOR, "bump-round", manifestPath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(attempt.status).toBe(1);
+    expect(
+      invocation.loadManifest(manifestPath).manifest.governor
+        .authorizedAttempts,
+    ).toEqual(JSON.parse(before).governor.authorizedAttempts);
+  });
+
   it("authorizes only the reserved delta review after a repair and exact rebase", () => {
     const root = repo("reserved-rereview-repair-rebase");
     const manifestPath = create(root);

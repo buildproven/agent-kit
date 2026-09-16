@@ -88,3 +88,11 @@ the caller trace to mandatory delta-review eligibility. Third review returned
 CLEAN before production edits. One initial CLI cap assertion used round 1,
 where the existing initial-review exception correctly allows review; corrected
 the fixture to round 2 rather than changing that policy.
+
+The initial code review found a separate exact-head binding defect: the reused
+count proof targeted ambient checkout HEAD instead of the manifest revision.
+A public authorization regression failed (1 failed, 295 skipped) when these
+heads differed. The count interface now accepts an explicit endpoint, and both
+manifest review-budget callers use the bound revision. Legacy callers retain
+the HEAD default. The focused recovery and authorization checks now pass
+(15 passed, 294 skipped). This repair does not change campaign limits.

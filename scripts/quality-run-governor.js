@@ -230,7 +230,7 @@ function commitsSinceBaseline(cwd, startSha, endSha = "HEAD", linear = false) {
 // Count linear repair intervals around trusted exact-replay carries. Moving
 // across a carry costs zero; moving to its source does not erase prior repairs.
 // Ambiguous sources and merged intervals cannot establish a reliable count.
-function carriedCommitCount(cwd, startSha, carries) {
+function carriedCommitCount(cwd, startSha, carries, endSha) {
   if (!Array.isArray(carries) || carries.length === 0) return null;
   let current = startSha;
   let consumed = 0;
@@ -262,7 +262,7 @@ function carriedCommitCount(cwd, startSha, carries) {
     current = carry.head;
   }
   if (current === startSha) return null;
-  const remaining = commitsSinceBaseline(cwd, current, "HEAD", true);
+  const remaining = commitsSinceBaseline(cwd, current, endSha, true);
   return remaining === null ? null : consumed + remaining;
 }
 
@@ -278,9 +278,10 @@ function isAncestorOfHead(cwd, sha, endSha = "HEAD") {
   }
 }
 
-function resolveCommitCount(cwd, state) {
+function resolveCommitCount(cwd, state, endSha = "HEAD") {
+  if (endSha !== "HEAD" && !/^[0-9a-f]{40}$/.test(endSha)) return null;
   if (state && typeof state.start_commit_sha === "string") {
-    const direct = commitsSinceBaseline(cwd, state.start_commit_sha);
+    const direct = commitsSinceBaseline(cwd, state.start_commit_sha, endSha);
     if (direct !== null) return direct;
     // The original baseline is no longer in history. Before failing closed,
     // see whether a proven rebase carried it to a commit that still is.
@@ -288,6 +289,7 @@ function resolveCommitCount(cwd, state) {
       cwd,
       state.start_commit_sha,
       state.review_rebase_carries,
+      endSha,
     );
   }
   return currentCommitCount(cwd);
@@ -653,10 +655,14 @@ function mandatoryValidationHasReservedBudget(
       return false;
     }
     return (
-      resolveCommitCount(manifest.repo.realpath, {
-        start_commit_sha: reviewedHead,
-        review_rebase_carries: state.review_rebase_carries,
-      }) !== null
+      resolveCommitCount(
+        manifest.repo.realpath,
+        {
+          start_commit_sha: reviewedHead,
+          review_rebase_carries: state.review_rebase_carries,
+        },
+        manifest.revisions.currentHead,
+      ) !== null
     );
   } catch {
     return false;
@@ -731,7 +737,11 @@ function reviewBudgetDecision(context, sentinelPath) {
   const { state, priorRounds, cwd } = context;
   const result = evaluateBudget(state, {
     nowEpoch: Math.floor(Date.now() / 1000),
-    commitCount: resolveCommitCount(cwd, state),
+    commitCount: resolveCommitCount(
+      cwd,
+      state,
+      state._manifest ? context.authorizedHead : "HEAD",
+    ),
   });
   if (result.configInvalid) {
     return {
