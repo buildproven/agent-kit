@@ -36,19 +36,26 @@ The ledger atomically reserves the remaining shared campaign budget before each
 provider, gate, fallback, verification, or retry phase starts. It records the
 actual active time and releases only unused reserved time. A target revision
 therefore creates a new immutable attempt record, but cannot reset budget,
-prior failures, or retry lineage.
+prior failures, or retry lineage. A calibration canary consumes that same
+900-second campaign budget and must also reserve one unit from its separate
+policy quota. It cannot create a second budget or borrow time from remediation;
+the launch is denied if either reservation is unavailable.
 
-The route policy is monotonic:
+The route policy is monotonic. `critical-surface` means a prompt- or
+policy-classified protected surface. It, public-contract work, cross-repository
+work, and ambiguous work are `critical`: Sol/high. `protected-delivery` means
+an exact-head merged pull request with required checks and finding dispositions.
+It is evidence for a completed delivery; it is not a routing trigger.
+`canary-excluded` means critical-surface, public-contract, cross-repository, or
+ambiguous work. It is the only meaning of "excluded" in canary policy.
 
-- Protected, public-contract, cross-repository, or ambiguous work is
-  `critical`: Sol/high.
 - Ordinary non-economy work is `standard`: Terra/medium.
 - An eligible localized, reversible, deterministically-proved task is an
   `economy-builder` candidate: Luna/high. It runs as standard until a durable
   admission record permits the economy route.
 - Before an admission exists, only the governor can select a signed,
   policy-scoped `calibration-canary`: Luna/high with its own strict quota,
-  shared campaign cap, protected-surface exclusion, and mandatory deterministic
+  shared campaign cap, canary-excluded work, and mandatory deterministic
   verification. It creates explicitly marked production candidate receipts for
   matched holdouts. A caller cannot request, expand, or repeat a canary. A
   missing quota, policy scope, or trusted baseline selects standard.
@@ -79,7 +86,7 @@ The record also contains a complete, matched production holdout. The holdout
 must meet the policy minimum sample, task-class coverage, confidence, and
 token-or-latency improvement thresholds; it must also establish non-inferior
 completion, independent deterministic verification, exact-head finding
-dispositions, protected merge evidence for completed deliveries, and a closed
+dispositions, protected-delivery merge evidence for completed deliveries, and a closed
 escaped-defect observation window for every candidate. Nullable or missing
 usage is not economy evidence. The governor verifies each required receipt and
 the active policy thresholds, not only a threshold digest, before admitting an
@@ -148,8 +155,8 @@ requires an operator to make routine routing decisions.
     scope plus a live epoch and gate-contract binding; a mismatch selects
     standard.
 11. The governor alone can spend the separate bounded calibration-canary quota;
-    it is the only cold-start source of Luna receipts and cannot select critical
-    or excluded work.
+    it is the only cold-start source of Luna receipts, consumes the same
+    campaign budget, and cannot select canary-excluded work.
 12. Failed or unmerged production receipts remain valid denominator evidence,
     but cannot be classified as completed deliveries or satisfy merge evidence.
 13. Every schema-v2 write launch has a signed campaign/plan receipt from
