@@ -8914,6 +8914,154 @@ exit 1
     });
   });
 
+  it.each([
+    "identical",
+    "complete-overlap",
+    "literal-path",
+    "identical-binary",
+    "identical-deletion",
+    "mode-drift",
+    "whitespace-drift",
+    "conflicting-upstream",
+    "conflicting-union",
+  ])("proves exact replay with upstream overlap: %s", (scenario) => {
+    const root = repo(`upstream-overlap-${scenario}`);
+    const accepts = [
+      "identical",
+      "complete-overlap",
+      "literal-path",
+      "identical-binary",
+      "identical-deletion",
+    ].includes(scenario);
+    const featurePath =
+      scenario === "literal-path" ? ":(glob)*.js" : "feature-only.js";
+    writeFileSync(path.join(root, featurePath), "export const feature = 1;\n");
+    if (scenario === "identical-binary")
+      writeFileSync(path.join(root, "file.js"), Buffer.from([0, 1, 255, 2]));
+    if (scenario === "identical-deletion")
+      unlinkSync(path.join(root, "file.js"));
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "feature-only change"]);
+    const manifestPath = create(root);
+    const before = readFileSync(manifestPath, "utf8");
+    const oldHead = git(root, ["rev-parse", "HEAD"]);
+
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "file.js"),
+      scenario === "identical-binary"
+        ? Buffer.from([0, 1, 255, 2])
+        : scenario.startsWith("conflicting-")
+          ? "export const value = 3;\n"
+          : "export const value = 2;\n",
+    );
+    if (scenario === "identical-deletion")
+      unlinkSync(path.join(root, "file.js"));
+    if (scenario === "complete-overlap")
+      writeFileSync(
+        path.join(root, featurePath),
+        "export const feature = 1;\n",
+      );
+    writeFileSync(
+      path.join(root, "upstream-only.js"),
+      "export const upstream = 1;\n",
+    );
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "upstream overlap and unrelated change"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    const freshBase = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "-c", "replayed"]);
+    writeFileSync(path.join(root, featurePath), "export const feature = 1;\n");
+    if (!accepts) {
+      writeFileSync(
+        path.join(root, "file.js"),
+        scenario === "conflicting-union"
+          ? "export const value = 3;\nexport const value = 2;\n"
+          : scenario === "whitespace-drift"
+            ? "export const value =  2;\n"
+            : "export const value = 2;\n",
+      );
+    }
+    if (scenario === "mode-drift") chmodSync(path.join(root, "file.js"), 0o755);
+    git(root, ["add", "."]);
+    git(root, ["commit", "--allow-empty", "-qm", "candidate replay"]);
+    const nextHead = git(root, ["rev-parse", "HEAD"]);
+    if (scenario === "conflicting-union") {
+      git(root, ["config", "merge.default", "union"]);
+      git(root, ["config", "apply.threeWay", "true"]);
+    }
+    const indexTree = git(root, ["write-tree"]);
+    expect(
+      spawnSync("git", ["merge-base", "--is-ancestor", oldHead, nextHead], {
+        cwd: root,
+      }).status,
+    ).toBe(1);
+    const result = spawnSync("node", [INVOCATION, "advance", manifestPath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    if (accepts) {
+      expect(result.status, result.stderr).toBe(0);
+      const advanced = JSON.parse(readFileSync(manifestPath, "utf8"));
+      expect(advanced.revisions.currentHead).toBe(nextHead);
+      expect(advanced.revisions.baseRebaseCarry).toMatchObject({
+        priorHead: oldHead,
+        baseSha: freshBase,
+        expectedTree: indexTree,
+        actualTree: indexTree,
+      });
+    } else {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/not a provable rebase-only replay/);
+      expect(readFileSync(manifestPath, "utf8")).toBe(before);
+    }
+    expect(git(root, ["write-tree"])).toBe(indexTree);
+    expect(git(root, ["status", "--porcelain"])).toBe("");
+  });
+
+  it("rejects partial replay despite ambient whitespace-ignore configuration", () => {
+    const root = repo("ambient-whitespace-replay");
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "context.js"),
+      "const stable = 1;\nconst value = 1;\n",
+    );
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "base context"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["rebase", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "context.js"),
+      "const stable = 1;\nconst value = 2;\n",
+    );
+    git(root, ["commit", "-qam", "candidate context change"]);
+    const manifestPath = create(root);
+    const before = readFileSync(manifestPath, "utf8");
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "context.js"),
+      "const  stable = 1;\nconst value = 1;\n",
+    );
+    git(root, ["commit", "-qam", "upstream changes context whitespace"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "-c", "replayed"]);
+    writeFileSync(
+      path.join(root, "context.js"),
+      "const  stable = 1;\nconst value = 2;\n",
+    );
+    writeFileSync(path.join(root, "file.js"), "export const value = 2;\n");
+    git(root, ["commit", "-qam", "candidate with combined whitespace"]);
+    git(root, ["config", "apply.ignoreWhitespace", "change"]);
+    const result = spawnSync("node", [INVOCATION, "advance", manifestPath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/not a provable rebase-only replay/);
+    expect(readFileSync(manifestPath, "utf8")).toBe(before);
+  });
+
   it("does not require mypy for an upstream-only .py change after a rebase (BUI-467)", () => {
     // Reproduces the rebase-carry review finding: if a rebase-only replay
     // has happened, the diff check must anchor on the carried live base

@@ -113,7 +113,8 @@
     {
       "paths": [
         "scripts/quality-mutation-check.sh",
-        "scripts/quality-invocation.js"
+        "scripts/quality-invocation.js",
+        "scripts/quality-git-identity.js"
       ],
       "commands": [
         {
@@ -325,6 +326,7 @@
         "scripts/quality-authorize-merge.sh",
         "scripts/__tests__/quality-authorize-merge.test.js",
         "scripts/quality-invocation.js",
+        "scripts/quality-git-identity.js",
         "scripts/quality-protected-nonstrict.js",
         "scripts/quality-repo-lease.js"
       ],

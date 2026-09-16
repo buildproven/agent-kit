@@ -91,21 +91,60 @@ function canonicalRoot(input) {
   return fs.realpathSync(git(resolved, ["rev-parse", "--show-toplevel"]));
 }
 
-// Prove that applying the exact binary diff reviewed at oldHead onto newBase
-// produces nextHead's tree. This is stronger than git patch-id: patch-id
-// deliberately ignores whitespace and cannot safely authorize a carry.
+// Resolve committed differences without caller-controlled display/merge policy.
+function exactReplayDiff(root, args) {
+  return execFileSync(
+    "git",
+    [
+      "--literal-pathspecs",
+      "diff",
+      "--no-color",
+      "--no-renames",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--ignore-submodules=none",
+      ...args,
+    ],
+    {
+      cwd: root,
+      encoding: "buffer",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1024 * 1024 * 64,
+    },
+  );
+}
+
+function replayChangedPaths(root, from, to) {
+  const raw = exactReplayDiff(root, ["--name-only", "-z", from, to]);
+  const decoded = raw.toString("utf8");
+  // Never let lossy pathname decoding collapse distinct committed entries.
+  if (!Buffer.from(decoded).equals(raw))
+    throw new Error("non-UTF8 replay path");
+  return decoded.split("\0").filter(Boolean);
+}
+
+// Prove exact direct replay, with already-identical entries satisfied by the
+// new base. Callers must still compare this tree with the candidate's tree.
 function replayedTree(root, oldBase, oldHead, newBase) {
   try {
-    const diff = execFileSync(
-      "git",
-      ["diff", "--binary", "--full-index", oldBase, oldHead],
-      {
-        cwd: root,
-        encoding: "buffer",
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: 1024 * 1024 * 64,
-      },
+    const stillDifferent = new Set(replayChangedPaths(root, oldHead, newBase));
+    const paths = replayChangedPaths(root, oldBase, oldHead).filter((file) =>
+      stillDifferent.has(file),
     );
+    // A whole committed entry already equal on the protected base needs no
+    // patch. Partial overlap still requires strict direct application below.
+    if (paths.length === 0)
+      return git(root, ["rev-parse", `${newBase}^{tree}`]);
+    const diff = exactReplayDiff(root, [
+      "--binary",
+      "--full-index",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      oldBase,
+      oldHead,
+      "--",
+      ...paths,
+    ]);
     const indexFile = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "quality-rebase-index-")),
       "index",
@@ -117,13 +156,25 @@ function replayedTree(root, oldBase, oldHead, newBase) {
         env,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      execFileSync("git", ["apply", "--cached", "--whitespace=nowarn", "-"], {
-        cwd: root,
-        env,
-        input: diff,
-        stdio: ["pipe", "pipe", "pipe"],
-        maxBuffer: 1024 * 1024 * 64,
-      });
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "apply.ignoreWhitespace=no",
+          "apply",
+          "--cached",
+          "--no-3way",
+          "--whitespace=nowarn",
+          "-",
+        ],
+        {
+          cwd: root,
+          env,
+          input: diff,
+          stdio: ["pipe", "pipe", "pipe"],
+          maxBuffer: 1024 * 1024 * 64,
+        },
+      );
       return execFileSync("git", ["write-tree"], {
         cwd: root,
         env,
