@@ -69,6 +69,11 @@ an explicitly reviewed repository move or rename.
 
 Quality merges autonomously at every risk tier once all revision-bound
 deterministic gate, CI, signature, and base-freshness evidence is clean.
+Different PRs can run their exact-head gates concurrently, with separate
+ownership, evidence and budgets. The same PR remains exclusive. Repository ref
+updates stay serialized through confirmed or reconciled outcomes. Active legacy
+campaigns must drain before scoped ownership activates; retain their exact
+manifests. See the [recovery and rollback contract](../../docs/quality-run-orchestrator.md#phase-ownership).
 Critical changes get deeper bounded AI discovery; they do not require a routine
 approval command. Under review contract v2, AI leads and completion status are
 advisory: unavailable or malformed provider output is signed as `incomplete`,

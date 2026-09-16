@@ -165,6 +165,11 @@ Invoked naturally — Claude Code or Codex picks the right skill from context.
 
 `/bs:quality` uses one exact-manifest deterministic runner for gates, bounded
 review, resume, optional protected merge, and terminal telemetry.
+Different PRs can run exact-head gates concurrently. Same-PR campaign ownership
+remains exclusive, and ref writes retain one repository-wide merge guard.
+Legacy active campaigns must drain before the new ownership protocol activates.
+Use the [ownership recovery and rollback contract](../../docs/quality-run-orchestrator.md#phase-ownership);
+never delete a lease or recreate a campaign to clear a collision.
 The `engineering` claim requires protected-base policy and proves only the
 normal engineering controls. It never marks product acceptance complete.
 Product delivery claims also require protected-producer receipts bound to the
