@@ -11,6 +11,7 @@ const FIXTURE_REPOSITORY = `vitest/${"a".repeat(16)}`;
 let sandbox;
 let originalTmpdir;
 let originalTelemetryFile;
+let originalTerminalEpoch;
 const stateRoots = [];
 let legacyRuntime;
 let legacyLease;
@@ -177,6 +178,8 @@ function attachRefCasCapability(
 beforeAll(() => {
   originalTmpdir = process.env.TMPDIR;
   originalTelemetryFile = process.env.BS_QUALITY_TELEMETRY_FILE;
+  originalTerminalEpoch = process.env.BS_QUALITY_TERMINAL_EPOCH;
+  delete process.env.BS_QUALITY_TERMINAL_EPOCH;
   sandbox = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "quality-repo-lease-test-")),
   );
@@ -204,6 +207,9 @@ afterAll(() => {
   if (originalTelemetryFile === undefined)
     delete process.env.BS_QUALITY_TELEMETRY_FILE;
   else process.env.BS_QUALITY_TELEMETRY_FILE = originalTelemetryFile;
+  if (originalTerminalEpoch === undefined)
+    delete process.env.BS_QUALITY_TERMINAL_EPOCH;
+  else process.env.BS_QUALITY_TERMINAL_EPOCH = originalTerminalEpoch;
 });
 
 function fixture(name, overrides = {}) {
