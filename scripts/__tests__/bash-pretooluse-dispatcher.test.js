@@ -1,5 +1,6 @@
 const { execFileSync, spawnSync } = require("node:child_process");
 const {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -72,7 +73,8 @@ describe("bash-pretooluse-dispatcher.js", () => {
       try {
         const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
         writeFileSync(staged, readFileSync(HOOK, "utf8"));
-        const hang = `sleep 30 &\nprintf '%s' "$!" > '${pidFile}'\nwait\n`;
+        // Model a delayed interpreter startup before the helper is created.
+        const hang = `sleep 0.6\nsleep 30 &\nprintf '%s' "$!" > '${pidFile}'\nwait\n`;
         for (const name of [
           "block-destructive-paths.sh",
           "block-push-main.sh",
@@ -90,7 +92,7 @@ describe("bash-pretooluse-dispatcher.js", () => {
         writeFileSync(
           path.join(guardDir, "ci-budget-admission.js"),
           stage === "admission"
-            ? `const fs=require('fs'); const child=require('child_process').spawn('sleep',['30'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);\n`
+            ? `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,600); const fs=require('fs'); const child=require('child_process').spawn('sleep',['30'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);\n`
             : "process.exit(0);\n",
         );
         const result = spawnSync(process.execPath, [staged], {
@@ -98,15 +100,20 @@ describe("bash-pretooluse-dispatcher.js", () => {
             tool_input: { command: "git push origin topic" },
           }),
           encoding: "utf8",
-          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "500" },
-          timeout: 2500,
+          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "2000" },
+          timeout: 8000,
           killSignal: "SIGKILL",
         });
-        helperPid = Number(readFileSync(pidFile, "utf8"));
-        expect(Number.isSafeInteger(helperPid) && helperPid > 1).toBe(true);
-        expect(result.error).toBeUndefined();
-        expect(result.status).toBe(2);
-        expect(result.stderr).toMatch(/did not finish within 500ms/);
+        helperPid = existsSync(pidFile)
+          ? Number(readFileSync(pidFile, "utf8"))
+          : undefined;
+        expect(result.error, result.stderr).toBeUndefined();
+        expect(result.status, result.stderr).toBe(2);
+        expect(result.stderr).toMatch(/did not finish within 2000ms/);
+        expect(
+          Number.isSafeInteger(helperPid) && helperPid > 1,
+          `The ${stage} helper did not start: ${result.stderr}`,
+        ).toBe(true);
         const deadline = Date.now() + 500;
         let alive = true;
         while (alive && Date.now() < deadline) {
