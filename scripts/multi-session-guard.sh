@@ -26,7 +26,9 @@ LOCK_DIR="$GIT_DIR_PATH/claude-sessions"
 mkdir -p "$LOCK_DIR" 2>/dev/null || exit 0
 
 # Current session identifier (use CC session ID if available, fallback to PID-based)
-SESSION_ID="${SESSION_ID:-$$}"
+# Registration and cleanup must resolve the same stable identity, including
+# clients that provide only CLAUDE_SESSION_ID.
+SESSION_ID="${CLAUDE_SESSION_ID:-${SESSION_ID:-$$}}"
 LOCK_FILE="$LOCK_DIR/$SESSION_ID.lock"
 
 # Register this session.

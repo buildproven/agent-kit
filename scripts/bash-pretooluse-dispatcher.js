@@ -78,10 +78,16 @@ if (hasGit) guards.push("branch-drift-guard.sh");
 // This is not hypothetical: these guards parse their own argv, and a
 // `shift 2` arm with no remaining value spins its option loop forever rather
 // than erroring. Five seconds is far above the ~50ms these checks take.
-const GUARD_TIMEOUT_MS = Number.parseInt(
-  process.env.BS_GUARD_TIMEOUT_MS || "5000",
-  10,
-);
+const guardTimeout = process.env.BS_GUARD_TIMEOUT_MS || "5000";
+const GUARD_TIMEOUT_MS = Number(guardTimeout);
+if (
+  guards.length > 0 &&
+  (!/^[1-9]\d*$/.test(guardTimeout) ||
+    !Number.isSafeInteger(GUARD_TIMEOUT_MS) ||
+    GUARD_TIMEOUT_MS > 5000)
+) {
+  deny("BS_GUARD_TIMEOUT_MS must be an integer from 1 through 5000.");
+}
 
 for (const name of guards) {
   const result = spawnSync("bash", [resolveGuard(name)], {

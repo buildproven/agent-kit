@@ -53,6 +53,24 @@ afterAll(() => {
 });
 
 describe("bash-pretooluse-dispatcher.js", () => {
+  it.each([
+    "0",
+    "-1",
+    "not-a-number",
+    "5001",
+    "1.5",
+    "1500ms",
+    "Infinity",
+    " ",
+  ])("denies invalid guard timeout %s with an actionable error", (value) => {
+    const result = run("git status", {
+      env: { BS_GUARD_TIMEOUT_MS: value },
+    });
+    expect(result.code).toBe(2);
+    expect(result.output).toMatch(/BS_GUARD_TIMEOUT_MS.*integer.*1.*5000/);
+    expect(result.output).not.toMatch(/RangeError/);
+  });
+
   it("allows an ordinary command without invoking a guard", () => {
     expect(run("printf ok").code).toBe(0);
   });

@@ -7,7 +7,8 @@
 # actually writes and locks created in a worktree were never cleaned up.
 GIT_DIR_PATH=$(git -C "$PWD" rev-parse --absolute-git-dir 2>/dev/null) || exit 0
 
-SESSION_ID="${SESSION_ID:-$$}"
+# Keep the identity precedence identical to multi-session-guard.sh.
+SESSION_ID="${CLAUDE_SESSION_ID:-${SESSION_ID:-$$}}"
 LOCK_FILE="$GIT_DIR_PATH/claude-sessions/$SESSION_ID.lock"
 
 rm -f "$LOCK_FILE" 2>/dev/null

@@ -11,6 +11,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const GUARD = path.resolve(import.meta.dirname, "..", "multi-session-guard.sh");
+const CLEANUP = path.resolve(
+  import.meta.dirname,
+  "..",
+  "multi-session-cleanup.sh",
+);
 
 let repo;
 let lockDir;
@@ -44,6 +49,24 @@ function locks() {
 }
 
 describe("multi-session-guard.sh ownership", () => {
+  it("uses one stable record when the same Claude session registers again", () => {
+    expect(runGuard("same-session").status).toBe(0);
+    expect(runGuard("same-session").status).toBe(0);
+    expect(locks()).toEqual(["same-session.lock"]);
+  });
+
+  it("cleans up the same Claude session record on normal exit", () => {
+    expect(runGuard("finished-session").status).toBe(0);
+    expect(locks()).toHaveLength(1);
+    const result = spawnSync("bash", [CLEANUP], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_SESSION_ID: "finished-session" },
+    });
+    expect(result.status).toBe(0);
+    expect(locks()).toEqual([]);
+  });
+
   // BUI-917: the record used to store $$ -- the hook shell, which exits the
   // moment the hook returns. The liveness check below then reaped any record
   // whose pid was gone, so a live session's lock was discarded on the very
