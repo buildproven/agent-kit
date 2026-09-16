@@ -13,18 +13,35 @@ const { spawnSync } = require("child_process");
 const Ajv = require("ajv");
 
 let ROOT = path.resolve(process.env.SOTA_ROOT || path.join(__dirname, ".."));
+let LAYER = "public_kit";
+let READ_ERRORS = [];
 const SETTINGS_SCHEMA_URL =
   "https://json.schemastore.org/claude-code-settings.json";
 const CURRENT_BASELINE = "2.1.233";
 
+function sourcePath(relativePath) {
+  const own = path.join(ROOT, relativePath);
+  if (fs.existsSync(own) || LAYER !== "private_overlay") return own;
+  if (
+    /^(?:scripts|skills|agents)\/|^(?:README.md|package.json|package-lock.json)$/.test(
+      relativePath,
+    )
+  ) {
+    return path.join(ROOT, "core", relativePath);
+  }
+  return own;
+}
+
 function exists(relativePath) {
-  return fs.existsSync(path.join(ROOT, relativePath));
+  return fs.existsSync(sourcePath(relativePath));
 }
 
 function readText(relativePath) {
   try {
-    return fs.readFileSync(path.join(ROOT, relativePath), "utf8");
-  } catch {
+    return fs.readFileSync(sourcePath(relativePath), "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      READ_ERRORS.push(`${relativePath}: ${error.code || error.message}`);
     return "";
   }
 }
@@ -38,30 +55,14 @@ function readJSON(relativePath) {
 }
 
 function settingsPath() {
+  if (LAYER === "installed_composition") return "settings.json";
   return exists("config/settings.json")
     ? "config/settings.json"
     : "settings.json";
 }
 
 function controlPath(name) {
-  const shared = `core/scripts/${name}`;
-  return exists(shared) ? shared : `scripts/${name}`;
-}
-
-function governorFailsClosed() {
-  const governor = path.join(ROOT, controlPath("quality-run-governor.js"));
-  if (!fs.existsSync(governor)) return false;
-  const missingSentinel = path.join(ROOT, ".sota-missing-governor-state.json");
-  const run = spawnSync(
-    process.execPath,
-    [governor, "check", missingSentinel],
-    {
-      cwd: ROOT,
-      encoding: "utf8",
-      timeout: 5_000,
-    },
-  );
-  return run.status === 1 && /failing CLOSED/i.test(run.stderr);
+  return `scripts/${name}`;
 }
 
 // Directories that never hold repository sources. Scratch and coverage output
@@ -83,25 +84,82 @@ const WALK_SKIP_DIRS = new Set([
 ]);
 
 function walkFiles(relativeDir, predicate = () => true) {
-  const root = path.join(ROOT, relativeDir);
+  const own = walkSurface(relativeDir, predicate);
+  if (
+    LAYER !== "private_overlay" ||
+    !["skills", "agents", "commands"].includes(relativeDir)
+  )
+    return own;
+  const fallback = path.join(ROOT, "core", relativeDir);
+  const shared = walkSurface(relativeDir, predicate, fallback);
+  const files = new Map(
+    shared.map((file) => [path.relative(fallback, file), file]),
+  );
+  const ownRoot = path.join(ROOT, relativeDir);
+  for (const file of own) files.set(path.relative(ownRoot, file), file);
+  return [...new Set(files.values())];
+}
+
+function walkSurface(relativeDir, predicate, explicitRoot) {
+  let root = explicitRoot || sourcePath(relativeDir);
+  if (!fs.existsSync(root) && LAYER === "private_overlay")
+    root = path.join(ROOT, "core", relativeDir);
   if (!fs.existsSync(root)) return [];
   const results = [];
-  const visit = (dir) => {
+  const seen = new Set();
+  const allowed = [
+    root,
+    ...["scripts", "skills", "agents", "commands"].map((name) =>
+      path.join(ROOT, name),
+    ),
+  ]
+    .filter((file) => fs.existsSync(file))
+    .map((file) => fs.realpathSync(file));
+  let visited = 0;
+  const visit = (dir, depth = 0) => {
+    const real = fs.realpathSync(dir);
+    if (seen.has(real) || depth > 32 || ++visited > 10000) {
+      READ_ERRORS.push(
+        `${relativeDir}: cyclic or excessive directory traversal`,
+      );
+      return;
+    }
+    seen.add(real);
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      // A directory can disappear mid-walk when a concurrent test run cleans up
-      // its temp tree. Skip it rather than aborting the whole score.
+    } catch (error) {
+      READ_ERRORS.push(`${dir}: ${error.code || error.message}`);
       return;
     }
     for (const entry of entries) {
       if (WALK_SKIP_DIRS.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
-      // Do not follow symlinks: a linked directory can point outside the repo
-      // (or back into it) and turn the walk into an unbounded or cyclic scan.
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) visit(full);
+      // Source scans do not follow links. Installed scans resolve only their
+      // declared linked surfaces and reject cycles or out-of-surface links.
+      if (entry.isSymbolicLink()) {
+        if (LAYER !== "installed_composition") continue;
+        try {
+          const target = fs.realpathSync(full);
+          if (
+            !allowed.some(
+              (base) =>
+                target === base || target.startsWith(`${base}${path.sep}`),
+            )
+          ) {
+            READ_ERRORS.push(
+              `${full}: link leaves declared installed surfaces`,
+            );
+            continue;
+          }
+          if (fs.statSync(target).isDirectory()) visit(target, depth + 1);
+          else if (predicate(target)) results.push(target);
+        } catch (error) {
+          READ_ERRORS.push(`${full}: ${error.code || error.message}`);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) visit(full, depth + 1);
       else if (entry.isFile() && predicate(full)) results.push(full);
     }
   };
@@ -294,12 +352,8 @@ function scoreBoundedAutonomy() {
   const governor = controlPath("quality-run-governor.js");
   const ralph = controlPath("ralph-next-run.sh");
   const checks = [
-    governorFailsClosed(),
-    spawnSync("bash", [path.join(ROOT, ralph), "--help"], {
-      cwd: ROOT,
-      encoding: "utf8",
-      timeout: 5_000,
-    }).status === 0,
+    exists(governor),
+    exists(ralph),
     /MAX_TRANSITIONS=\d+/.test(readText(ralph)),
     /max_wall_seconds/.test(readText(governor)),
     /max_review_rounds/.test(readText(governor)),
@@ -329,6 +383,7 @@ function scoreHooks() {
 
 function scoreSkillDesign() {
   const skillFiles = walkFiles("skills", (file) => file.endsWith("SKILL.md"));
+  if (!skillFiles.length) return result(0, "No readable skills");
   const oversized = [];
   const inert = [];
   let forked = 0;
@@ -417,7 +472,7 @@ function scoreQualityGates() {
     exists("scripts/quality-run-bounded.sh")
   )
     score += 2;
-  if (governorFailsClosed()) score += 2;
+  if (exists(controlPath("quality-run-governor.js"))) score += 2;
   return result(score, missing[0] ? `Missing ${missing[0]} gate` : null, {
     missing,
   });
@@ -447,6 +502,8 @@ function scoreSecurity(layer) {
 }
 
 function scoreGitWorkflow() {
+  if (LAYER === "installed_composition")
+    return { score: null, gap: null, notApplicable: "not a source checkout" };
   const checks = [
     exists(".husky/pre-commit"),
     exists(".husky/pre-push"),
@@ -535,7 +592,11 @@ function overallScore(scores) {
 
 function scoreLayer(root, layer, { schema, schemaError }) {
   const priorRoot = ROOT;
+  const priorLayer = LAYER;
+  const priorErrors = READ_ERRORS;
   ROOT = root;
+  LAYER = layer;
+  READ_ERRORS = [];
   try {
     const categories = {
       settings_validity: scoreSettingsValidity(schema, schemaError),
@@ -572,41 +633,106 @@ function scoreLayer(root, layer, { schema, schemaError }) {
         .filter(Boolean)
         .slice(0, 3),
       categories,
+      assessmentKind: "structural",
+      readErrors: [...new Set(READ_ERRORS)],
     };
   } finally {
     ROOT = priorRoot;
+    LAYER = priorLayer;
+    READ_ERRORS = priorErrors;
   }
 }
 
 function layerRoots(options) {
-  const requestedRoot = path.resolve(
-    options.root || process.env.SOTA_ROOT || ROOT,
+  const selections = [
+    ["public_kit", "publicRoot", "SOTA_PUBLIC_ROOT"],
+    ["private_overlay", "overlayRoot", "SOTA_OVERLAY_ROOT"],
+    ["installed_composition", "installedRoot", "SOTA_INSTALLED_ROOT"],
+  ];
+  const roots = {};
+  for (const [layer, option, variable] of selections) {
+    const value = options[option] ?? process.env[variable];
+    const rootSelection =
+      options[option] !== undefined ? "argument" : "environment";
+    if (!value) {
+      roots[layer] = {
+        state: layer === "public_kit" ? "invalid" : "not_assessed",
+        reason: "explicit root not supplied",
+      };
+      continue;
+    }
+    try {
+      const root = fs.realpathSync(value);
+      if (!fs.statSync(root).isDirectory())
+        throw new Error("root is not a directory");
+      if (layer === "installed_composition") {
+        if (!fs.statSync(path.join(root, "settings.json")).isFile())
+          throw new Error("installed settings.json required");
+        for (const surface of ["scripts", "skills", "agents", "commands"]) {
+          const target = path.join(root, surface);
+          if (
+            !fs.lstatSync(target).isSymbolicLink() ||
+            !fs.statSync(target).isDirectory()
+          )
+            throw new Error(`installed linked ${surface} required`);
+        }
+      }
+      roots[layer] = { state: "present", root, rootSelection };
+    } catch (error) {
+      roots[layer] = {
+        state: fs.existsSync(value) ? "invalid" : "missing",
+        reason: error.message,
+        root: path.resolve(value),
+        rootSelection,
+      };
+    }
+  }
+  const present = Object.entries(roots).filter(
+    ([, entry]) => entry.state === "present",
   );
-  const overlayRoot = options.overlayRoot || process.env.SOTA_OVERLAY_ROOT;
-  const installedRoot =
-    options.installedRoot || process.env.SOTA_INSTALLED_ROOT;
-  const hasCore = fs.existsSync(path.join(requestedRoot, "core"));
-  return {
-    public_kit: path.resolve(
-      options.publicRoot ||
-        process.env.SOTA_PUBLIC_ROOT ||
-        (hasCore ? path.join(requestedRoot, "core") : requestedRoot),
-    ),
-    private_overlay:
-      overlayRoot || hasCore
-        ? path.resolve(overlayRoot || requestedRoot)
-        : null,
-    installed_composition: installedRoot
-      ? path.resolve(installedRoot)
-      : options.detectInstalled === false
-        ? null
-        : fs.existsSync(path.join(process.env.HOME || "", ".claude"))
-          ? path.join(process.env.HOME, ".claude")
-          : null,
-  };
+  for (let i = 0; i < present.length; i++) {
+    for (let j = i + 1; j < present.length; j++) {
+      const [leftName, left] = present[i],
+        [rightName, right] = present[j];
+      const nested =
+        left.root === right.root ||
+        left.root.startsWith(`${right.root}${path.sep}`) ||
+        right.root.startsWith(`${left.root}${path.sep}`);
+      const expected =
+        leftName === "public_kit" &&
+        rightName === "private_overlay" &&
+        left.root === path.join(right.root, "core");
+      if (nested && !expected) {
+        left.state = right.state = "invalid";
+        left.reason = right.reason =
+          "layer roots overlap or identify the same tree";
+      }
+    }
+  }
+  return roots;
+}
+
+function sourceRevision(root) {
+  const git = (args) =>
+    spawnSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  const top = git(["rev-parse", "--show-toplevel"]);
+  if (top.status !== 0 || fs.realpathSync(top.stdout.trim()) !== root)
+    return { revision: null, reason: "root is not a Git source checkout" };
+  const status = git(["status", "--porcelain"]);
+  if (status.status !== 0 || status.stdout.trim())
+    return { revision: null, reason: "source status unavailable or dirty" };
+  const head = git(["rev-parse", "HEAD"]);
+  return head.status === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim())
+    ? { revision: head.stdout.trim(), reason: null }
+    : { revision: null, reason: "source revision unavailable" };
 }
 
 async function scoreRepository({ schema, schemaError, ...options } = {}) {
+  if (options.format !== undefined && options.format !== "layered-v2")
+    throw new Error("unsupported assessment format");
   let liveSchema = schema;
   let liveSchemaError = schemaError;
   if (!liveSchema && !liveSchemaError) {
@@ -616,31 +742,71 @@ async function scoreRepository({ schema, schemaError, ...options } = {}) {
       liveSchemaError = error.message;
     }
   }
-  const roots = layerRoots(options);
-  const layers = {};
-  const missingLayers = [];
-  for (const [layer, root] of Object.entries(roots)) {
-    if (!root || !fs.existsSync(root)) {
-      missingLayers.push(layer);
-      continue;
-    }
-    layers[layer] = scoreLayer(root, layer, {
+  if (!options.format) {
+    const root = path.resolve(options.root || process.env.SOTA_ROOT || ROOT);
+    const scored = scoreLayer(root, "public_kit", {
       schema: liveSchema,
       schemaError: liveSchemaError,
     });
+    return {
+      date: new Date().toISOString().split("T")[0],
+      rubricVersion: "3.0",
+      overall: scored.overall,
+      scores: scored.scores,
+      topGaps: scored.topGaps,
+      categories: scored.categories,
+    };
+  }
+  const roots = layerRoots(options);
+  const layers = {};
+  const missingLayers = [];
+  for (const [layer, entry] of Object.entries(roots)) {
+    if (entry.state !== "present") {
+      missingLayers.push(layer);
+      continue;
+    }
+    const scored = scoreLayer(entry.root, layer, {
+      schema: liveSchema,
+      schemaError: liveSchemaError,
+    });
+    layers[layer] = {
+      ...scored,
+      rootSelection: entry.rootSelection,
+      source: sourceRevision(entry.root),
+    };
+    if (scored.readErrors.length) {
+      entry.state = "invalid";
+      entry.reason = "one or more control surfaces could not be read safely";
+    }
   }
   return {
+    schemaVersion: 2,
+    assessmentKind: "structural",
+    scorer: sourceRevision(path.resolve(__dirname, "..")),
     date: new Date().toISOString().split("T")[0],
     rubricVersion: "3.0",
     composite: null,
     missingLayers,
     layers,
+    layerStates: roots,
   };
 }
 
 async function main() {
-  const output = await scoreRepository();
+  const args = process.argv.slice(2);
+  if (
+    args.length &&
+    (args.length !== 2 || args[0] !== "--format" || args[1] !== "layered-v2")
+  )
+    throw new Error("usage: sota-score.js [--format layered-v2]");
+  const output = await scoreRepository(args.length ? { format: args[1] } : {});
   process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  if (
+    Object.values(output.layerStates || {}).some((entry) =>
+      ["missing", "invalid"].includes(entry.state),
+    )
+  )
+    process.exitCode = 1;
 }
 
 module.exports = {
