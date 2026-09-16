@@ -24,6 +24,7 @@ const {
 const CAMPAIGN_BUDGET_SECONDS = 900;
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_MS = 25;
+const OWNERLESS_LOCK_STALE_MS = 2_000;
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 const REQUIRED_OPTIONS = {
   create: [
@@ -203,6 +204,114 @@ function writeJsonAtomically(file, value) {
   fs.renameSync(temporary, file);
 }
 
+function lockOwnerFile(lock) {
+  return path.join(lock, "owner.json");
+}
+
+function processIsLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return true;
+    throw new DispatchError(
+      `could not determine builder dispatch lock owner liveness: ${error.message}`,
+    );
+  }
+}
+
+function readLockOwner(lock) {
+  const file = lockOwnerFile(lock);
+  let stat;
+  try {
+    stat = fs.lstatSync(file);
+  } catch (error) {
+    if (error.code === "ENOENT") return { status: "missing", file };
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4096) {
+    throw new DispatchError("builder dispatch lock owner is unsafe");
+  }
+  try {
+    const owner = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (
+      owner?.schemaVersion === 1 &&
+      Number.isSafeInteger(owner.pid) &&
+      owner.pid > 0 &&
+      Number.isSafeInteger(owner.createdAtEpochMs) &&
+      owner.createdAtEpochMs > 0
+    ) {
+      return { status: "live", file, pid: owner.pid };
+    }
+  } catch {
+    // A process can crash while writing the record. Treat it as ownerless only
+    // after the directory itself is stale.
+  }
+  return { status: "malformed", file };
+}
+
+function reclaimStaleLock(lock) {
+  const stat = fs.lstatSync(lock);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new DispatchError("builder dispatch lock is unsafe");
+  }
+  const owner = readLockOwner(lock);
+  const staleOwnerlessLock =
+    Date.now() - stat.mtimeMs >= OWNERLESS_LOCK_STALE_MS;
+  if (
+    (owner.status === "live" && processIsLive(owner.pid)) ||
+    (owner.status !== "live" && !staleOwnerlessLock)
+  ) {
+    return false;
+  }
+  try {
+    if (owner.status !== "missing") fs.unlinkSync(owner.file);
+    fs.rmdirSync(lock);
+    return true;
+  } catch (error) {
+    if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function releaseLock(lock) {
+  const owner = lockOwnerFile(lock);
+  try {
+    fs.unlinkSync(owner);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  fs.rmdirSync(lock);
+}
+
+function removeEmptyLockAfterOwnerWriteFailure(lock) {
+  try {
+    fs.rmdirSync(lock);
+  } catch (error) {
+    if (error.code !== "ENOTEMPTY") throw error;
+  }
+}
+
+function writeLockOwner(lock) {
+  try {
+    writeJsonExclusive(
+      lockOwnerFile(lock),
+      {
+        schemaVersion: 1,
+        pid: process.pid,
+        createdAtEpochMs: Date.now(),
+      },
+      "builder dispatch lock owner",
+    );
+  } catch (error) {
+    removeEmptyLockAfterOwnerWriteFailure(lock);
+    throw error;
+  }
+}
+
 function withLock(root, callback) {
   const lock = path.join(root, ".dispatch.lock");
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -210,9 +319,11 @@ function withLock(root, callback) {
   while (!acquired && Date.now() < deadline) {
     try {
       fs.mkdirSync(lock, { mode: 0o700 });
+      writeLockOwner(lock);
       acquired = true;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
+      if (reclaimStaleLock(lock)) continue;
       Atomics.wait(lockWait, 0, 0, LOCK_RETRY_MS);
     }
   }
@@ -221,7 +332,7 @@ function withLock(root, callback) {
   try {
     return callback();
   } finally {
-    fs.rmdirSync(lock);
+    releaseLock(lock);
   }
 }
 
@@ -486,16 +597,61 @@ function readCampaign(layout, id) {
   return campaign;
 }
 
-function writeOutputReceipt(file, envelope) {
+function assertReceiptOutputDirectory(file) {
   const directory = path.dirname(file);
-  if (!fs.existsSync(directory)) {
-    throw new DispatchError("receipt output directory does not exist");
+  let stat;
+  try {
+    stat = fs.lstatSync(directory);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new DispatchError("receipt output directory does not exist");
+    }
+    throw error;
   }
-  writeJsonExclusive(file, envelope, "receipt output");
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new DispatchError(
+      "receipt output directory must be a real directory",
+    );
+  }
+}
+
+function writeOutputReceipt(file, envelope) {
+  assertReceiptOutputDirectory(file);
+  const payload = `${JSON.stringify(envelope, null, 2)}\n`;
+  try {
+    fs.writeFileSync(file, payload, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const existing = readJson(file, "receipt output");
+    if (canonicalString(existing) === canonicalString(envelope)) return;
+    throw new DispatchError("receipt output already exists");
+  }
+}
+
+function rollbackReservation(layout, campaignId, attemptId, envelope) {
+  withLock(layout.root, () => {
+    const campaign = readCampaign(layout, campaignId);
+    const attempt = campaign?.attempts[attemptId];
+    if (
+      !attempt ||
+      attempt.status !== "reserved" ||
+      canonicalString(attempt.receipt) !== canonicalString(envelope)
+    ) {
+      return;
+    }
+    campaign.budget.reservedSeconds -= attempt.reservedSeconds;
+    delete campaign.attempts[attemptId];
+    writeJsonAtomically(campaignFile(layout, campaignId), campaign);
+  });
 }
 
 function create(input) {
   const layout = stateLayout(input.stateDir);
+  assertReceiptOutputDirectory(input.receipt);
   const keys = signingKeys(layout);
   const request = readJson(input.request, "phase request");
   assertRegularFile(input.promptFile, "prompt file");
@@ -543,6 +699,7 @@ function create(input) {
     }),
   );
   let envelope;
+  let createdReservation = false;
   withLock(layout.root, () => {
     let campaign = readCampaign(layout, campaignId);
     if (!campaign) {
@@ -639,8 +796,16 @@ function create(input) {
     };
     campaign.budget.reservedSeconds += reservedSeconds;
     writeJsonAtomically(campaignFile(layout, campaignId), campaign);
+    createdReservation = true;
   });
-  writeOutputReceipt(input.receipt, envelope);
+  try {
+    writeOutputReceipt(input.receipt, envelope);
+  } catch (error) {
+    if (createdReservation) {
+      rollbackReservation(layout, campaignId, attemptId, envelope);
+    }
+    throw error;
+  }
   return envelope;
 }
 

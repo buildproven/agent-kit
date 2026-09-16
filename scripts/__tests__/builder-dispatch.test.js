@@ -4,6 +4,8 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -132,6 +134,71 @@ describe("builder dispatch", () => {
     expect(created.status).toBe(2);
     expect(created.stderr).toContain("--task-id is required for create");
     expect(existsSync(value.receipt)).toBe(false);
+  });
+
+  it("recovers stale or dead-owner dispatcher locks without manual state edits", () => {
+    const ownerless = subject();
+    const ownerlessLock = path.join(ownerless.state, ".dispatch.lock");
+    mkdirSync(ownerlessLock, { mode: 0o700 });
+    utimesSync(ownerlessLock, new Date(0), new Date(0));
+    const recoveredOwnerless = run(ownerless, "create");
+    expect(recoveredOwnerless.status, recoveredOwnerless.stderr).toBe(0);
+    expect(existsSync(ownerlessLock)).toBe(false);
+
+    const deadOwner = subject();
+    const deadOwnerLock = path.join(deadOwner.state, ".dispatch.lock");
+    mkdirSync(deadOwnerLock, { mode: 0o700 });
+    writeFileSync(
+      path.join(deadOwnerLock, "owner.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        pid: 99_999_999,
+        createdAtEpochMs: Date.now(),
+      }),
+      { mode: 0o600 },
+    );
+    const recoveredDeadOwner = run(deadOwner, "create");
+    expect(recoveredDeadOwner.status, recoveredDeadOwner.stderr).toBe(0);
+    expect(existsSync(deadOwnerLock)).toBe(false);
+  });
+
+  it("does not reserve budget when the receipt destination is unavailable", () => {
+    const value = subject();
+    value.receipt = path.join(
+      makeTempDir("builder-dispatch-missing-receipt-"),
+      "missing",
+      "receipt.json",
+    );
+    const failed = run(value, "create");
+    expect(failed.status).toBe(2);
+    expect(failed.stderr).toContain("receipt output directory does not exist");
+    expect(
+      readdirSync(path.join(value.state, "campaigns")).filter((entry) =>
+        entry.endsWith(".json"),
+      ),
+    ).toEqual([]);
+
+    mkdirSync(path.dirname(value.receipt));
+    const retried = run(value, "create");
+    expect(retried.status, retried.stderr).toBe(0);
+  });
+
+  it("rolls back a new reservation when receipt delivery fails", () => {
+    const value = subject();
+    writeFileSync(value.receipt, JSON.stringify({ stale: true }));
+    const failed = run(value, "create");
+    expect(failed.status).toBe(2);
+    expect(failed.stderr).toContain("receipt output already exists");
+    const [campaign] = readdirSync(path.join(value.state, "campaigns"));
+    const ledger = JSON.parse(
+      readFileSync(path.join(value.state, "campaigns", campaign), "utf8"),
+    );
+    expect(ledger.budget.reservedSeconds).toBe(0);
+    expect(ledger.attempts).toEqual({});
+
+    unlinkSync(value.receipt);
+    const retried = run(value, "create");
+    expect(retried.status, retried.stderr).toBe(0);
   });
 
   it("settles an exact terminal attempt and releases only unused shared budget", () => {
