@@ -127,7 +127,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/auto-init-check.sh",
-            "timeout": 3000
+            "timeout": 3
           }
         ]
       }
@@ -139,7 +139,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/post-edit-lint.sh",
-            "timeout": 10000
+            "timeout": 10
           }
         ]
       }
@@ -151,7 +151,7 @@
           {
             "type": "command",
             "command": "node \"$HOME/.claude/scripts/bash-pretooluse-dispatcher.js\"",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       },
@@ -161,7 +161,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/auto-branch-on-main.sh",
-            "timeout": 5000
+            "timeout": 5
           }
         ]
       }
@@ -173,7 +173,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/teammate-idle-check.sh",
-            "timeout": 30000
+            "timeout": 30
           }
         ]
       }
@@ -185,7 +185,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/task-completed-check.sh",
-            "timeout": 60000
+            "timeout": 60
           }
         ]
       }
@@ -197,12 +197,12 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/stop-validation.sh",
-            "timeout": 10000
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/multi-session-cleanup.sh",
-            "timeout": 2000
+            "timeout": 2
           }
         ]
       }
@@ -214,7 +214,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/notify.sh \"Claude needs your attention\"",
-            "timeout": 3000
+            "timeout": 3
           }
         ]
       },
@@ -224,7 +224,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/notify.sh \"A background agent is blocked and needs input\"",
-            "timeout": 3000
+            "timeout": 3
           }
         ]
       },
@@ -234,7 +234,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/notify.sh \"A background agent finished\"",
-            "timeout": 3000
+            "timeout": 3
           }
         ]
       }
@@ -246,7 +246,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/scripts/multi-session-guard.sh",
-            "timeout": 3000
+            "timeout": 3
           }
         ]
       }

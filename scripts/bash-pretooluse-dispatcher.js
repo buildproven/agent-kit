@@ -13,6 +13,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const startedAt = performance.now();
 
 const rawInput = fs.readFileSync(0, "utf8");
 
@@ -70,10 +71,9 @@ if (hasCommit) guards.push("block-commit-main.sh");
 // therefore invoked for every git command, including ordinary status calls.
 if (hasGit) guards.push("branch-drift-guard.sh");
 
-// A guard that never returns blocks the tool call forever. Claude Code's hook
-// `timeout` is the outer bound, but it is measured in SECONDS and defaults to
-// 600, so leaning on it means a hung guard stalls the session for ten minutes
-// before anything reacts. Bound each guard here instead.
+// Claude command-hook timeout discards the hook decision. Keep every child
+// inside a shared four-second budget, below the configured five-second outer
+// timeout, so a hung child produces an explicit denial first.
 //
 // This is not hypothetical: these guards parse their own argv, and a
 // `shift 2` arm with no remaining value spins its option loop forever rather
@@ -89,30 +89,39 @@ if (
   deny("BS_GUARD_TIMEOUT_MS must be an integer from 1 through 5000.");
 }
 
-for (const name of guards) {
-  const result = spawnSync("bash", [resolveGuard(name)], {
-    input: rawInput,
-    encoding: "utf8",
-    timeout: GUARD_TIMEOUT_MS,
+function runBounded(executable, args, options, name) {
+  const remaining = Math.floor(4000 - (performance.now() - startedAt));
+  if (remaining <= 0) deny("Bash safety checks exhausted their 4000ms budget.");
+  const timeout = Math.min(GUARD_TIMEOUT_MS, remaining);
+  const result = spawnSync(executable, args, {
+    ...options,
+    timeout,
     killSignal: "SIGKILL",
   });
-
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-
-  // A timeout surfaces as error.code ETIMEDOUT, or as a null status with the
-  // kill signal set. Deny in both cases: a guard that did not finish has not
-  // approved anything, and treating silence as consent would invert the
-  // safety property these guards exist to provide.
   if (result.error?.code === "ETIMEDOUT" || result.signal) {
     deny(
-      `${name} did not finish within ${GUARD_TIMEOUT_MS}ms and was terminated; ` +
+      `${name} did not finish within ${timeout}ms and was terminated; ` +
         `refusing the command rather than proceeding unchecked`,
     );
   }
   if (result.error) {
     deny(`could not execute ${name}: ${result.error.message}`);
   }
+  return result;
+}
+
+for (const name of guards) {
+  const result = runBounded(
+    "bash",
+    [resolveGuard(name)],
+    {
+      input: rawInput,
+      encoding: "utf8",
+    },
+    name,
+  );
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0) {
     process.exit(result.status === 2 ? 2 : 2);
   }
@@ -134,13 +143,14 @@ for (const name of guards) {
 // regex that could drift from the guard that already ran.
 if (hasPush) {
   const classifier = resolveGuard("block-push-main.sh");
-  const classification = spawnSync(
+  const classification = runBounded(
     "bash",
     [classifier, "--ci-budget-classify"],
     {
       input: rawInput,
       encoding: "utf8",
     },
+    "CI budget classifier",
   );
   // Only a proved no-CI push is exempt. Protected, cross-branch, unparseable,
   // and GitHub-unavailable cases all retain normal fail-closed admission.
@@ -149,9 +159,14 @@ if (hasPush) {
   if (!cannotTriggerCi) {
     const admission = resolveGuard("ci-budget-admission.js");
     if (fs.existsSync(admission)) {
-      const result = spawnSync(process.execPath, [admission], {
-        encoding: "utf8",
-      });
+      const result = runBounded(
+        process.execPath,
+        [admission],
+        {
+          encoding: "utf8",
+        },
+        "CI budget admission",
+      );
       if (result.status !== 0) {
         if (result.stderr) process.stderr.write(result.stderr);
         deny(
