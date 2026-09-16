@@ -83,7 +83,7 @@ describe("quality runtime planning", () => {
     expect(low.workload).toBe("micro");
     expect(critical.workload).toBe("micro");
     expect(critical.reviewSeconds).toBe(540);
-    expect(critical.campaignSeconds).toBe(900);
+    expect(critical.campaignSeconds).toBe(1200);
   });
 
   it("makes targeted verification cheaper than discovery for the same delta", () => {
@@ -96,8 +96,8 @@ describe("quality runtime planning", () => {
     expect(verification.reviewPasses).toBe(1);
   });
 
-  it("caps every default campaign at 15 minutes", () => {
-    expect(plan(100, 500, 100000).campaignSeconds).toBe(900);
+  it("caps every default campaign at one hour", () => {
+    expect(plan(100, 500, 100000).campaignSeconds).toBeLessThanOrEqual(3600);
   });
 
   it("reserves every required gate before the mandatory discovery review", () => {
@@ -108,9 +108,30 @@ describe("quality runtime planning", () => {
     });
 
     expect(plan.gateReserveSeconds).toBe(360);
-    expect(plan.campaignSeconds).toBe(600);
+    expect(plan.campaignSeconds).toBe(1200);
     expect(plan.campaignSeconds).toBeGreaterThanOrEqual(
-      plan.gateReserveSeconds + plan.reviewSeconds,
+      plan.gateReserveSeconds +
+        plan.checkSeconds +
+        plan.checkReserveSeconds +
+        plan.reviewSeconds +
+        60,
+    );
+  });
+
+  it("funds high-risk mutation after the required gates", () => {
+    const plan = planRuntime({
+      riskScore: 62,
+      diffStats: { files: 2, lines: 101, repositoryFiles: 400 },
+      gateCount: 3,
+    });
+
+    expect(plan.tier).toBe("high");
+    expect(plan.campaignSeconds).toBeGreaterThanOrEqual(
+      plan.gateReserveSeconds +
+        plan.checkSeconds +
+        plan.checkReserveSeconds +
+        plan.reviewSeconds +
+        60,
     );
   });
 
@@ -159,11 +180,11 @@ describe("quality runtime planning", () => {
 
     expect(plan.workload).toBe("large");
     expect(plan.gateReserveSeconds).toBe(1500);
-    expect(plan.campaignSeconds).toBe(1950);
+    expect(plan.campaignSeconds).toBe(2940);
     expect(
       plan.campaignSeconds - plan.gateReserveSeconds,
     ).toBeGreaterThanOrEqual(
-      plan.reviewReserveSeconds + plan.verificationSeconds + 60,
+      plan.checkSeconds + plan.checkReserveSeconds + plan.reviewSeconds + 60,
     );
   });
 
@@ -180,9 +201,9 @@ describe("quality runtime planning", () => {
     });
 
     expect(level95.tier).toBe("high");
-    expect(level95.campaignSeconds).toBe(540);
+    expect(level95.campaignSeconds).toBe(840);
     expect(level98.tier).toBe("critical");
-    expect(level98.campaignSeconds).toBe(900);
+    expect(level98.campaignSeconds).toBe(1200);
   });
 
   it("plans real git diffs at the same public CLI seam", () => {
@@ -232,7 +253,7 @@ describe("quality runtime planning", () => {
     );
     expect(critical.tier).toBe("critical");
     expect(critical.taskType).toBe("ci");
-    expect(critical.campaignSeconds).toBe(900);
+    expect(critical.campaignSeconds).toBe(1200);
 
     fs.writeFileSync(path.join(repo, "large.md"), "line\n".repeat(6000));
     execFileSync("git", ["add", "large.md"], { cwd: repo });
@@ -244,7 +265,7 @@ describe("quality runtime planning", () => {
       }),
     );
     expect(huge.workload).toBe("huge");
-    expect(huge.campaignSeconds).toBe(900);
+    expect(huge.campaignSeconds).toBe(1680);
   });
 
   it("fails visibly when declared gate timeout JSON is malformed", () => {
