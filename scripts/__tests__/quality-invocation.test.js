@@ -193,6 +193,8 @@ function create(root, extra = [], env = {}) {
       root,
       "--base-ref",
       "origin/main",
+      // Production merge bootstrap requires an open PR before lease admission.
+      ...(mergeFixture && !extra.includes("--pr") ? ["--pr", "7"] : []),
       ...prIdentity,
       ...extra,
     ],
@@ -4215,9 +4217,10 @@ exit 1
       state: "blocked",
       detail: "prior-failure",
     });
-    expect(lease.status(manifest)).toEqual({
+    expect(lease.status(manifest)).toMatchObject({
       required: true,
-      state: "missing",
+      state: "released",
+      owned: false,
     });
   });
 

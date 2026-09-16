@@ -57,6 +57,28 @@ CI; it never jumps from that exception directly to merge. See
 
 ## Phase ownership
 
+Campaign ownership and its metadata guard are scoped to repository plus PR.
+Different PRs can execute gates concurrently; the same PR still has one owner.
+The repository merge guard remains held across the actual ref request and its
+read-back. Unknown outcomes keep that guard quarantined, without blocking
+independent PR gates. All evidence and execution charges remain exact-head and
+per-campaign. See [the ownership decision](decisions/ADR-pr-scoped-quality-ownership.md).
+
+Existing active legacy campaigns must drain before scoped admission. Resume them
+with their exact saved manifest. Never delete their lease or rewrite credentials.
+After activation, older runtimes fail closed on the protocol marker. For an
+explicit code rollback, first release all scoped campaigns through normal
+terminal handling and reconcile any merge outcome, then run the current runtime:
+
+```bash
+node scripts/quality-repo-lease.js rollback-protocol --manifest /exact/saved/invocation.json
+```
+
+This command refuses active owners and merge guards. It removes only validated
+released owner receipts and the protocol marker, while preserving manifests,
+budgets, evidence and history. A missing or changed marker with scoped ownership
+is a recovery error, not permission to restart or downgrade.
+
 | Phase            | Deterministic runner responsibility                                                    | Model responsibility                                        |
 | ---------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | Bootstrap        | Resolve the exact target, create/advance manifest, acquire worktree ownership          | None                                                        |

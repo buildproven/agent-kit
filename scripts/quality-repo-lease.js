@@ -8,6 +8,8 @@ const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
 
 const SCHEMA_VERSION = 1;
+const PR_SCOPE = "pull-request-v2";
+const PROTOCOL_VERSION = 2;
 const STALE_MS = 6 * 60 * 60 * 1000;
 const RECOVERY_OVERRIDE_ENV = "BS_QUALITY_LEASE_RECOVERY_OVERRIDE";
 const DEFAULT_WAIT_MS = 30_000;
@@ -141,13 +143,155 @@ function pathsFor(identity, manifest = null) {
       : stateRoot();
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const key = repositoryKey(identity);
+  const credential = manifest?.merge?.repositoryLease;
+  if (credential?.scope !== undefined && credential.scope !== PR_SCOPE) {
+    throw new Error("unsupported campaign ownership scope");
+  }
+  const pr = manifest?.repo?.pr;
+  const scoped =
+    Number.isSafeInteger(pr) &&
+    pr > 0 &&
+    (!credential || credential.scope === PR_SCOPE);
+  const legacyLease = path.join(root, `${key}.lease`);
   return {
     root,
     key,
-    lease: path.join(root, `${key}.lease`),
-    metadataGuard: path.join(root, `${key}.metadata-guard`),
+    lease: scoped ? path.join(root, `${key}.pr-${pr}.lease`) : legacyLease,
+    legacyLease,
+    scope: scoped ? PR_SCOPE : null,
+    metadataGuard: path.join(
+      root,
+      scoped ? `${key}.pr-${pr}.metadata-guard` : `${key}.metadata-guard`,
+    ),
+    repositoryMetadataGuard: path.join(root, `${key}.metadata-guard`),
     mergeGuard: path.join(root, `${key}.merge-guard`),
   };
+}
+
+function relatedMergeGuard(paths, record) {
+  if (!fs.existsSync(paths.mergeGuard)) return null;
+  const owner = guardOwner(paths.mergeGuard);
+  if (owner.repository !== record.repository || owner.pr !== record.pr)
+    return null;
+  if (owner.token !== record.token || owner.head !== record.mergeIntent?.head) {
+    throw new Error("merge operation guard does not match this exact campaign");
+  }
+  return owner;
+}
+
+// Called only during acquisition under the existing repository metadata guard.
+// The schema-v2 marker deliberately makes supported schema-v1 writers refuse
+// before their legacy orphan/released cleanup can touch another PR's guard.
+function prepareOwnershipProtocol(paths, loaded, tuple) {
+  const credential = loaded.manifest.merge?.repositoryLease;
+  if (!Number.isSafeInteger(tuple.pr) || tuple.pr <= 0) {
+    throw new Error("PR-scoped ownership requires a positive PR number");
+  }
+  if (fs.existsSync(paths.legacyLease)) {
+    const record = readOwnershipRecord(
+      paths.legacyLease,
+      "repository ownership protocol",
+    );
+    if (record.schemaVersion === SCHEMA_VERSION) {
+      if (record.disposition !== "released") {
+        if (
+          !credential?.scope &&
+          tupleMatches(record, tuple) &&
+          credential?.token === record.token
+        ) {
+          paths.lease = paths.legacyLease;
+          paths.scope = null;
+          return;
+        }
+        const error = new Error(
+          `legacy repository ownership must drain before PR admission: PR #${record.pr} (${record.manifestPath})`,
+        );
+        error.code = "LEASE_OWNED";
+        throw error;
+      }
+      if (fs.existsSync(paths.mergeGuard)) {
+        throw new Error(
+          "legacy merge outcome must be reconciled before ownership activation",
+        );
+      }
+      if (
+        record.releaseReason === "verified-remote-merged" &&
+        fs.existsSync(record.manifestPath)
+      ) {
+        recordMergedTerminalRaw(record.manifestPath);
+      }
+      exactCleanup(tombstone(paths.legacyLease));
+    } else if (
+      record.schemaVersion !== PROTOCOL_VERSION ||
+      record.scope !== PR_SCOPE ||
+      record.repository !== tuple.repository
+    ) {
+      throw new Error(
+        "unsupported or inconsistent repository ownership protocol",
+      );
+    }
+  }
+  if (!fs.existsSync(paths.legacyLease)) {
+    if (fs.existsSync(paths.mergeGuard))
+      throw new Error(
+        "merge outcome must be reconciled before ownership activation",
+      );
+    // Stage the complete marker before atomically publishing the directory.
+    // A crash leaves only an inert uniquely named staging directory; readers
+    // never mistake an incomplete marker for a missing ownership record.
+    const stage = fs.mkdtempSync(
+      path.join(paths.root, `${paths.key}.protocol-stage-`),
+    );
+    atomicWrite(path.join(stage, "owner.json"), {
+      schemaVersion: PROTOCOL_VERSION,
+      scope: PR_SCOPE,
+      repository: tuple.repository,
+      activatedAt: new Date().toISOString(),
+    });
+    fs.renameSync(stage, paths.legacyLease);
+  }
+  paths.scope = PR_SCOPE;
+  paths.lease = path.join(paths.root, `${paths.key}.pr-${tuple.pr}.lease`);
+}
+
+function rollbackProtocol(manifestPath) {
+  const { manifest } = loadManifest(manifestPath);
+  return withOwnershipTransaction(manifest, (paths, identity) => {
+    const marker = readOwnershipRecord(
+      paths.legacyLease,
+      "repository ownership protocol",
+    );
+    if (
+      marker.schemaVersion !== PROTOCOL_VERSION ||
+      marker.scope !== PR_SCOPE ||
+      marker.repository !== identity
+    ) {
+      throw new Error("protocol rollback requires the exact PR-scoped marker");
+    }
+    const entries = fs
+      .readdirSync(paths.root)
+      .filter(
+        (name) =>
+          name.startsWith(`${paths.key}.pr-`) &&
+          !name.endsWith(".metadata-guard"),
+      );
+    const released = entries.map((name) => {
+      const directory = path.join(paths.root, name);
+      const record = leaseRecord(directory);
+      if (record.scope !== PR_SCOPE || record.disposition !== "released") {
+        throw new Error("protocol rollback requires all PR ownership to drain");
+      }
+      return directory;
+    });
+    if (fs.existsSync(paths.mergeGuard)) {
+      throw new Error(
+        "protocol rollback requires all PR ownership and merge state to drain",
+      );
+    }
+    for (const directory of released) exactCleanup(tombstone(directory));
+    exactCleanup(tombstone(paths.legacyLease));
+    return { rolledBack: true, repository: identity };
+  });
 }
 
 function parseJson(raw, label) {
@@ -190,6 +334,18 @@ function readRegularFile(file, label) {
 
 function readJson(file, label) {
   return parseJson(readRegularFile(file, label), label);
+}
+
+function readOwnershipRecord(directory, label) {
+  const stat = fs.lstatSync(directory);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    stat.uid !== process.geteuid?.()
+  ) {
+    throw new Error(`${label} must be an owned non-symlink directory`);
+  }
+  return readJson(path.join(directory, "owner.json"), label);
 }
 
 function atomicWrite(file, value) {
@@ -401,17 +557,69 @@ function releaseGuard(directory) {
 function withMetadataGuard(manifest, operation, timeoutMs) {
   const identity = repositoryIdentity(manifest);
   const paths = pathsFor(identity, manifest);
-  acquireGuard(paths.metadataGuard, timeoutMs);
+  return withGuardAt(
+    paths,
+    paths.metadataGuard,
+    identity,
+    () => {
+      if (
+        paths.scope === PR_SCOPE &&
+        (manifest.merge?.repositoryLease?.scope === PR_SCOPE ||
+          fs.existsSync(paths.lease))
+      ) {
+        if (!fs.existsSync(paths.legacyLease))
+          throw new Error(
+            "repository ownership protocol marker is missing; restore exact state before resuming",
+          );
+        const marker = readOwnershipRecord(
+          paths.legacyLease,
+          "repository ownership protocol",
+        );
+        if (
+          marker.schemaVersion !== PROTOCOL_VERSION ||
+          marker.scope !== PR_SCOPE ||
+          marker.repository !== identity
+        )
+          throw new Error(
+            "unsupported or inconsistent repository ownership protocol",
+          );
+      }
+      return operation(paths, identity);
+    },
+    timeoutMs,
+  );
+}
+
+function withGuardAt(paths, guardPath, identity, operation, timeoutMs) {
+  const held = heldMetadataGuards.get(guardPath);
+  if (held) {
+    if (!sameGuardOwner(guardOwner(guardPath), held))
+      throw new Error("metadata guard owner changed during nested transaction");
+    return operation(paths, identity);
+  }
+  acquireGuard(guardPath, timeoutMs);
   try {
-    heldMetadataGuards.set(
-      paths.metadataGuard,
-      guardOwner(paths.metadataGuard),
-    );
+    heldMetadataGuards.set(guardPath, guardOwner(guardPath));
     return operation(paths, identity);
   } finally {
-    heldMetadataGuards.delete(paths.metadataGuard);
-    releaseGuard(paths.metadataGuard);
+    heldMetadataGuards.delete(guardPath);
+    releaseGuard(guardPath);
   }
+}
+
+function withOwnershipTransaction(manifest, operation, timeoutMs) {
+  return withMetadataGuard(
+    manifest,
+    (paths, identity) =>
+      withGuardAt(
+        paths,
+        paths.repositoryMetadataGuard,
+        identity,
+        operation,
+        timeoutMs,
+      ),
+    timeoutMs,
+  );
 }
 
 function hasMetadataGuard(manifest) {
@@ -473,10 +681,7 @@ function tupleMatches(record, tuple) {
 function leaseRecord(leaseDirectory) {
   let record;
   try {
-    record = readJson(
-      path.join(leaseDirectory, "owner.json"),
-      "repository lease owner",
-    );
+    record = readOwnershipRecord(leaseDirectory, "repository lease owner");
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
@@ -490,6 +695,16 @@ function leaseRecord(leaseDirectory) {
     throw new Error(
       `unsupported repository lease schema ${record.schemaVersion}`,
     );
+  }
+  if (
+    path.basename(leaseDirectory).includes(".pr-") &&
+    (record.scope !== PR_SCOPE ||
+      !Number.isSafeInteger(record.pr) ||
+      record.pr <= 0 ||
+      path.basename(leaseDirectory) !==
+        `${repositoryKey(record.repository)}.pr-${record.pr}.lease`)
+  ) {
+    throw new Error("PR ownership record does not match its scoped namespace");
   }
   return record;
 }
@@ -527,6 +742,15 @@ function setManifestCredentialRaw(manifestPath, credential) {
   const invocation = require("./quality-invocation");
   invocation.withManifestLockRaw(manifestPath, (manifest) => {
     manifest.merge ??= {};
+    const previous = manifest.merge.repositoryLease;
+    if (previous && previous.scope !== credential.scope) {
+      manifest.merge.repositoryLeaseHistory ??= [];
+      manifest.merge.repositoryLeaseHistory.push({
+        ...previous,
+        replacedAt: new Date().toISOString(),
+        reason: "ownership-scope-transition",
+      });
+    }
     manifest.merge.repositoryLease = credential;
   });
 }
@@ -535,12 +759,14 @@ function completePending(paths, identity, loaded, current) {
   const credential = loaded.manifest.merge?.repositoryLease;
   if (
     credential?.token !== current.token ||
-    credential?.generation !== current.generation
+    credential?.generation !== current.generation ||
+    credential?.scope !== current.scope
   ) {
     setManifestCredentialRaw(loaded.manifestPath, {
       repository: identity,
       generation: current.generation,
       token: current.token,
+      ...(current.scope ? { scope: current.scope } : {}),
     });
   }
   const active = {
@@ -562,16 +788,21 @@ function acquireOnce(manifestPath, options = {}) {
   const tuple = ownerTuple(loaded.manifest, loaded.manifestPath, {
     requireWorktree: true,
   });
-  return withMetadataGuard(
+  return withOwnershipTransaction(
     loaded.manifest,
     (paths, identity) => {
+      prepareOwnershipProtocol(paths, loaded, tuple);
+      let reuseReleased = false;
+      let previousGeneration =
+        loaded.manifest.merge?.repositoryLease?.generation || 0;
       if (fs.existsSync(paths.lease)) {
         const current = leaseRecord(paths.lease);
+        previousGeneration = Math.max(previousGeneration, current.generation);
         if (current.disposition === "released") {
           const remotelyVerified = String(
             current.releaseReason || "",
           ).startsWith("verified-remote-");
-          if (fs.existsSync(paths.mergeGuard)) {
+          if (relatedMergeGuard(paths, current)) {
             if (!remotelyVerified) {
               throw new Error(
                 "ambiguous merge operation is quarantined; reconcile GitHub before acquiring another repository lease",
@@ -584,23 +815,24 @@ function acquireOnce(manifestPath, options = {}) {
           ) {
             recordMergedTerminalRaw(current.manifestPath);
           }
-          if (fs.existsSync(paths.mergeGuard)) {
+          if (relatedMergeGuard(paths, current)) {
             const releasedGuard = tombstone(paths.mergeGuard);
             exactCleanup(releasedGuard);
           }
-          const releasedLease = tombstone(paths.lease);
-          exactCleanup(releasedLease);
+          if (paths.scope === PR_SCOPE) reuseReleased = true;
+          else exactCleanup(tombstone(paths.lease));
         } else {
           if (
             current.disposition === "active" &&
             orphanedLeaseHasClosedPullRequest(current)
           ) {
-            if (fs.existsSync(paths.mergeGuard)) {
-              const releasedGuard = tombstone(paths.mergeGuard);
-              exactCleanup(releasedGuard);
+            if (relatedMergeGuard(paths, current)) {
+              throw new Error(
+                "orphaned merge outcome remains quarantined; reconcile exact remote outcome first",
+              );
             }
-            const releasedLease = tombstone(paths.lease);
-            exactCleanup(releasedLease);
+            if (paths.scope === PR_SCOPE) reuseReleased = true;
+            else exactCleanup(tombstone(paths.lease));
           } else {
             const credential = loaded.manifest.merge?.repositoryLease;
             if (
@@ -645,15 +877,23 @@ function acquireOnce(manifestPath, options = {}) {
           }
         }
       }
-
-      fs.mkdirSync(paths.lease, { mode: 0o700 });
+      if (
+        !reuseReleased &&
+        loaded.manifest.merge?.repositoryLease?.scope === PR_SCOPE
+      ) {
+        throw new Error(
+          "scoped ownership record is missing; refusing token-only recreation",
+        );
+      }
+      if (!reuseReleased) fs.mkdirSync(paths.lease, { mode: 0o700 });
       const token = crypto.randomBytes(32).toString("hex");
       const now = new Date().toISOString();
       const pending = {
         schemaVersion: SCHEMA_VERSION,
+        ...(paths.scope ? { scope: paths.scope } : {}),
         ...tuple,
         disposition: "rotation-pending",
-        generation: 1,
+        generation: previousGeneration + 1,
         token,
         priorToken: null,
         acquiredAt: now,
@@ -735,13 +975,17 @@ function recover(manifestPath, ownerToken, options = {}) {
   const nextTuple = ownerTuple(loaded.manifest, loaded.manifestPath, {
     requireWorktree: true,
   });
-  return withMetadataGuard(loaded.manifest, (paths, identity) => {
-    if (fs.existsSync(paths.mergeGuard)) {
+  return withOwnershipTransaction(loaded.manifest, (paths, identity) => {
+    const current = leaseRecord(paths.lease);
+    if (current.disposition === "released")
+      throw new Error(
+        "repository lease is released; use acquire for a new ownership generation",
+      );
+    if (relatedMergeGuard(paths, current)) {
       throw new Error(
         "ambiguous merge operation is quarantined; reconcile GitHub before recovery",
       );
     }
-    const current = leaseRecord(paths.lease);
     if (current.disposition === "rotation-pending") {
       if (
         !tupleMatches(current, nextTuple) ||
@@ -828,7 +1072,7 @@ function withManifestMutation(
     }
     if (
       options.requireIdle &&
-      (fs.existsSync(paths.mergeGuard) || record.mergeIntent)
+      (relatedMergeGuard(paths, record) || record.mergeIntent)
     ) {
       throw new Error(
         "merge recovery requires an idle repository with no merge operation",
@@ -859,13 +1103,13 @@ function release(manifestPath, presentedToken, reason = "completed") {
   const tuple = ownerTuple(loaded.manifest, loaded.manifestPath, {
     requireWorktree: true,
   });
-  return withMetadataGuard(loaded.manifest, (paths) => {
-    if (fs.existsSync(paths.mergeGuard)) {
+  return withOwnershipTransaction(loaded.manifest, (paths) => {
+    const record = leaseRecord(paths.lease);
+    if (relatedMergeGuard(paths, record)) {
       throw new Error(
         "ambiguous merge operation is quarantined; reconcile GitHub before releasing the repository lease",
       );
     }
-    const record = leaseRecord(paths.lease);
     if (
       record.disposition !== "active" ||
       !tupleMatches(record, tuple) ||
@@ -877,8 +1121,7 @@ function release(manifestPath, presentedToken, reason = "completed") {
     record.releaseReason = reason;
     record.releasedAt = new Date().toISOString();
     atomicWrite(path.join(paths.lease, "owner.json"), record);
-    const released = tombstone(paths.lease);
-    exactCleanup(released);
+    if (record.scope !== PR_SCOPE) exactCleanup(tombstone(paths.lease));
     return true;
   });
 }
@@ -920,24 +1163,20 @@ function status(manifestPath) {
       renewedAt: record.renewedAt,
       ageMs,
       staleAfterMs: STALE_MS,
-      recoveryOverrideRequired: !stale,
+      recoveryOverrideRequired: record.disposition !== "released" && !stale,
       generation: record.generation,
-      owned: tupleMatches(
-        record,
-        ownerTuple(loaded.manifest, loaded.manifestPath),
-      ),
+      owned:
+        record.disposition === "active" &&
+        tupleMatches(record, ownerTuple(loaded.manifest, loaded.manifestPath)),
       stale,
       mergeGuard,
       mergeIntent: record.mergeIntent ?? null,
       lastRefCasRejection: record.lastRefCasRejection ?? null,
-      // Emitted whether or not the owner is stale. A live owner is exactly
-      // the case an operator cannot otherwise get past, and the command is
-      // self-documenting about needing --override for a recent one.
-      recoveryCommand: recoveryInvocation(
-        "recover",
-        loaded.manifestPath,
-        record,
-      ),
+      // Released receipts require normal acquisition, not stale-owner recovery.
+      recoveryCommand:
+        record.disposition === "released"
+          ? null
+          : recoveryInvocation("recover", loaded.manifestPath, record),
     };
   });
 }
@@ -1181,7 +1420,7 @@ function acquireMergeGuard(manifestPath, presentedToken, options = {}) {
   const tuple = ownerTuple(loaded.manifest, loaded.manifestPath, {
     requireWorktree: true,
   });
-  return withMetadataGuard(loaded.manifest, (paths) => {
+  return withOwnershipTransaction(loaded.manifest, (paths) => {
     const record = leaseRecord(paths.lease);
     const credential = loaded.manifest.merge?.repositoryLease;
     if (
@@ -1247,7 +1486,7 @@ function releaseMergeGuard(
   ownerTuple(loaded.manifest, loaded.manifestPath, {
     requireWorktree: true,
   });
-  return withMetadataGuard(loaded.manifest, (paths) => {
+  return withOwnershipTransaction(loaded.manifest, (paths) => {
     const owner = guardOwner(paths.mergeGuard);
     if (
       owner.token !== presentedToken ||
@@ -1504,9 +1743,7 @@ function reconcileMergeOutcome(manifestPath, presentedToken, options = {}) {
   const { manifest } = loadManifest(manifestPath);
   const remote = remotePullRequest(manifest, { repositoryScoped: true });
   const paths = pathsFor(repositoryIdentity(manifest), manifest);
-  const guard = fs.existsSync(paths.mergeGuard)
-    ? guardOwner(paths.mergeGuard)
-    : null;
+  const guard = relatedMergeGuard(paths, credential);
   let outcome = exactRemoteOutcome(manifest, remote);
   const refCasIntent = refCasIntentMatches(credential, manifest);
   if (
@@ -1580,7 +1817,7 @@ function recordMergedTelemetry(manifestPath) {
 function releaseVerifiedOutcome(manifestPath, presentedToken, outcome) {
   const loaded = loadManifest(manifestPath);
   const tuple = ownerTuple(loaded.manifest, loaded.manifestPath);
-  const released = withMetadataGuard(loaded.manifest, (paths) => {
+  const released = withOwnershipTransaction(loaded.manifest, (paths) => {
     const record = leaseRecord(paths.lease);
     if (
       record.disposition !== "active" ||
@@ -1591,8 +1828,9 @@ function releaseVerifiedOutcome(manifestPath, presentedToken, outcome) {
         "verified remote outcome does not belong to the active repository lease",
       );
     }
-    if (fs.existsSync(paths.mergeGuard)) {
-      const owner = guardOwner(paths.mergeGuard);
+    const ownGuard = relatedMergeGuard(paths, record);
+    if (ownGuard) {
+      const owner = ownGuard;
       if (
         owner.token !== presentedToken ||
         owner.repository !== repositoryIdentity(loaded.manifest) ||
@@ -1612,12 +1850,11 @@ function releaseVerifiedOutcome(manifestPath, presentedToken, outcome) {
     record.releasedAt = new Date().toISOString();
     atomicWrite(path.join(paths.lease, "owner.json"), record);
     if (outcome === "merged") recordMergedTerminalRaw(manifestPath);
-    if (fs.existsSync(paths.mergeGuard)) {
+    if (ownGuard) {
       const released = tombstone(paths.mergeGuard);
       exactCleanup(released);
     }
-    const releasedLease = tombstone(paths.lease);
-    exactCleanup(releasedLease);
+    if (record.scope !== PR_SCOPE) exactCleanup(tombstone(paths.lease));
     return true;
   });
   if (outcome === "merged") recordMergedTelemetry(manifestPath);
@@ -2014,6 +2251,7 @@ function commandHandlers(manifest, options) {
         confirmOwnerPr: options["confirm-owner-pr"],
       }),
     recover: () => publicCredential(recoverFromOptions(manifest, options)),
+    "rollback-protocol": () => rollbackProtocol(manifest),
   };
 }
 
@@ -2043,6 +2281,7 @@ module.exports = {
   RECOVERY_OVERRIDE_ENV,
   accountHome,
   acquire,
+  rollbackProtocol,
   acquireMergeGuard,
   assertBase,
   performMerge,
