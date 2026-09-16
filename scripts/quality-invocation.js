@@ -64,6 +64,7 @@ const {
   canonicalRoot,
   replayedTree,
   isAncestorOf,
+  selectionLineageValid,
   gitCommonDir,
   originIdentity,
   repoKey,
@@ -3476,10 +3477,14 @@ function assertProviderReviewContractReady(manifest) {
     );
   }
   if (
-    !isAncestorOf(
+    !selectionLineageValid(
       manifest.repo.realpath,
       selectionHead,
       manifest.revisions.currentHead,
+      manifest.revisions.reviewRebaseCarries ||
+        (manifest.revisions.reviewRebaseCarry
+          ? [manifest.revisions.reviewRebaseCarry]
+          : []),
     )
   ) {
     throw new Error(
@@ -4996,17 +5001,15 @@ function verifyReviewArtifact(manifest, review) {
     (manifest.reviewContractVersion || 1) >= 2 &&
     manifest.risk.reviewPolicyDigest
   ) {
-    const selectionIsAncestor =
-      spawnSync(
-        "git",
-        [
-          "merge-base",
-          "--is-ancestor",
-          manifest.panel.selectionHead,
-          review.to,
-        ],
-        { cwd: manifest.repo.realpath, stdio: "ignore" },
-      ).status === 0;
+    const selectionIsAncestor = selectionLineageValid(
+      manifest.repo.realpath,
+      manifest.panel.selectionHead,
+      review.to,
+      manifest.revisions.reviewRebaseCarries ||
+        (manifest.revisions.reviewRebaseCarry
+          ? [manifest.revisions.reviewRebaseCarry]
+          : []),
+    );
     const expectedSelection = agentSelection.selectReviewersForRange({
       tier: manifest.risk.tier,
       repo: manifest.repo.realpath,

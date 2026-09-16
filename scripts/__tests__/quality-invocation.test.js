@@ -6083,6 +6083,131 @@ exit 1
     );
   });
 
+  it("retains v2 selection through provider start and delta coverage after repair rebases", () => {
+    const root = repo("v2-selection-repair-rebases");
+    const manifestPath = create(root);
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      invocation.setRisk(manifest, {
+        tier: "medium",
+        taskType: "bugfix",
+        score: 35,
+        agents: 1,
+        "codex-depth": "high",
+        "codex-rounds": 1,
+      });
+      invocation.setAgents(manifest, ["code-reviewer"], {
+        domain: "general",
+        rule: "general-review",
+      });
+    });
+    const original = prepareCodexReview(root, manifestPath);
+    const selected = invocation.loadManifest(manifestPath).manifest;
+    writeFileSync(
+      path.join(root, "repair.js"),
+      "export const repaired = true;\n",
+    );
+    git(root, ["add", "repair.js"]);
+    git(root, ["commit", "-qm", "fix: repair"]);
+    execFileSync("node", [INVOCATION, "advance", manifestPath], { cwd: root });
+    for (let index = 0; index < 2; index++) {
+      git(root, ["switch", "-q", "main"]);
+      writeFileSync(
+        path.join(root, `upstream-${index}.js`),
+        `export const upstream = ${index};\n`,
+      );
+      git(root, ["add", "."]);
+      git(root, ["commit", "-qm", "unrelated upstream"]);
+      git(root, ["fetch", "-q", "origin", "main"]);
+      git(root, ["switch", "-q", "feature"]);
+      git(root, ["rebase", "-q", "origin/main"]);
+      execFileSync("node", [INVOCATION, "advance", manifestPath], {
+        cwd: root,
+      });
+    }
+    execFileSync("node", [GOVERNOR, "bump-round", manifestPath], { cwd: root });
+    const before = invocation.loadManifest(manifestPath).manifest;
+    expect(before.panel.selectionHead).toBe(original.to);
+    expect(before.revisions.reviewRebaseCarries).toHaveLength(2);
+    {
+      const corruptions = [
+        (manifest) => {
+          manifest.revisions.reviewRebaseCarries[0].baseSha = "0".repeat(40);
+        },
+        (manifest) => {
+          manifest.revisions.reviewRebaseCarries.push({
+            ...manifest.revisions.reviewRebaseCarries[0],
+          });
+        },
+        (manifest) => {
+          manifest.revisions.currentHead = manifest.revisions.baseSha;
+        },
+      ];
+      for (const corrupt of corruptions) {
+        const invalid = structuredClone(before);
+        corrupt(invalid);
+        expect(() =>
+          invocation.authorizeProviderAttempt(invalid, { provider: "codex" }),
+        ).toThrow(/selection is not bound/);
+        expect(invalid.governor.providerAttempts).toEqual(
+          before.governor.providerAttempts,
+        );
+        expect(invalid.governor.activeExecution).toBeNull();
+      }
+    }
+    const started = spawnSync(
+      "node",
+      [INVOCATION, "provider-attempt", manifestPath, "--provider", "codex"],
+      { cwd: root, encoding: "utf8" },
+    );
+    expect(started.status, started.stderr).toBe(0);
+    expect(
+      invocation.loadManifest(manifestPath).manifest.governor
+        .providerSecondsUsed,
+    ).toBe(before.governor.providerSecondsUsed);
+    invocation.withManifestLock(manifestPath, (manifest) =>
+      invocation.completeProviderAttempt(manifest, {
+        provider: "codex",
+        "elapsed-seconds": "0",
+      }),
+    );
+    prepareCodexReview(root, manifestPath);
+    const after = invocation.loadManifest(manifestPath).manifest;
+    expect(after.reviewContractVersion).toBe(2);
+    expect(after.panel).toEqual(selected.panel);
+    expect(after.reviews[0].to).toBe(original.to);
+    expect(after.governor.providerSecondsUsed).toBeGreaterThanOrEqual(
+      before.governor.providerSecondsUsed,
+    );
+    expect(after.governor.providerSecondsLimit).toBe(
+      before.governor.providerSecondsLimit,
+    );
+    expect(after.governor.maxFixCommits).toBe(before.governor.maxFixCommits);
+    expect(() => invocation.reviewCoverage(after)).not.toThrow();
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(
+      path.join(root, "later-upstream.js"),
+      "export const later = true;\n",
+    );
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "later unrelated upstream"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["rebase", "-q", "origin/main"]);
+    execFileSync("node", [INVOCATION, "advance", manifestPath], { cwd: root });
+    const later = invocation.loadManifest(manifestPath).manifest;
+    for (const name of ["lint", "test", "security"])
+      recordGateFixture(manifestPath, name);
+    expect(() =>
+      invocation.reviewCoverage(invocation.loadManifest(manifestPath).manifest),
+    ).not.toThrow();
+    expect(later.panel).toEqual(selected.panel);
+    const corrupted = structuredClone(after);
+    corrupted.panel.selectionHead = corrupted.revisions.baseSha;
+    expect(() => invocation.reviewCoverage(corrupted)).toThrow(
+      /identity mismatch/,
+    );
+  });
+
   it("retains structured leads produced before an incomplete provider run", () => {
     const root = repo("incomplete-partial-leads");
     const manifest = create(root);
