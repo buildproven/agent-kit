@@ -136,3 +136,19 @@ scorer suite passes 20 tests, including explicit CLI failure diagnostics,
 installed linked controls and cycles, root precedence and conflicts, and clean
 versus dirty Git provenance. This is local proof, not protected delivery or
 completion of the downstream history migration.
+
+Protected review follow-up, 2026-09-16: two confirmed leads exposed an unscoped
+installed symlink allowlist and missing provenance for a tracked nested source
+directory (not a Git submodule). Three public regressions failed before repair.
+Read boundaries now come only from explicitly selected canonical source roots;
+both traversal and direct control-file reads use them. Installed surface links
+must stay beneath the selected kit or overlay. They cannot authorize their own
+targets. Source scans also reject direct file links outside their selected scope.
+Nested Git provenance records the checkout root and selected relative root with
+the clean checkout revision. Real submodules retain their own revision.
+
+A further public regression proved that Git status executed an assessed
+repository's configured filesystem monitor (1 failed /23 skipped). Provenance
+commands now force `core.fsmonitor=false`. All 24 scorer tests pass after these
+repairs. These are source-level checks, not comparative SOTA or installed rollout
+acceptance. The same protected campaign must validate the single repair commit.

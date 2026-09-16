@@ -307,6 +307,111 @@ describe("SOTA rubric 3.0 scorer", () => {
     );
   });
 
+  it.each(["surface", "control-file"])(
+    "does not read outside selected sources through a %s link",
+    async (kind) => {
+      fixture = makeLayeredFixture();
+      const installed = path.join(fixture, "installed");
+      const outside = path.join(fixture, "unselected");
+      write(
+        fixture,
+        "unselected/private/SKILL.md",
+        "private content must not be read",
+      );
+      write(
+        fixture,
+        "unselected/governor.js",
+        "private content must not be read",
+      );
+      write(
+        fixture,
+        "installed/settings.json",
+        fs.readFileSync(
+          path.join(fixture, "core/config/settings.json"),
+          "utf8",
+        ),
+      );
+      for (const surface of ["scripts", "skills", "agents", "commands"]) {
+        const source = path.join(fixture, "core", surface);
+        fs.mkdirSync(source, { recursive: true });
+        fs.symlinkSync(
+          kind === "surface" && surface === "skills" ? outside : source,
+          path.join(installed, surface),
+        );
+      }
+      if (kind === "control-file") {
+        const control = path.join(
+          fixture,
+          "core/scripts/quality-run-governor.js",
+        );
+        fs.unlinkSync(control);
+        fs.symlinkSync(path.join(outside, "governor.js"), control);
+      }
+      const outsideCanonical = fs.realpathSync(outside);
+      const accesses = [];
+      const spies = ["readFileSync", "readdirSync"].map((method) => {
+        const original = fs[method];
+        return vi.spyOn(fs, method).mockImplementation((file, ...args) => {
+          if (typeof file === "string" && fs.existsSync(file)) {
+            const real = fs.realpathSync(file);
+            if (
+              real === outsideCanonical ||
+              real.startsWith(`${outsideCanonical}${path.sep}`)
+            )
+              accesses.push(real);
+          }
+          return original(file, ...args);
+        });
+      });
+      try {
+        const output = await scoreRepository({
+          format: "layered-v2",
+          publicRoot: path.join(fixture, "core"),
+          installedRoot: installed,
+          schema: SETTINGS_SCHEMA,
+        });
+        expect(accesses).toEqual([]);
+        expect(output.layerStates.installed_composition.state).toBe("invalid");
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    },
+  );
+
+  it("records a clean tracked nested source root with its checkout provenance", async () => {
+    fixture = makeLayeredFixture();
+    const git = (args) =>
+      execFileSync("git", ["-C", fixture, ...args], {
+        encoding: "utf8",
+      }).trim();
+    git(["init", "-q"]);
+    git(["config", "user.name", "Fixture"]);
+    git(["config", "user.email", "fixture@example.invalid"]);
+    git(["add", "."]);
+    git([
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "fixture",
+    ]);
+    const output = await scoreRepository({
+      format: "layered-v2",
+      publicRoot: path.join(fixture, "core"),
+      overlayRoot: fixture,
+      schema: SETTINGS_SCHEMA,
+    });
+    expect(output.layers.public_kit.source.revision).toBe(
+      git(["rev-parse", "HEAD"]),
+    );
+    expect(output.layers.public_kit.source.checkoutRoot).toBe(
+      fs.realpathSync(fixture),
+    );
+    expect(output.layers.public_kit.source.relativeRoot).toBe("core");
+  });
+
   it("uses argument roots ahead of environment roots without reading the host installation", async () => {
     fixture = makeLayeredFixture();
     vi.stubEnv("SOTA_PUBLIC_ROOT", path.join(fixture, "absent"));
@@ -397,6 +502,24 @@ describe("SOTA rubric 3.0 scorer", () => {
     expect(compareVersions("2.1.210", "2.1.207")).toBe(1);
     expect(compareVersions("2.1.210", "2.1.210")).toBe(0);
     expect(compareVersions("2.1.99", "2.1.210")).toBe(-1);
+  });
+
+  it("does not execute a source-configured Git filesystem monitor", async () => {
+    fixture = makeLayeredFixture();
+    const root = path.join(fixture, "core");
+    const marker = path.join(fixture, "monitor-executed");
+    const monitor = path.join(fixture, "monitor.sh");
+    fs.writeFileSync(monitor, `#!/bin/sh\ntouch '${marker}'\nprintf '\\0'\n`, {
+      mode: 0o700,
+    });
+    execFileSync("git", ["-C", root, "init", "-q"]);
+    execFileSync("git", ["-C", root, "config", "core.fsmonitor", monitor]);
+    await scoreRepository({
+      format: "layered-v2",
+      publicRoot: root,
+      schema: SETTINGS_SCHEMA,
+    });
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   describe("overallScore", () => {

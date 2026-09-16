@@ -15,6 +15,7 @@ const Ajv = require("ajv");
 let ROOT = path.resolve(process.env.SOTA_ROOT || path.join(__dirname, ".."));
 let LAYER = "public_kit";
 let READ_ERRORS = [];
+let READ_ROOTS = [fs.existsSync(ROOT) ? fs.realpathSync(ROOT) : ROOT];
 const SETTINGS_SCHEMA_URL =
   "https://json.schemastore.org/claude-code-settings.json";
 const CURRENT_BASELINE = "2.1.233";
@@ -32,13 +33,36 @@ function sourcePath(relativePath) {
   return own;
 }
 
+function withinRoots(file, roots) {
+  return roots.some(
+    (root) => file === root || file.startsWith(`${root}${path.sep}`),
+  );
+}
+
+function safeSource(file) {
+  try {
+    const real = fs.realpathSync(file);
+    if (!withinRoots(real, READ_ROOTS))
+      throw new Error("link leaves explicitly selected source roots");
+    return real;
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      READ_ERRORS.push(
+        `${path.relative(ROOT, file)}: ${error.code || error.message}`,
+      );
+    return null;
+  }
+}
+
 function exists(relativePath) {
-  return fs.existsSync(sourcePath(relativePath));
+  return safeSource(sourcePath(relativePath)) !== null;
 }
 
 function readText(relativePath) {
+  const file = safeSource(sourcePath(relativePath));
+  if (file === null) return "";
   try {
-    return fs.readFileSync(sourcePath(relativePath), "utf8");
+    return fs.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code !== "ENOENT")
       READ_ERRORS.push(`${relativePath}: ${error.code || error.message}`);
@@ -105,19 +129,15 @@ function walkSurface(relativeDir, predicate, explicitRoot) {
   if (!fs.existsSync(root) && LAYER === "private_overlay")
     root = path.join(ROOT, "core", relativeDir);
   if (!fs.existsSync(root)) return [];
+  root = safeSource(root);
+  if (root === null) return [];
   const results = [];
   const seen = new Set();
-  const allowed = [
-    root,
-    ...["scripts", "skills", "agents", "commands"].map((name) =>
-      path.join(ROOT, name),
-    ),
-  ]
-    .filter((file) => fs.existsSync(file))
-    .map((file) => fs.realpathSync(file));
+  const allowed = READ_ROOTS;
   let visited = 0;
   const visit = (dir, depth = 0) => {
-    const real = fs.realpathSync(dir);
+    const real = safeSource(dir);
+    if (real === null) return;
     if (seen.has(real) || depth > 32 || ++visited > 10000) {
       READ_ERRORS.push(
         `${relativeDir}: cyclic or excessive directory traversal`,
@@ -590,13 +610,17 @@ function overallScore(scores) {
   );
 }
 
-function scoreLayer(root, layer, { schema, schemaError }) {
+function scoreLayer(root, layer, { schema, schemaError, sourceRoots = [] }) {
   const priorRoot = ROOT;
   const priorLayer = LAYER;
   const priorErrors = READ_ERRORS;
+  const priorReadRoots = READ_ROOTS;
   ROOT = root;
   LAYER = layer;
   READ_ERRORS = [];
+  READ_ROOTS = (layer === "public_kit" ? [root] : [root, ...sourceRoots])
+    .filter((file) => fs.existsSync(file))
+    .map((file) => fs.realpathSync(file));
   try {
     const categories = {
       settings_validity: scoreSettingsValidity(schema, schemaError),
@@ -640,6 +664,7 @@ function scoreLayer(root, layer, { schema, schemaError }) {
     ROOT = priorRoot;
     LAYER = priorLayer;
     READ_ERRORS = priorErrors;
+    READ_ROOTS = priorReadRoots;
   }
 }
 
@@ -709,24 +734,53 @@ function layerRoots(options) {
       }
     }
   }
+  const installed = roots.installed_composition;
+  const sources = [roots.public_kit, roots.private_overlay]
+    .filter((entry) => entry.state === "present")
+    .map((entry) => entry.root);
+  if (installed.state === "present") {
+    for (const surface of ["scripts", "skills", "agents", "commands"]) {
+      if (
+        !withinRoots(
+          fs.realpathSync(path.join(installed.root, surface)),
+          sources,
+        )
+      ) {
+        installed.state = "invalid";
+        installed.reason = `installed ${surface} link leaves explicitly selected source roots`;
+        break;
+      }
+    }
+  }
   return roots;
 }
 
 function sourceRevision(root) {
   const git = (args) =>
-    spawnSync("git", ["-C", root, ...args], {
+    spawnSync("git", ["-c", "core.fsmonitor=false", "-C", root, ...args], {
       encoding: "utf8",
       timeout: 5000,
     });
   const top = git(["rev-parse", "--show-toplevel"]);
-  if (top.status !== 0 || fs.realpathSync(top.stdout.trim()) !== root)
+  if (top.status !== 0)
     return { revision: null, reason: "root is not a Git source checkout" };
+  const checkoutRoot = fs.realpathSync(top.stdout.trim());
+  if (!withinRoots(root, [checkoutRoot]))
+    return {
+      revision: null,
+      reason: "root is outside its Git source checkout",
+    };
   const status = git(["status", "--porcelain"]);
   if (status.status !== 0 || status.stdout.trim())
     return { revision: null, reason: "source status unavailable or dirty" };
   const head = git(["rev-parse", "HEAD"]);
   return head.status === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim())
-    ? { revision: head.stdout.trim(), reason: null }
+    ? {
+        revision: head.stdout.trim(),
+        reason: null,
+        checkoutRoot,
+        relativeRoot: path.relative(checkoutRoot, root) || ".",
+      }
     : { revision: null, reason: "source revision unavailable" };
 }
 
@@ -758,6 +812,9 @@ async function scoreRepository({ schema, schemaError, ...options } = {}) {
     };
   }
   const roots = layerRoots(options);
+  const sourceRoots = [roots.public_kit, roots.private_overlay]
+    .filter((entry) => entry.state === "present")
+    .map((entry) => entry.root);
   const layers = {};
   const missingLayers = [];
   for (const [layer, entry] of Object.entries(roots)) {
@@ -768,6 +825,7 @@ async function scoreRepository({ schema, schemaError, ...options } = {}) {
     const scored = scoreLayer(entry.root, layer, {
       schema: liveSchema,
       schemaError: liveSchemaError,
+      sourceRoots,
     });
     layers[layer] = {
       ...scored,
