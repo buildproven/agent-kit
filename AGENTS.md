@@ -91,7 +91,7 @@ The distributed `settings.json` wires bash scripts in `scripts/` to Claude Code 
 - **Stop** → `stop-validation.sh`, `multi-session-cleanup.sh`
 - **SessionStart** → `multi-session-guard.sh`
 
-When changing any of these scripts: the hook invokes them as `$HOME/.claude/scripts/<name>` after symlink, so test via the symlinked path if you hit pathing issues. Claude Code hook timeouts in `settings.json` use **seconds**, not child-process milliseconds. A timed-out command hook can render no decision. The Bash dispatcher must deny before its outer five-second timeout; its child processes share a four-second budget.
+When changing any of these scripts: the hook invokes them as `$HOME/.claude/scripts/<name>` after symlink, so test via the symlinked path if you hit pathing issues. Claude Code hook timeouts in `settings.json` use **seconds**, not child-process milliseconds. A timed-out command hook can render no decision. The Bash dispatcher must deny before its outer five-second timeout; its child processes share a four-second budget. Each child has an isolated POSIX process group so timeout cleanup also kills its helpers. Native Windows guarded execution fails closed; use WSL for this guard lifecycle.
 
 ### Quality / release automation
 

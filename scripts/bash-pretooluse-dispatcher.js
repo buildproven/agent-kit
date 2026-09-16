@@ -90,15 +90,31 @@ if (
 }
 
 function runBounded(executable, args, options, name) {
+  if (process.platform === "win32")
+    deny(
+      "Bash safety checks require POSIX process-group cleanup; run them in WSL.",
+    );
   const remaining = Math.floor(4000 - (performance.now() - startedAt));
   if (remaining <= 0) deny("Bash safety checks exhausted their 4000ms budget.");
   const timeout = Math.min(GUARD_TIMEOUT_MS, remaining);
   const result = spawnSync(executable, args, {
     ...options,
+    // POSIX guards need their own group: killing only bash leaves helpers alive.
+    detached: true,
     timeout,
     killSignal: "SIGKILL",
   });
   if (result.error?.code === "ETIMEDOUT" || result.signal) {
+    if (Number.isSafeInteger(result.pid) && result.pid > 1) {
+      try {
+        process.kill(-result.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH")
+          deny(
+            `${name} timed out and process-group cleanup failed: ${error.message}`,
+          );
+      }
+    }
     deny(
       `${name} did not finish within ${timeout}ms and was terminated; ` +
         `refusing the command rather than proceeding unchecked`,
