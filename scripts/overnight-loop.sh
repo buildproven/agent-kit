@@ -52,6 +52,7 @@ STATE_HOME="${XDG_STATE_HOME:-${HOME:-${TMPDIR:-/tmp}}/.local/state}"
 LOG_DIR="${OVERNIGHT_LOOP_STATE_DIR:-$STATE_HOME/buildproven/overnight-loop/$TARGET_STATE_ID}"
 LOG_FILE="$LOG_DIR/overnight-loop-$(date +%Y-%m-%d).log"
 STATUS_FILE="$LOG_DIR/overnight-loop-status.json"
+BUILDER_STATE_DIR="$STATE_HOME/claude-kit/builder-dispatch"
 RUN_WITH_DEADLINE="$SCRIPT_DIR/run-with-deadline.py"
 mkdir -p "$LOG_DIR"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
@@ -215,6 +216,7 @@ cleanup_lock() {
 main() {
   [ -n "${LINEAR_API_KEY:-}" ] || { log "FATAL: LINEAR_API_KEY is required"; return 1; }
   [ -x "$SCRIPT_DIR/provider-run.sh" ] || { log "FATAL: provider runner missing"; return 1; }
+  [ -f "$SCRIPT_DIR/builder-dispatch.js" ] || { log "FATAL: builder dispatcher missing"; return 1; }
   [ -f "$AUTONOMOUS_RUNTIME" ] || { log "FATAL: autonomous-loop runtime missing"; return 1; }
   [ -f "$RUN_WITH_DEADLINE" ] || { log "FATAL: deadline helper missing at $RUN_WITH_DEADLINE"; return 1; }
   command -v git >/dev/null 2>&1 || { log "FATAL: git not on PATH"; return 1; }
@@ -266,7 +268,7 @@ main() {
   log "Scoped Linear backlog reachable; next issue=$current_issue"
   if [ "$DRY_RUN" -eq 1 ]; then finish "dry-run" 0; return $?; fi
 
-  local error_streak=0 now remaining main_before main_after run_rc receipt issue_state iteration_log provider_output_dir
+  local error_streak=0 now remaining main_before main_after run_rc receipt issue_state iteration_log provider_output_dir builder_receipt
   while [ "$items_done" -lt "$MAX_ITEMS" ]; do
     now=$(date +%s)
     [ "$now" -lt "$DEADLINE_EPOCH" ] || { finish "max-hours" 1; return $?; }
@@ -289,7 +291,19 @@ main() {
     # launcher cannot infer item paths; protected paths still force a replan.
     if [ "$PROVIDER" = codex ]; then
       printf '%s\n' '{"schemaVersion":2,"caller":"overnight-ralph","provider":"codex","phase":"implement","evidence":{"localized":false,"reversible":false,"targetedProof":false,"ambiguous":true,"changedFiles":0,"protectedSurfaces":[],"publicContract":false,"crossRepository":false,"plannedPaths":["**"]}}' > "$execution_facts_file"
-      provider_args=(--prompt-file "$prompt_file" --phase-request "$execution_facts_file" --caller overnight-ralph --provider codex --fallback none --target-dir "$TARGET_DIR" --timeout "$remaining" --output-dir "$provider_output_dir")
+      mkdir -p "$provider_output_dir"
+      builder_receipt="$provider_output_dir/builder-receipt.json"
+      if ! node "$SCRIPT_DIR/builder-dispatch.js" create \
+        --receipt "$builder_receipt" \
+        --request "$execution_facts_file" \
+        --prompt-file "$prompt_file" \
+        --target-dir "$TARGET_DIR" \
+        --state-dir "$BUILDER_STATE_DIR" >> "$iteration_log" 2>&1; then
+        log "ERROR: builder dispatch denied $current_issue before provider launch"
+        finish "builder-dispatch-denied" 1
+        return $?
+      fi
+      provider_args=(--prompt-file "$prompt_file" --builder-receipt "$builder_receipt" --builder-state-dir "$BUILDER_STATE_DIR" --caller overnight-ralph --provider codex --fallback none --target-dir "$TARGET_DIR" --timeout "$remaining" --output-dir "$provider_output_dir")
     else
       printf '%s\n' '{"phase":"implement","localized":false,"reversible":false,"targetedProof":false,"ambiguous":true,"changedFiles":0,"protectedSurfaces":[],"sameFailureStreak":0}' > "$execution_facts_file"
       provider_args=(--prompt-file "$prompt_file" --execution-facts "$execution_facts_file" --target-dir "$TARGET_DIR" --timeout "$remaining" --output-dir "$provider_output_dir")

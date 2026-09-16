@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed for BUI-793.
+Partially implemented for BUI-793. The signed standard/critical write ingress,
+campaign reservation, and caller migration are delivered first. Economy
+admission, production receipt ingestion, canary calibration, and automatic
+revocation remain disabled until their separate evidence controls exist.
 
 ## Context
 

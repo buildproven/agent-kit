@@ -19,6 +19,7 @@ import { makeTempDir } from "./helpers/tmp.js";
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const PROVIDER_RUN = path.join(ROOT, "scripts", "provider-run.sh");
 const COMPUTE_GOVERNOR = path.join(ROOT, "scripts", "compute-governor.js");
+const BUILDER_DISPATCH = path.join(ROOT, "scripts", "builder-dispatch.js");
 const SKILL_SYNC = path.join(ROOT, "scripts", "setup-codex-skills.sh");
 const MCP_SYNC = path.join(ROOT, "scripts", "mcp-sync.py");
 const MCP_PARITY = path.join(ROOT, "scripts", "setup-mcp-parity.sh");
@@ -2611,6 +2612,11 @@ describe("provider-native platform", () => {
     const output = path.join(makeTempDir("provider-output-"), "output");
     const prompt = path.join(dir, "prompt");
     const request = path.join(dir, "request.json");
+    const dispatchState = makeTempDir("provider-builder-state-");
+    const receipt = path.join(
+      makeTempDir("provider-builder-receipt-"),
+      "receipt.json",
+    );
     mkdirSync(bin);
     writeFileSync(prompt, "add the planned local feature\n");
     writeFileSync(
@@ -2634,6 +2640,25 @@ describe("provider-native platform", () => {
       }),
     );
     initializeGovernedTarget(dir);
+    const dispatched = spawnSync(
+      "node",
+      [
+        BUILDER_DISPATCH,
+        "create",
+        "--receipt",
+        receipt,
+        "--request",
+        request,
+        "--prompt-file",
+        prompt,
+        "--target-dir",
+        dir,
+        "--state-dir",
+        dispatchState,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(dispatched.status, dispatched.stderr).toBe(0);
     executable(
       path.join(bin, "codex"),
       [
@@ -2655,8 +2680,10 @@ describe("provider-native platform", () => {
         PROVIDER_RUN,
         "--prompt-file",
         prompt,
-        "--phase-request",
-        request,
+        "--builder-receipt",
+        receipt,
+        "--builder-state-dir",
+        dispatchState,
         "--caller",
         "interactive-ralph",
         "--target-dir",
@@ -2677,6 +2704,129 @@ describe("provider-native platform", () => {
       JSON.parse(readFileSync(path.join(output, "run-record.json"), "utf8"))
         .outcome.status,
     ).toBe("completed");
+  });
+
+  it("rejects an unledgered schema-v2 write request before Codex launch", () => {
+    const dir = makeTempDir("provider-phase-direct-write-");
+    const bin = path.join(dir, "bin");
+    const output = path.join(makeTempDir("provider-output-"), "output");
+    const prompt = path.join(dir, "prompt");
+    const request = path.join(dir, "request.json");
+    const marker = path.join(dir, "codex-started");
+    mkdirSync(bin);
+    writeFileSync(prompt, "add the planned local feature\n");
+    writeFileSync(
+      request,
+      JSON.stringify({
+        schemaVersion: 2,
+        caller: "interactive-ralph",
+        provider: "codex",
+        phase: "implement",
+        evidence: {
+          localized: true,
+          reversible: true,
+          targetedProof: true,
+          ambiguous: false,
+          changedFiles: 1,
+          protectedSurfaces: [],
+          publicContract: false,
+          crossRepository: false,
+          plannedPaths: ["src/"],
+        },
+      }),
+    );
+    initializeGovernedTarget(dir);
+    executable(path.join(bin, "codex"), `touch '${marker}'`);
+    const result = spawnSync(
+      "bash",
+      [
+        PROVIDER_RUN,
+        "--prompt-file",
+        prompt,
+        "--phase-request",
+        request,
+        "--caller",
+        "interactive-ralph",
+        "--target-dir",
+        dir,
+        "--output-dir",
+        output,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("require a builder dispatch receipt");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("rejects an unledgered schema-v2 write plan before Codex launch", () => {
+    const dir = makeTempDir("provider-phase-direct-plan-");
+    const bin = path.join(dir, "bin");
+    const output = path.join(makeTempDir("provider-output-"), "output");
+    const prompt = path.join(dir, "prompt");
+    const request = path.join(dir, "request.json");
+    const plan = path.join(dir, "plan.json");
+    const marker = path.join(dir, "codex-started");
+    mkdirSync(bin);
+    writeFileSync(prompt, "add the planned local feature\n");
+    writeFileSync(
+      request,
+      JSON.stringify({
+        schemaVersion: 2,
+        caller: "interactive-ralph",
+        provider: "codex",
+        phase: "implement",
+        evidence: {
+          localized: true,
+          reversible: true,
+          targetedProof: true,
+          ambiguous: false,
+          changedFiles: 1,
+          protectedSurfaces: [],
+          publicContract: false,
+          crossRepository: false,
+          plannedPaths: ["src/"],
+        },
+      }),
+    );
+    initializeGovernedTarget(dir);
+    writeFileSync(
+      plan,
+      execFileSync(
+        "node",
+        [COMPUTE_GOVERNOR, "resolve-phase-execution", request, prompt, dir],
+        { encoding: "utf8" },
+      ),
+    );
+    executable(path.join(bin, "codex"), `touch '${marker}'`);
+    const result = spawnSync(
+      "bash",
+      [
+        PROVIDER_RUN,
+        "--prompt-file",
+        prompt,
+        "--execution-plan",
+        plan,
+        "--caller",
+        "interactive-ralph",
+        "--target-dir",
+        dir,
+        "--output-dir",
+        output,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      "write plans require a builder dispatch receipt",
+    );
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("keeps the public command surface within its budget", () => {

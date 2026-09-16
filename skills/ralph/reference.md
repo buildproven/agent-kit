@@ -70,26 +70,30 @@ surfaces, scope, ambiguity, and targeted deterministic proof. The governor
 derives access and keeps execution at the reliable `standard` baseline unless a
 protected floor requires `critical`. The unattended shell launcher cannot infer
 paths safely, so it declares repository-wide planned scope; newly discovered
-protected paths still stop before handoff. Resolve the request through the kit's
-Compute Governor:
+protected paths still stop before handoff. Create a signed Builder Dispatch
+receipt before the fresh worker starts. It binds the exact prompt and revision,
+then reserves the attempt from its campaign's shared 900-second wall budget:
 
 ```bash
-node "$SCRIPT_DIR/compute-governor.js" resolve-phase-execution \
-  "$EVIDENCE_DIR/item-phase-request.json" \
-  "$EVIDENCE_DIR/item-prompt.md" \
-  "$TARGET_DIR" \
-  > "$EVIDENCE_DIR/item-plan.json"
+BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-dispatch"
+node "$SCRIPT_DIR/builder-dispatch.js" create \
+  --receipt "$EVIDENCE_DIR/builder-receipt.json" \
+  --request "$EVIDENCE_DIR/item-phase-request.json" \
+  --prompt-file "$EVIDENCE_DIR/item-prompt.md" \
+  --target-dir "$TARGET_DIR" \
+  --state-dir "$BUILDER_STATE_DIR"
 ```
 
-The plan is a proposed route. `economy-*` remains a calibration candidate until
-the configured evidence promotes it; protected work may never be routed below
-its safety floor. Launch the fresh child through the plan, never by inheriting
+The receipt selects the reliable standard route until the configured evidence
+promotes economy routing; protected work may never be routed below its safety
+floor. Launch the fresh child through the receipt, never by inheriting
 the current session model or effort:
 
 ```bash
 bash "$SCRIPT_DIR/provider-run.sh" \
   --prompt-file "$EVIDENCE_DIR/item-prompt.md" \
-  --phase-request "$EVIDENCE_DIR/item-phase-request.json" \
+  --builder-receipt "$EVIDENCE_DIR/builder-receipt.json" \
+  --builder-state-dir "$BUILDER_STATE_DIR" \
   --caller interactive-ralph \
   --provider codex \
   --fallback none \
@@ -97,8 +101,8 @@ bash "$SCRIPT_DIR/provider-run.sh" \
   --output-dir "$EVIDENCE_DIR/provider-output"
 ```
 
-`provider-run.sh` resolves and validates the plan before spawning Codex, pins
-model/effort, derives sandbox access, and writes a redacted schema-v2
+`provider-run.sh` verifies the receipt before spawning Codex, pins model/effort,
+derives sandbox access, settles the shared campaign budget, and writes a redacted schema-v2
 `run-record.json`. Claude remains on the legacy v1 path until its phase adapter
 has an OS-enforced sandbox.
 An unsupported or mismatched plan is a launch failure; do not silently fall

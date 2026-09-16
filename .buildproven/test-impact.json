@@ -83,6 +83,7 @@
         "config/compute-governor-policy-v1.json",
         "config/compute-governor-policy-v2.json",
         "scripts/claude-review-companion.sh",
+        "scripts/builder-dispatch.js",
         "scripts/compute-governor.js",
         "scripts/provider-run.sh",
         "scripts/setup-mcp-parity.sh",
@@ -93,7 +94,8 @@
         "skills/ralph/reference.md",
         "skills/cross-review/SKILL.md",
         "docs/compute-governor.md",
-        "docs/decisions/ADR-phase-adaptive-worker-routing.md"
+        "docs/decisions/ADR-phase-adaptive-worker-routing.md",
+        "docs/decisions/ADR-bui-793-governed-builder-routing.md"
       ],
       "commands": [
         {
@@ -101,6 +103,7 @@
           "args": [
             "vitest",
             "run",
+            "scripts/__tests__/builder-dispatch.test.js",
             "scripts/__tests__/claude-review-companion.test.js",
             "scripts/__tests__/compute-governor.test.js",
             "scripts/__tests__/compute-governor-native.test.js",
