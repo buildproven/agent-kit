@@ -32,6 +32,8 @@ function fixture() {
     "provider-run.sh",
     "provider-policy.sh",
     "autonomous-loop-runtime.js",
+    "builder-dispatch.js",
+    "compute-governor.js",
   ]) {
     copyFileSync(join(repo, "scripts", name), join(setup, "scripts", name));
     chmodSync(join(setup, "scripts", name), 0o755);
@@ -205,9 +207,11 @@ describe("overnight loop", () => {
     expect(result.stderr).toContain("--linear-project is required");
   });
 
-  it("hands every fresh Ralph child explicit compute facts", () => {
+  it("routes every fresh Ralph write child through signed builder dispatch", () => {
     const source = readFileSync(loop, "utf8");
-    expect(source).toContain('--phase-request "$execution_facts_file"');
+    expect(source).toContain('builder-dispatch.js" create');
+    expect(source).toContain('--builder-receipt "$builder_receipt"');
+    expect(source).toContain('--builder-state-dir "$BUILDER_STATE_DIR"');
     expect(source).toContain("--caller overnight-ralph");
     expect(source).toContain('if [ "$PROVIDER" = codex ]');
     expect(source).toContain('[ -z "$PROVIDER" ] || provider_args+=');

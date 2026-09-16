@@ -17,6 +17,8 @@ OUTPUT_DIR=""
 EXECUTION_PLAN=""
 EXECUTION_FACTS=""
 PHASE_REQUEST=""
+BUILDER_RECEIPT=""
+BUILDER_STATE_DIR=""
 SPECIALIZED_EXEMPTION=""
 CALLER_ID=""
 PHASE_MODE=0
@@ -32,6 +34,7 @@ GOVERNED_HANDOFF_LOCK=""
 GOVERNED_HANDOFF_LOCK_PRESERVE=0
 GOVERNED_HANDOFF_APPLIED=0
 PLAN_SNAPSHOT=""
+BUILDER_DISPATCH="$SCRIPT_DIR/builder-dispatch.js"
 
 cleanup_governed_inputs() {
   if [ "$GOVERNED_HANDOFF_APPLIED" -eq 1 ]; then
@@ -51,7 +54,7 @@ cleanup_governed_inputs() {
 trap cleanup_governed_inputs EXIT
 
 usage() {
-  echo "usage: provider-run.sh --prompt-file file [--phase-request request.json --caller id | --execution-plan plan.json [--caller id] | --execution-facts facts.json | --specialized-exemption name] [--provider auto|codex|claude] [--fallback none|codex|claude] [--target-dir dir] [--timeout seconds] [--sandbox read-only|workspace-write] [--output-dir dir]" >&2
+  echo "usage: provider-run.sh --prompt-file file [--builder-receipt receipt.json --builder-state-dir dir --caller id | --phase-request request.json --caller id | --execution-plan plan.json --caller id | --execution-facts facts.json | --specialized-exemption name] [--provider auto|codex|claude] [--fallback none|codex|claude] [--target-dir dir] [--timeout seconds] [--sandbox read-only|workspace-write] [--output-dir dir]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -136,6 +139,22 @@ while [ $# -gt 0 ]; do
       PHASE_REQUEST="$2"
       shift 2
       ;;
+    --builder-receipt)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --builder-receipt requires a value" >&2
+        exit 1
+      }
+      BUILDER_RECEIPT="$2"
+      shift 2
+      ;;
+    --builder-state-dir)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --builder-state-dir requires a value" >&2
+        exit 1
+      }
+      BUILDER_STATE_DIR="$2"
+      shift 2
+      ;;
     --specialized-exemption)
       [ "$#" -ge 2 ] || {
         echo "provider-run: --specialized-exemption requires a value" >&2
@@ -164,14 +183,18 @@ case "$SANDBOX" in ""|read-only|workspace-write) ;; *) echo "provider-run: inval
 [ -z "$EXECUTION_PLAN" ] || [ -r "$EXECUTION_PLAN" ] || { echo "provider-run: unreadable execution plan" >&2; exit 2; }
 [ -z "$EXECUTION_FACTS" ] || [ -r "$EXECUTION_FACTS" ] || { echo "provider-run: unreadable execution facts" >&2; exit 2; }
 [ -z "$PHASE_REQUEST" ] || [ -r "$PHASE_REQUEST" ] || { echo "provider-run: unreadable phase request" >&2; exit 2; }
+[ -z "$BUILDER_RECEIPT" ] || [ -r "$BUILDER_RECEIPT" ] || { echo "provider-run: unreadable builder dispatch receipt" >&2; exit 2; }
+[ -z "$BUILDER_RECEIPT" ] || [ -n "$BUILDER_STATE_DIR" ] || { echo "provider-run: --builder-receipt requires --builder-state-dir" >&2; exit 2; }
+[ -z "$BUILDER_STATE_DIR" ] || [ -n "$BUILDER_RECEIPT" ] || { echo "provider-run: --builder-state-dir requires --builder-receipt" >&2; exit 2; }
 MODE_COUNT=0
-for mode_value in "$EXECUTION_PLAN" "$EXECUTION_FACTS" "$PHASE_REQUEST" "$SPECIALIZED_EXEMPTION"; do
+for mode_value in "$EXECUTION_PLAN" "$EXECUTION_FACTS" "$PHASE_REQUEST" "$BUILDER_RECEIPT" "$SPECIALIZED_EXEMPTION"; do
   [ -z "$mode_value" ] || MODE_COUNT=$((MODE_COUNT + 1))
 done
 [ "$MODE_COUNT" -eq 1 ] || { echo "provider-run: choose exactly one governed or specialized mode" >&2; exit 2; }
 [ -z "$CALLER_ID" ] || [[ "$CALLER_ID" =~ ^[a-z0-9-]+$ ]] \
   || { echo "provider-run: invalid caller ID" >&2; exit 2; }
 [ -z "$CALLER_ID" ] || [ -n "$PHASE_REQUEST" ] || [ -n "$EXECUTION_PLAN" ] \
+  || [ -n "$BUILDER_RECEIPT" ] \
   || { echo "provider-run: caller ID requires a schema-v2 phase request or plan" >&2; exit 2; }
 if [ -n "$SPECIALIZED_EXEMPTION" ]; then
   jq -e --arg exemption "$SPECIALIZED_EXEMPTION" \
@@ -180,8 +203,17 @@ if [ -n "$SPECIALIZED_EXEMPTION" ]; then
     || { echo "provider-run: unknown specialized exemption" >&2; exit 2; }
 fi
 
+if [ -n "$PHASE_REQUEST" ] && jq -e '.schemaVersion == 2 and (.phase == "implement" or .phase == "remediate" or .phase == "diagnose")' "$PHASE_REQUEST" >/dev/null 2>&1; then
+  echo "provider-run: schema-v2 write phases require a builder dispatch receipt" >&2
+  exit 2
+fi
+if [ -n "$EXECUTION_PLAN" ] && jq -e '.schemaVersion == 2 and .accessProfile == "workspace-write"' "$EXECUTION_PLAN" >/dev/null 2>&1; then
+  echo "provider-run: schema-v2 write plans require a builder dispatch receipt" >&2
+  exit 2
+fi
+
 OUTPUT_DIR="${OUTPUT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/provider-run.XXXXXX")}"
-if [ -n "$EXECUTION_PLAN" ] || [ -n "$EXECUTION_FACTS" ] || [ -n "$PHASE_REQUEST" ]; then
+if [ -n "$EXECUTION_PLAN" ] || [ -n "$EXECUTION_FACTS" ] || [ -n "$PHASE_REQUEST" ] || [ -n "$BUILDER_RECEIPT" ]; then
   OUTPUT_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$OUTPUT_DIR")
   TARGET_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$TARGET_DIR")
   case "$OUTPUT_REAL/" in
@@ -205,12 +237,35 @@ fi
 # Governed launches validate and execute the same private prompt snapshot.
 # This closes the gap where another process could replace the caller-owned
 # prompt between plan validation and provider stdin expansion.
-if [ -n "$EXECUTION_PLAN" ] || [ -n "$EXECUTION_FACTS" ] || [ -n "$PHASE_REQUEST" ]; then
+if [ -n "$EXECUTION_PLAN" ] || [ -n "$EXECUTION_FACTS" ] || [ -n "$PHASE_REQUEST" ] || [ -n "$BUILDER_RECEIPT" ]; then
   PROMPT_SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/provider-prompt.XXXXXX") \
     || { echo "provider-run: cannot allocate prompt snapshot" >&2; exit 2; }
   cp "$PROMPT_FILE" "$PROMPT_SNAPSHOT"
   chmod 400 "$PROMPT_SNAPSHOT"
   PROMPT_FILE="$PROMPT_SNAPSHOT"
+fi
+
+if [ -n "$BUILDER_RECEIPT" ]; then
+  [ -f "$BUILDER_DISPATCH" ] || { echo "provider-run: builder dispatch is unavailable" >&2; exit 2; }
+  EXECUTION_PLAN="$OUTPUT_DIR/execution-plan.json"
+  PLAN_TEMP=$(mktemp "$OUTPUT_DIR/.execution-plan.XXXXXX") \
+    || { echo "provider-run: cannot allocate builder execution plan" >&2; exit 2; }
+  if ! node "$BUILDER_DISPATCH" verify \
+    --receipt "$BUILDER_RECEIPT" \
+    --prompt-file "$PROMPT_FILE" \
+    --target-dir "$TARGET_DIR" \
+    --state-dir "$BUILDER_STATE_DIR" > "$PLAN_TEMP"; then
+    rm -f "$PLAN_TEMP"
+    echo "provider-run: builder dispatch receipt cannot be verified" >&2
+    exit 2
+  fi
+  mv "$PLAN_TEMP" "$EXECUTION_PLAN"
+  BUILDER_TIMEOUT=$(node "$BUILDER_DISPATCH" reservation \
+    --receipt "$BUILDER_RECEIPT" \
+    --prompt-file "$PROMPT_FILE" \
+    --target-dir "$TARGET_DIR" \
+    --state-dir "$BUILDER_STATE_DIR" | jq -r '.reservedSeconds') \
+    || { echo "provider-run: builder dispatch reservation cannot be verified" >&2; exit 2; }
 fi
 
 # Reject a caller-supplied plan before provider discovery. Plan identity is a
@@ -291,6 +346,9 @@ if [ -n "$EXECUTION_PLAN" ]; then
   PLAN_TIMEOUT=$(jq -r '.caps.maxWallSeconds' "$EXECUTION_PLAN")
   if [ "$TIMEOUT_SECONDS" -gt "$PLAN_TIMEOUT" ]; then
     TIMEOUT_SECONDS="$PLAN_TIMEOUT"
+  fi
+  if [ -n "$BUILDER_RECEIPT" ] && [ "$TIMEOUT_SECONDS" -gt "$BUILDER_TIMEOUT" ]; then
+    TIMEOUT_SECONDS="$BUILDER_TIMEOUT"
   fi
   FALLBACK=none
   if [ "$(jq -r '.schemaVersion' "$EXECUTION_PLAN")" = 2 ]; then
@@ -385,6 +443,16 @@ write_governed_record() {
   mv "$record_temp" "$OUTPUT_DIR/run-record.json"
 }
 
+settle_builder_dispatch() {
+  [ -z "$BUILDER_RECEIPT" ] && return 0
+  node "$BUILDER_DISPATCH" settle \
+    --receipt "$BUILDER_RECEIPT" \
+    --prompt-file "$PROMPT_FILE" \
+    --target-dir "$ORIGINAL_TARGET_DIR" \
+    --state-dir "$BUILDER_STATE_DIR" \
+    --run-record "$OUTPUT_DIR/run-record.json" >/dev/null
+}
+
 if [ -n "$PHASE_DISABLED_REASON" ]; then
   write_governed_record capability-disabled "$PROVIDER" 78 "$PHASE_DISABLED_REASON" \
     || { echo "provider-run: cannot persist disabled phase receipt" >&2; exit 78; }
@@ -395,6 +463,9 @@ fi
 fail_governed_handoff() {
   local message="$1"
   write_governed_record failed "$PROVIDER" 78 delivery-failed >/dev/null 2>&1 || true
+  if ! settle_builder_dispatch >/dev/null 2>&1; then
+    echo "provider-run: delivery failed and builder campaign settlement could not be recorded" >&2
+  fi
   echo "$message" >&2
   exit 78
 }
@@ -623,6 +694,11 @@ if [ "$RC" -eq 0 ]; then
     echo "provider-run: delivery completed but terminal success evidence could not be persisted; changes and reconciliation lock were retained: $GOVERNED_HANDOFF_LOCK" >&2
     exit 78
   fi
+  if ! settle_builder_dispatch; then
+    GOVERNED_HANDOFF_LOCK_PRESERVE=1
+    echo "provider-run: delivery completed but builder campaign settlement could not be persisted; reconciliation lock was retained: $GOVERNED_HANDOFF_LOCK" >&2
+    exit 78
+  fi
   if [ -n "$GOVERNED_HANDOFF_LOCK" ]; then
     rm -f "$GOVERNED_HANDOFF_LOCK/owner"
     rmdir "$GOVERNED_HANDOFF_LOCK"
@@ -641,6 +717,10 @@ case "$RC" in
 esac
 if ! write_governed_record "$GOVERNED_STATUS" "$PROVIDER" "$RC" "$GOVERNED_FAILURE"; then
   echo "provider-run: provider failed and terminal evidence could not be persisted: $OUTPUT_DIR" >&2
+  exit 78
+fi
+if ! settle_builder_dispatch; then
+  echo "provider-run: provider failure could not be settled against the builder campaign" >&2
   exit 78
 fi
 
