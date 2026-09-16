@@ -35,6 +35,13 @@ domain, selection rule, policy digest, risk, and creation-time selector range
 remain immutable. Artifact verification still recomputes the original selector
 and validates all signed identity fields; only ancestry reachability changes.
 
+The independent implementation review found that equal trees alone do not
+prove selection inclusion. Each used carry must start strictly before the
+current selected/carried commit on its ancestry, and its new base must be an
+ancestor of its target. This rejects a replay of only a later repair and a
+matching tree on unrelated history. Both counterexamples failed executable
+regressions before this one batched review repair (2 failed /4 skipped).
+
 The governor uses the count from the same seam without a new proof policy:
 this extraction preserves its existing trusted-carry contract. Review coverage
 continues to require contiguous canonical diff and exact-replay evidence. Do

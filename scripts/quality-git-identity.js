@@ -264,12 +264,16 @@ function repairLineage(root, from, to, carries) {
 function selectionLineageValid(root, from, to, carries) {
   const lineage = repairLineage(root, from, to, carries);
   if (!lineage) return false;
+  let selected = from;
   try {
     return lineage.carries.every((carry) => {
       if (
         ![carry.priorBaseSha, carry.baseSha].every((sha) =>
           /^[0-9a-f]{40}$/.test(sha || ""),
-        )
+        ) ||
+        carry.priorBaseSha === selected ||
+        !isAncestorOf(root, carry.priorBaseSha, selected) ||
+        !isAncestorOf(root, carry.baseSha, carry.head)
       )
         return false;
       const replay = replayedTree(
@@ -278,10 +282,11 @@ function selectionLineageValid(root, from, to, carries) {
         carry.reviewedHead,
         carry.baseSha,
       );
-      return (
+      const valid =
         replay !== null &&
-        replay === git(root, ["rev-parse", `${carry.head}^{tree}`])
-      );
+        replay === git(root, ["rev-parse", `${carry.head}^{tree}`]);
+      selected = carry.head;
+      return valid;
     });
   } catch {
     return false;

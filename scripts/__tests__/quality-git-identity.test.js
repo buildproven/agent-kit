@@ -38,6 +38,48 @@ function fixture() {
 }
 
 describe("selection lineage identity contract", () => {
+  it("rejects a replay that excludes the selected commit from its source range", () => {
+    const f = fixture();
+    f.git("switch", "-q", "-c", "forged-source", f.base);
+    const selected = f.commit("selected.txt", "selected change\n");
+    const repair = f.commit("repair.txt", "repair only\n");
+    f.git("switch", "-q", "-c", "unrelated", f.base);
+    const unrelated = f.commit("other.txt", "unrelated base\n");
+    f.git("cherry-pick", repair);
+    const head = f.git("rev-parse", "HEAD");
+    expect(identity.replayedTree(f.root, selected, repair, unrelated)).toBe(
+      f.git("rev-parse", `${head}^{tree}`),
+    );
+    expect(
+      identity.selectionLineageValid(f.root, selected, head, [
+        {
+          priorBaseSha: selected,
+          reviewedHead: repair,
+          baseSha: unrelated,
+          head,
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  it("rejects an identical replay tree whose target has no base ancestry", () => {
+    const f = fixture();
+    const head = f.git(
+      "commit-tree",
+      f.git("rev-parse", `${f.head}^{tree}`),
+      "-p",
+      f.base,
+      "-m",
+      "wrong ancestry",
+    );
+    expect(identity.isAncestorOf(f.root, f.carry.baseSha, head)).toBe(false);
+    expect(
+      identity.selectionLineageValid(f.root, f.selection, head, [
+        { ...f.carry, head },
+      ]),
+    ).toBe(false);
+  });
+
   it("proves a repair and exact rebase without changing the selected commit", () => {
     const f = fixture();
     expect(identity).toHaveProperty(
