@@ -8,9 +8,30 @@ REQUIRED_TIER=""
 REQUIRE_SIGNATURE=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
-    --base) BASE_REF="${2:-}"; shift 2 ;;
-    --required-tier) REQUIRED_TIER="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-validate-review-trailers: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --base)
+      [ "$#" -ge 2 ] || {
+        echo "quality-validate-review-trailers: --base requires a value" >&2
+        exit 1
+      }
+      BASE_REF="$2"
+      shift 2
+      ;;
+    --required-tier)
+      [ "$#" -ge 2 ] || {
+        echo "quality-validate-review-trailers: --required-tier requires a value" >&2
+        exit 1
+      }
+      REQUIRED_TIER="$2"
+      shift 2
+      ;;
     --require-signature) REQUIRE_SIGNATURE=true; shift ;;
     *) BASE_REF="$1"; shift ;;
   esac

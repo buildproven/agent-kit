@@ -56,18 +56,102 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --provider) PROVIDER="${2:-}"; shift 2 ;;
-    --fallback) FALLBACK="${2:-}"; shift 2 ;;
-    --prompt-file) PROMPT_FILE="${2:-}"; shift 2 ;;
-    --target-dir) TARGET_DIR="${2:-}"; shift 2 ;;
-    --timeout) TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
-    --sandbox) SANDBOX="${2:-}"; shift 2 ;;
-    --output-dir) OUTPUT_DIR="${2:-}"; shift 2 ;;
-    --execution-plan) EXECUTION_PLAN="${2:-}"; shift 2 ;;
-    --execution-facts) EXECUTION_FACTS="${2:-}"; shift 2 ;;
-    --phase-request) PHASE_REQUEST="${2:-}"; shift 2 ;;
-    --specialized-exemption) SPECIALIZED_EXEMPTION="${2:-}"; shift 2 ;;
-    --caller) CALLER_ID="${2:-}"; shift 2 ;;
+    --provider)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --provider requires a value" >&2
+        exit 1
+      }
+      PROVIDER="$2"
+      shift 2
+      ;;
+    --fallback)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --fallback requires a value" >&2
+        exit 1
+      }
+      FALLBACK="$2"
+      shift 2
+      ;;
+    --prompt-file)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --prompt-file requires a value" >&2
+        exit 1
+      }
+      PROMPT_FILE="$2"
+      shift 2
+      ;;
+    --target-dir)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --target-dir requires a value" >&2
+        exit 1
+      }
+      TARGET_DIR="$2"
+      shift 2
+      ;;
+    --timeout)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --timeout requires a value" >&2
+        exit 1
+      }
+      TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
+    --sandbox)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --sandbox requires a value" >&2
+        exit 1
+      }
+      SANDBOX="$2"
+      shift 2
+      ;;
+    --output-dir)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --output-dir requires a value" >&2
+        exit 1
+      }
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --execution-plan)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --execution-plan requires a value" >&2
+        exit 1
+      }
+      EXECUTION_PLAN="$2"
+      shift 2
+      ;;
+    --execution-facts)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --execution-facts requires a value" >&2
+        exit 1
+      }
+      EXECUTION_FACTS="$2"
+      shift 2
+      ;;
+    --phase-request)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --phase-request requires a value" >&2
+        exit 1
+      }
+      PHASE_REQUEST="$2"
+      shift 2
+      ;;
+    --specialized-exemption)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --specialized-exemption requires a value" >&2
+        exit 1
+      }
+      SPECIALIZED_EXEMPTION="$2"
+      shift 2
+      ;;
+    --caller)
+      [ "$#" -ge 2 ] || {
+        echo "provider-run: --caller requires a value" >&2
+        exit 1
+      }
+      CALLER_ID="$2"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac

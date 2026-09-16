@@ -105,7 +105,8 @@
             "scripts/__tests__/compute-governor.test.js",
             "scripts/__tests__/compute-governor-native.test.js",
             "scripts/__tests__/provider-native.test.js",
-            "scripts/__tests__/overnight-loop.test.js"
+            "scripts/__tests__/overnight-loop.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -122,7 +123,8 @@
           "args": [
             "vitest",
             "run",
-            "scripts/__tests__/quality-mutation-check.test.js"
+            "scripts/__tests__/quality-mutation-check.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -139,7 +141,8 @@
           "args": [
             "vitest",
             "run",
-            "scripts/__tests__/quality-agent-selection.test.js"
+            "scripts/__tests__/quality-agent-selection.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -169,7 +172,8 @@
             "vitest",
             "run",
             "scripts/__tests__/quality-dependency-preflight.test.js",
-            "scripts/__tests__/quality-bootstrap-guards.test.js"
+            "scripts/__tests__/quality-bootstrap-guards.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -195,7 +199,8 @@
           "args": [
             "vitest",
             "run",
-            "scripts/__tests__/setup-codex-skill-profile.test.js"
+            "scripts/__tests__/setup-codex-skill-profile.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -221,7 +226,8 @@
           "args": [
             "vitest",
             "run",
-            "scripts/__tests__/quality-provider-runtime.test.js"
+            "scripts/__tests__/quality-provider-runtime.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -241,7 +247,8 @@
             "vitest",
             "run",
             "scripts/__tests__/quality-codex-cache-guard.test.js",
-            "scripts/__tests__/quality-provider-runtime.test.js"
+            "scripts/__tests__/quality-provider-runtime.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -259,7 +266,8 @@
             "vitest",
             "run",
             "scripts/__tests__/quality-merge-gates.test.js",
-            "scripts/__tests__/quality-review-check.test.js"
+            "scripts/__tests__/quality-review-check.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -316,7 +324,8 @@
             "scripts/__tests__/quality-invocation.test.js",
             "scripts/__tests__/quality-operator-override.test.js",
             "scripts/__tests__/quality-runtime-plan.test.js",
-            "scripts/__tests__/quality-terminal-status.test.js"
+            "scripts/__tests__/quality-terminal-status.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -341,7 +350,8 @@
             "scripts/__tests__/quality-invocation.test.js",
             "scripts/__tests__/quality-merge-gates.test.js",
             "scripts/__tests__/quality-protected-nonstrict.test.js",
-            "scripts/__tests__/quality-repo-lease.test.js"
+            "scripts/__tests__/quality-repo-lease.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]
@@ -372,7 +382,8 @@
           "args": [
             "vitest",
             "run",
-            "scripts/__tests__/branch-guard-hooks.test.js"
+            "scripts/__tests__/branch-guard-hooks.test.js",
+            "scripts/__tests__/option-parser-bounds.test.js"
           ]
         }
       ]

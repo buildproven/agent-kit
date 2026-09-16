@@ -5,8 +5,22 @@ REVIEW_OUT=""
 MODE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --review-out) REVIEW_OUT="${2:-}"; shift 2 ;;
-    --mode) MODE="${2:-}"; shift 2 ;;
+    --review-out)
+      [ "$#" -ge 2 ] || {
+        echo "quality-preserve-primary-evidence: --review-out requires a value" >&2
+        exit 1
+      }
+      REVIEW_OUT="$2"
+      shift 2
+      ;;
+    --mode)
+      [ "$#" -ge 2 ] || {
+        echo "quality-preserve-primary-evidence: --mode requires a value" >&2
+        exit 1
+      }
+      MODE="$2"
+      shift 2
+      ;;
     *) echo "quality-preserve-primary-evidence: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done

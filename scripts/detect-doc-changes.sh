@@ -25,6 +25,10 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --commit)
+      [ "$#" -ge 2 ] || {
+        echo "detect-doc-changes: --commit requires a value" >&2
+        exit 1
+      }
       MODE="commit"
       COMMIT_SHA="$2"
       shift 2

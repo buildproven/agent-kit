@@ -8,7 +8,14 @@ export QUALITY_CODEX_SOURCE_HOME
 MANIFEST=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-run-review: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
     --manifest=*) MANIFEST="${1#*=}"; shift ;;
     *) echo "quality-run-review: unknown argument '$1'" >&2; exit 1 ;;
   esac

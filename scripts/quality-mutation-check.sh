@@ -9,7 +9,14 @@ MANIFEST=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-mutation-check: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
     *) echo "usage: quality-mutation-check.sh --manifest <path>" >&2; exit 2 ;;
   esac
 done

@@ -5,8 +5,22 @@ MANIFEST=""
 PHASE="quality operation"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
-    --phase) PHASE="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-assert-clean: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --phase)
+      [ "$#" -ge 2 ] || {
+        echo "quality-assert-clean: --phase requires a value" >&2
+        exit 1
+      }
+      PHASE="$2"
+      shift 2
+      ;;
     *) echo "quality-assert-clean: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done

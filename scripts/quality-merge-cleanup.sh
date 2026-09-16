@@ -11,7 +11,14 @@ MANIFEST=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --preserve-branch) PRESERVE_BRANCH=true; shift ;;
-    --manifest) MANIFEST="${2:-}"; shift 2 ;;
+    --manifest)
+      [ "$#" -ge 2 ] || {
+        echo "quality-merge-cleanup: --manifest requires a value" >&2
+        exit 1
+      }
+      MANIFEST="$2"
+      shift 2
+      ;;
     *) echo "[quality] merge succeeded; cleanup incomplete: unknown cleanup argument '$1'." >&2; exit 0 ;;
   esac
 done
