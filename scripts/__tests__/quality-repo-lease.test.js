@@ -301,6 +301,12 @@ function fixture(name, overrides = {}) {
 }
 
 describe("repository merge lease", () => {
+  it("loads the lease implementation from this runtime", () => {
+    expect(fs.realpathSync(require.resolve("../quality-repo-lease"))).toBe(
+      fs.realpathSync(LEASE_CLI),
+    );
+  });
+
   it("keeps an exact active legacy credential in its repository namespace", () => {
     const f = fixture("legacy-path-selection");
     const { manifest } = invocation.loadManifest(f.manifestPath);
