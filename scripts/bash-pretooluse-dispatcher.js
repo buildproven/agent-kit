@@ -13,6 +13,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const startedAt = performance.now();
 
 const rawInput = fs.readFileSync(0, "utf8");
 
@@ -70,18 +71,73 @@ if (hasCommit) guards.push("block-commit-main.sh");
 // therefore invoked for every git command, including ordinary status calls.
 if (hasGit) guards.push("branch-drift-guard.sh");
 
-for (const name of guards) {
-  const result = spawnSync("bash", [resolveGuard(name)], {
-    input: rawInput,
-    encoding: "utf8",
+// Claude command-hook timeout discards the hook decision. Keep every child
+// inside a shared four-second budget, below the configured five-second outer
+// timeout, so a hung child produces an explicit denial first.
+//
+// This is not hypothetical: these guards parse their own argv, and a
+// `shift 2` arm with no remaining value spins its option loop forever rather
+// than erroring. Five seconds is far above the ~50ms these checks take.
+const guardTimeout = process.env.BS_GUARD_TIMEOUT_MS || "5000";
+const GUARD_TIMEOUT_MS = Number(guardTimeout);
+if (
+  guards.length > 0 &&
+  (!/^[1-9]\d*$/.test(guardTimeout) ||
+    !Number.isSafeInteger(GUARD_TIMEOUT_MS) ||
+    GUARD_TIMEOUT_MS > 5000)
+) {
+  deny("BS_GUARD_TIMEOUT_MS must be an integer from 1 through 5000.");
+}
+
+function runBounded(executable, args, options, name) {
+  if (process.platform === "win32")
+    deny(
+      "Bash safety checks require POSIX process-group cleanup; run them in WSL.",
+    );
+  const remaining = Math.floor(4000 - (performance.now() - startedAt));
+  if (remaining <= 0) deny("Bash safety checks exhausted their 4000ms budget.");
+  const timeout = Math.min(GUARD_TIMEOUT_MS, remaining);
+  const result = spawnSync(executable, args, {
+    ...options,
+    // POSIX guards need their own group: killing only bash leaves helpers alive.
+    detached: true,
+    timeout,
+    killSignal: "SIGKILL",
   });
-
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-
+  if (result.error?.code === "ETIMEDOUT" || result.signal) {
+    if (Number.isSafeInteger(result.pid) && result.pid > 1) {
+      try {
+        process.kill(-result.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH")
+          deny(
+            `${name} timed out and process-group cleanup failed: ${error.message}`,
+          );
+      }
+    }
+    deny(
+      `${name} did not finish within ${timeout}ms and was terminated; ` +
+        `refusing the command rather than proceeding unchecked`,
+    );
+  }
   if (result.error) {
     deny(`could not execute ${name}: ${result.error.message}`);
   }
+  return result;
+}
+
+for (const name of guards) {
+  const result = runBounded(
+    "bash",
+    [resolveGuard(name)],
+    {
+      input: rawInput,
+      encoding: "utf8",
+    },
+    name,
+  );
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
   if (result.status !== 0) {
     process.exit(result.status === 2 ? 2 : 2);
   }
@@ -103,13 +159,14 @@ for (const name of guards) {
 // regex that could drift from the guard that already ran.
 if (hasPush) {
   const classifier = resolveGuard("block-push-main.sh");
-  const classification = spawnSync(
+  const classification = runBounded(
     "bash",
     [classifier, "--ci-budget-classify"],
     {
       input: rawInput,
       encoding: "utf8",
     },
+    "CI budget classifier",
   );
   // Only a proved no-CI push is exempt. Protected, cross-branch, unparseable,
   // and GitHub-unavailable cases all retain normal fail-closed admission.
@@ -118,9 +175,14 @@ if (hasPush) {
   if (!cannotTriggerCi) {
     const admission = resolveGuard("ci-budget-admission.js");
     if (fs.existsSync(admission)) {
-      const result = spawnSync(process.execPath, [admission], {
-        encoding: "utf8",
-      });
+      const result = runBounded(
+        process.execPath,
+        [admission],
+        {
+          encoding: "utf8",
+        },
+        "CI budget admission",
+      );
       if (result.status !== 0) {
         if (result.stderr) process.stderr.write(result.stderr);
         deny(

@@ -1,5 +1,11 @@
 const { execFileSync, spawnSync } = require("node:child_process");
-const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 
@@ -31,6 +37,16 @@ function run(command, options) {
 const git = (args) =>
   execFileSync("git", args, { cwd: repo, encoding: "utf8" });
 
+function signalHelper(pid, signal) {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 beforeAll(() => {
   repo = mkdtempSync(path.join(tmpdir(), "bash-pretooluse-dispatcher-"));
   git(["init", "--initial-branch=main"]);
@@ -47,6 +63,170 @@ afterAll(() => {
 });
 
 describe("bash-pretooluse-dispatcher.js", () => {
+  it.each(["guard", "classifier", "admission"])(
+    "terminates descendants of a timed-out %s",
+    (stage) => {
+      const guardDir = mkdtempSync(path.join(tmpdir(), "guard-descendants-"));
+      const pidFile = path.join(guardDir, "helper.pid");
+      let helperPid;
+      try {
+        const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
+        writeFileSync(staged, readFileSync(HOOK, "utf8"));
+        const hang = `sleep 30 &\nprintf '%s' "$!" > '${pidFile}'\nwait\n`;
+        for (const name of [
+          "block-destructive-paths.sh",
+          "block-push-main.sh",
+          "block-commit-main.sh",
+          "branch-drift-guard.sh",
+        ]) {
+          let body = "exit 0\n";
+          if (name === "block-push-main.sh") {
+            if (stage === "guard") body = hang;
+            if (stage === "classifier")
+              body = `if [ "$1" = "--ci-budget-classify" ]; then\n${hang}fi\nexit 0\n`;
+          }
+          writeFileSync(path.join(guardDir, name), `#!/bin/sh\n${body}`);
+        }
+        writeFileSync(
+          path.join(guardDir, "ci-budget-admission.js"),
+          stage === "admission"
+            ? `const fs=require('fs'); const child=require('child_process').spawn('sleep',['30'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);\n`
+            : "process.exit(0);\n",
+        );
+        const result = spawnSync(process.execPath, [staged], {
+          input: JSON.stringify({
+            tool_input: { command: "git push origin topic" },
+          }),
+          encoding: "utf8",
+          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "500" },
+          timeout: 2500,
+          killSignal: "SIGKILL",
+        });
+        helperPid = Number(readFileSync(pidFile, "utf8"));
+        expect(Number.isSafeInteger(helperPid) && helperPid > 1).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(2);
+        expect(result.stderr).toMatch(/did not finish within 500ms/);
+        const deadline = Date.now() + 500;
+        let alive = true;
+        while (alive && Date.now() < deadline) {
+          alive = signalHelper(helperPid, 0);
+          if (alive)
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        expect(alive).toBe(false);
+      } finally {
+        if (Number.isSafeInteger(helperPid) && helperPid > 1) {
+          signalHelper(helperPid, "SIGKILL");
+        }
+        rmSync(guardDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("shares one deadline across sequential guards below the configured hook limit", () => {
+    const guardDir = mkdtempSync(path.join(tmpdir(), "aggregate-guards-"));
+    try {
+      const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
+      writeFileSync(staged, readFileSync(HOOK, "utf8"));
+      for (const name of [
+        "block-destructive-paths.sh",
+        "block-push-main.sh",
+        "block-commit-main.sh",
+        "branch-drift-guard.sh",
+      ]) {
+        writeFileSync(path.join(guardDir, name), "#!/bin/sh\nexec sleep 1.5\n");
+      }
+      const settings = JSON.parse(
+        readFileSync(path.join(HOOK, "../../config/settings.json"), "utf8"),
+      );
+      const outer =
+        settings.hooks.PreToolUse.find((matcher) => matcher.matcher === "Bash")
+          .hooks[0].timeout * 1000;
+      const result = spawnSync(process.execPath, [staged], {
+        input: JSON.stringify({
+          tool_input: {
+            command: "rm temp; git commit -m x; git push origin topic",
+          },
+        }),
+        encoding: "utf8",
+        env: { ...process.env, BS_GUARD_TIMEOUT_MS: "5000" },
+        timeout: outer,
+        killSignal: "SIGKILL",
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(
+        /block-commit-main.sh did not finish within/,
+      );
+    } finally {
+      rmSync(guardDir, { recursive: true, force: true });
+    }
+  }, 8000);
+
+  it.each(["classifier", "admission"])(
+    "bounds the %s child and denies before the outer timeout",
+    (stage) => {
+      const guardDir = mkdtempSync(path.join(tmpdir(), "bounded-push-"));
+      try {
+        const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
+        writeFileSync(staged, readFileSync(HOOK, "utf8"));
+        for (const name of [
+          "block-push-main.sh",
+          "block-destructive-paths.sh",
+          "block-commit-main.sh",
+          "branch-drift-guard.sh",
+        ]) {
+          const body =
+            name === "block-push-main.sh" && stage === "classifier"
+              ? '#!/bin/sh\nif [ "$1" = "--ci-budget-classify" ]; then exec sleep 600; fi\nexit 0\n'
+              : "#!/bin/sh\nexit 0\n";
+          writeFileSync(path.join(guardDir, name), body);
+        }
+        writeFileSync(
+          path.join(guardDir, "ci-budget-admission.js"),
+          stage === "admission"
+            ? "setInterval(() => {}, 1000);\n"
+            : "process.exit(0);\n",
+        );
+        const result = spawnSync(process.execPath, [staged], {
+          input: JSON.stringify({
+            tool_input: { command: "git push origin topic" },
+          }),
+          encoding: "utf8",
+          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "100" },
+          timeout: 2000,
+          killSignal: "SIGKILL",
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(2);
+        expect(result.stderr).toMatch(
+          new RegExp(`CI budget ${stage} did not finish within 100ms`),
+        );
+      } finally {
+        rmSync(guardDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    "0",
+    "-1",
+    "not-a-number",
+    "5001",
+    "1.5",
+    "1500ms",
+    "Infinity",
+    " ",
+  ])("denies invalid guard timeout %s with an actionable error", (value) => {
+    const result = run("git status", {
+      env: { BS_GUARD_TIMEOUT_MS: value },
+    });
+    expect(result.code).toBe(2);
+    expect(result.output).toMatch(/BS_GUARD_TIMEOUT_MS.*integer.*1.*5000/);
+    expect(result.output).not.toMatch(/RangeError/);
+  });
+
   it("allows an ordinary command without invoking a guard", () => {
     expect(run("printf ok").code).toBe(0);
   });
@@ -132,5 +312,53 @@ describe("bash-pretooluse-dispatcher.js", () => {
     });
     expect(synchronized.code).toBe(2);
     expect(synchronized.output).toMatch(/minute policy denied/i);
+  });
+
+  it("terminates a hung guard and denies rather than proceeding unchecked", () => {
+    // A guard that never returns used to block the tool call indefinitely:
+    // spawnSync was called with no timeout, and Claude Code's hook `timeout`
+    // is SECONDS with a 600 default, so nothing reacted for ten minutes.
+    //
+    // This is reachable, not theoretical. These guards parse their own argv,
+    // and a `shift 2` arm with no remaining value spins its option loop
+    // forever (BUI-844). Silence must never read as approval.
+    const guardDir = mkdtempSync(path.join(tmpdir(), "hung-guard-"));
+    const hung = path.join(guardDir, "block-commit-main.sh");
+    writeFileSync(hung, "#!/usr/bin/env bash\nsleep 600\n", { mode: 0o755 });
+
+    const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
+    writeFileSync(staged, readFileSync(HOOK, "utf8"));
+    for (const sibling of [
+      "block-push-main.sh",
+      "block-destructive-paths.sh",
+      "branch-drift-guard.sh",
+    ]) {
+      writeFileSync(
+        path.join(guardDir, sibling),
+        "#!/usr/bin/env bash\nexit 0\n",
+        { mode: 0o755 },
+      );
+    }
+
+    const started = Date.now();
+    const result = spawnSync("node", [staged], {
+      input: JSON.stringify({
+        tool_input: { command: "git commit -m x" },
+        cwd: repo,
+      }),
+      cwd: repo,
+      encoding: "utf8",
+      env: { ...process.env, BS_GUARD_TIMEOUT_MS: "1500" },
+    });
+    const elapsed = Date.now() - started;
+
+    expect(result.status).toBe(2);
+    expect(`${result.stdout}${result.stderr}`).toMatch(
+      /did not finish within 1500ms/i,
+    );
+    // Bounded well below the 600s the guard would otherwise have slept.
+    expect(elapsed).toBeLessThan(10_000);
+
+    rmSync(guardDir, { recursive: true, force: true });
   });
 });

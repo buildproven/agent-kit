@@ -19,7 +19,13 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -27,6 +33,32 @@ const SCRIPTS = path.resolve(import.meta.dirname, "..");
 const GUARD = path.join(SCRIPTS, "multi-session-guard.sh");
 const CLEANUP = path.join(SCRIPTS, "multi-session-cleanup.sh");
 const INIT_CHECK = path.join(SCRIPTS, "auto-init-check.sh");
+
+describe("distributed hook time limits", () => {
+  it("uses seconds for every Claude hook, not child-process milliseconds", () => {
+    const settings = JSON.parse(
+      readFileSync(path.join(SCRIPTS, "../config/settings.json"), "utf8"),
+    );
+    const limits = Object.fromEntries(
+      Object.entries(settings.hooks).map(([event, matchers]) => [
+        event,
+        matchers.flatMap((matcher) =>
+          matcher.hooks.map((hook) => hook.timeout),
+        ),
+      ]),
+    );
+    expect(limits).toEqual({
+      UserPromptSubmit: [3],
+      PostToolUse: [10],
+      PreToolUse: [5, 5],
+      TeammateIdle: [30],
+      TaskCompleted: [60],
+      Stop: [10, 2],
+      Notification: [3, 3, 3],
+      SessionStart: [3],
+    });
+  });
+});
 
 let repo;
 let worktree;
