@@ -17,10 +17,15 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
-  it.each([false, true])(
-    "covers mutation artifact validation in one invocation run (test changed: %s)",
-    (testChanged) => {
-      const files = ["scripts/quality-invocation.js"];
+  it.each([
+    [false, "quality-invocation.js"],
+    [true, "quality-invocation.js"],
+    [false, "quality-git-identity.js"],
+    [true, "quality-git-identity.js"],
+  ])(
+    "covers mutation artifact validation in one run (test changed: %s, source: %s)",
+    (testChanged, source) => {
+      const files = [`scripts/${source}`];
       if (testChanged)
         files.push("scripts/__tests__/quality-mutation-check.test.js");
       const selected = plan(files, loadPolicy(ROOT), { root: ROOT });
