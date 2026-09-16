@@ -160,6 +160,23 @@ describe("builder dispatch", () => {
     const recoveredDeadOwner = run(deadOwner, "create");
     expect(recoveredDeadOwner.status, recoveredDeadOwner.stderr).toBe(0);
     expect(existsSync(deadOwnerLock)).toBe(false);
+
+    const reusedPid = subject();
+    const reusedPidLock = path.join(reusedPid.state, ".dispatch.lock");
+    mkdirSync(reusedPidLock, { mode: 0o700 });
+    writeFileSync(
+      path.join(reusedPidLock, "owner.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        pid: process.pid,
+        createdAtEpochMs: Date.now(),
+        processStartIdentity: "not-the-current-process-start",
+      }),
+      { mode: 0o600 },
+    );
+    const recoveredReusedPid = run(reusedPid, "create");
+    expect(recoveredReusedPid.status, recoveredReusedPid.stderr).toBe(0);
+    expect(existsSync(reusedPidLock)).toBe(false);
   });
 
   it("does not reserve budget when the receipt destination is unavailable", () => {

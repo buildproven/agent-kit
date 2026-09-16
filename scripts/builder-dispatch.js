@@ -25,6 +25,7 @@ const CAMPAIGN_BUDGET_SECONDS = 900;
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_MS = 25;
 const OWNERLESS_LOCK_STALE_MS = 2_000;
+const LEGACY_LOCK_STALE_MS = LOCK_TIMEOUT_MS;
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 const REQUIRED_OPTIONS = {
   create: [
@@ -208,17 +209,55 @@ function lockOwnerFile(lock) {
   return path.join(lock, "owner.json");
 }
 
-function processIsLive(pid) {
+function processStartIdentity(pid) {
   try {
-    process.kill(pid, 0);
-    return true;
+    const identity = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return identity || null;
   } catch (error) {
-    if (error.code === "ESRCH") return false;
-    if (error.code === "EPERM") return true;
+    if (error.status === 1) return null;
     throw new DispatchError(
-      `could not determine builder dispatch lock owner liveness: ${error.message}`,
+      `could not determine builder dispatch lock owner identity: ${error.message}`,
     );
   }
+}
+
+function validLockOwnerBase(owner) {
+  return (
+    Number.isSafeInteger(owner?.pid) &&
+    owner.pid > 0 &&
+    Number.isSafeInteger(owner.createdAtEpochMs) &&
+    owner.createdAtEpochMs > 0
+  );
+}
+
+function decodedLockOwner(owner, file) {
+  if (
+    owner?.schemaVersion === 2 &&
+    validLockOwnerBase(owner) &&
+    typeof owner.processStartIdentity === "string" &&
+    owner.processStartIdentity.length > 0 &&
+    owner.processStartIdentity.length <= 256
+  ) {
+    return {
+      status: "identified",
+      file,
+      pid: owner.pid,
+      createdAtEpochMs: owner.createdAtEpochMs,
+      processStartIdentity: owner.processStartIdentity,
+    };
+  }
+  if (owner?.schemaVersion === 1 && validLockOwnerBase(owner)) {
+    return {
+      status: "legacy",
+      file,
+      pid: owner.pid,
+      createdAtEpochMs: owner.createdAtEpochMs,
+    };
+  }
+  return { status: "malformed", file };
 }
 
 function readLockOwner(lock) {
@@ -234,21 +273,21 @@ function readLockOwner(lock) {
     throw new DispatchError("builder dispatch lock owner is unsafe");
   }
   try {
-    const owner = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (
-      owner?.schemaVersion === 1 &&
-      Number.isSafeInteger(owner.pid) &&
-      owner.pid > 0 &&
-      Number.isSafeInteger(owner.createdAtEpochMs) &&
-      owner.createdAtEpochMs > 0
-    ) {
-      return { status: "live", file, pid: owner.pid };
-    }
+    return decodedLockOwner(JSON.parse(fs.readFileSync(file, "utf8")), file);
   } catch {
     // A process can crash while writing the record. Treat it as ownerless only
     // after the directory itself is stale.
   }
-  return { status: "malformed", file };
+  return decodedLockOwner(null, file);
+}
+
+function lockOwnerIsCurrent(owner) {
+  const currentIdentity = processStartIdentity(owner.pid);
+  if (!currentIdentity) return false;
+  if (owner.status === "identified") {
+    return currentIdentity === owner.processStartIdentity;
+  }
+  return Date.now() - owner.createdAtEpochMs < LEGACY_LOCK_STALE_MS;
 }
 
 function reclaimStaleLock(lock) {
@@ -257,11 +296,14 @@ function reclaimStaleLock(lock) {
     throw new DispatchError("builder dispatch lock is unsafe");
   }
   const owner = readLockOwner(lock);
+  const ownerHasProcessIdentity = ["identified", "legacy"].includes(
+    owner.status,
+  );
   const staleOwnerlessLock =
     Date.now() - stat.mtimeMs >= OWNERLESS_LOCK_STALE_MS;
   if (
-    (owner.status === "live" && processIsLive(owner.pid)) ||
-    (owner.status !== "live" && !staleOwnerlessLock)
+    (ownerHasProcessIdentity && lockOwnerIsCurrent(owner)) ||
+    (!ownerHasProcessIdentity && !staleOwnerlessLock)
   ) {
     return false;
   }
@@ -297,12 +339,19 @@ function removeEmptyLockAfterOwnerWriteFailure(lock) {
 
 function writeLockOwner(lock) {
   try {
+    const startIdentity = processStartIdentity(process.pid);
+    if (!startIdentity) {
+      throw new DispatchError(
+        "could not capture builder dispatch lock owner identity",
+      );
+    }
     writeJsonExclusive(
       lockOwnerFile(lock),
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         pid: process.pid,
         createdAtEpochMs: Date.now(),
+        processStartIdentity: startIdentity,
       },
       "builder dispatch lock owner",
     );
