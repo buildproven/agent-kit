@@ -21,6 +21,23 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.10.2](https://github.com/buildproven/agent-kit/compare/v4.10.1...v4.10.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* accept fresh rebase mutation proof after test remediation ([#542](https://github.com/buildproven/agent-kit/issues/542)) ([9c4c8db](https://github.com/buildproven/agent-kit/commit/9c4c8db4581c3dd111da4cf5819e426546c37189))
+* bound guard execution and stop the session guard reaping live sessions ([#539](https://github.com/buildproven/agent-kit/issues/539)) ([861d464](https://github.com/buildproven/agent-kit/commit/861d4646a449a5a4255bb9dc613fd5af96b43a5a))
+* build every lease recovery command from one function ([#536](https://github.com/buildproven/agent-kit/issues/536)) ([dde5720](https://github.com/buildproven/agent-kit/commit/dde5720b11f05e5ad1cffdb863bf17111513bcec))
+* preserve immutable reviewer selection across repair rebases ([#545](https://github.com/buildproven/agent-kit/issues/545)) ([9a2f737](https://github.com/buildproven/agent-kit/commit/9a2f737e1f6888e0a404afb8d68717b8767dba86))
+* preserve timeout denial after late EPIPE ([#548](https://github.com/buildproven/agent-kit/issues/548)) ([1b2b8ef](https://github.com/buildproven/agent-kit/commit/1b2b8ef53fb766a1bf8f891d8444cd10817e1039))
+* prove exact replay when candidate entries already landed upstream ([#543](https://github.com/buildproven/agent-kit/issues/543)) ([94f0db7](https://github.com/buildproven/agent-kit/commit/94f0db7e95eb9215878eba57c7c05a9ce29ccf0a))
+* replay test mutations and resume accepted mutation failures ([#541](https://github.com/buildproven/agent-kit/issues/541)) ([848d88d](https://github.com/buildproven/agent-kit/commit/848d88d0e0afb428e2f0ee7827a1bed09a4c019c))
+* require a value before shift 2 so option parsers cannot hang ([#538](https://github.com/buildproven/agent-kit/issues/538)) ([8ff7cf9](https://github.com/buildproven/agent-kit/commit/8ff7cf96aa87e8da72bf2e1d92ce057e91f5e2b5))
+* retain repair budgets across exact rebase carries ([#544](https://github.com/buildproven/agent-kit/issues/544)) ([3f09185](https://github.com/buildproven/agent-kit/commit/3f091855bc34571066eefd7f233dc0ca08629c54))
+* score the three system layers instead of one flat repository ([#540](https://github.com/buildproven/agent-kit/issues/540)) ([c6254ba](https://github.com/buildproven/agent-kit/commit/c6254ba8149c8feb27b83f22ffa04e3dba5faec1))
+* use supported approval config for Codex exec ([#470](https://github.com/buildproven/agent-kit/issues/470)) ([96347a5](https://github.com/buildproven/agent-kit/commit/96347a59373ad20b41ae807e5d9507391f543e57))
+
 ## [4.10.1](https://github.com/buildproven/agent-kit/compare/v4.10.0...v4.10.1) (2026-09-15)
 
 
