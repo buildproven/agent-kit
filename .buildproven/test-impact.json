@@ -111,7 +111,10 @@
       ]
     },
     {
-      "paths": ["scripts/quality-mutation-check.sh"],
+      "paths": [
+        "scripts/quality-mutation-check.sh",
+        "scripts/quality-invocation.js"
+      ],
       "commands": [
         {
           "executable": "npx",

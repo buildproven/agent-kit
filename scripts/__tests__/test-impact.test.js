@@ -17,6 +17,26 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
+  it.each([false, true])(
+    "covers mutation artifact validation in one invocation run (test changed: %s)",
+    (testChanged) => {
+      const files = ["scripts/quality-invocation.js"];
+      if (testChanged)
+        files.push("scripts/__tests__/quality-mutation-check.test.js");
+      const selected = plan(files, loadPolicy(ROOT), { root: ROOT });
+      expect(selected.mode).toBe("focused");
+      expect(selected.commands).toHaveLength(1);
+      expect(selected.commands[0].executable).toBe("npx");
+      expect(selected.commands[0].args.slice(0, 2)).toEqual(["vitest", "run"]);
+      expect(selected.commands[0].args).toContain(
+        "scripts/__tests__/quality-mutation-check.test.js",
+      );
+      expect(selected.commands[0].args).toContain(
+        "scripts/__tests__/quality-invocation.test.js",
+      );
+    },
+  );
+
   it.each(["deleted.js", "tests/test_deleted.py"])(
     "requires explicit coverage for missing %s when repository context is supplied",
     (file) => {

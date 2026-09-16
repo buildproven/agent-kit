@@ -51,6 +51,16 @@ uses only the live PR source, not protected-base-only files. Reject wrong head,
 wrong candidate base and false reuse claims through the public recording API.
 Run the affected mutation/invocation suites and normal exact-head quality gates.
 
+The first exact-head local test gate timed out at 566 seconds: 441 tests passed
+in its first command, and the separate mutation test command was incomplete.
+The same-head CI completed both commands (441 plus 53 tests). This is not a
+substitute for the failed local gate. The selector omitted mutation CLI coverage
+for invocation-source-only changes and selected it separately when the test file
+also changed. Map `quality-invocation.js` to its mutation CLI tests so the existing
+coalescer retains all coverage in one run. Two public-selector regression cases
+fail before this mapping and pass afterward. Because selector policy changes,
+the resulting exact-head gate must execute the complete regression audit.
+
 Architecture review: Sol/high returned CLEAN on 2026-09-16 before production
 implementation. The first repository review emitted CLEAN but timed out during
 completion; a bounded decision-and-validator-excerpt review completed with exit
