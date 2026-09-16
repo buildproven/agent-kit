@@ -50,6 +50,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 const { loadManifest, withManifestLock } = require("./quality-invocation");
+const { repairLineage } = require("./quality-git-identity.js");
 
 /**
  * Derive a coarse "shape" key for a finding so near-duplicate findings
@@ -160,136 +161,18 @@ function currentCommitCount(cwd) {
   }
 }
 
-/**
- * Count commits made ON TOP OF the baseline SHA — i.e. `<startSha>..HEAD`.
- *
- * This is the correct "fix-commits made during THIS run" measure. The legacy
- * approach (total `rev-list --count HEAD` minus a numeric baseline) is only
- * valid when HEAD's total ancestry stays fixed except for appended commits.
- * That assumption breaks in the `--merge <PR>` flow: Step -1 baselines inside
- * a PR-branch worktree, but a later governor check can run from a HEAD whose
- * total ancestry differs (rebase onto updated main, or a cross-checkout cwd),
- * producing a bogus cross-baseline delta — observed 2026-07-14 as
- * `commitsUsed: 21` with ZERO fix commits, falsely tripping the commit cap.
- *
- * `<startSha>..HEAD` is immune to all of that: it counts exactly the commits
- * reachable from HEAD but not from the baseline, which is the definition of
- * new work. Returns `null` on any git failure (same fail-closed contract as
- * `currentCommitCount`), so `evaluateBudget`'s `Number.isFinite` guard halts.
- */
-function commitsSinceBaseline(cwd, startSha, endSha = "HEAD", linear = false) {
-  if (typeof startSha !== "string" || !/^[0-9a-f]{7,40}$/i.test(startSha)) {
-    return null;
-  }
-  try {
-    // `<sha>..HEAD` only means "new commits since baseline" when the baseline
-    // is actually an ANCESTOR of HEAD. If it isn't — a hard reset, a rebase
-    // that orphaned it, or a check running from a divergent checkout — the
-    // range counts unrelated history and can reproduce the very false-trip this
-    // fix exists to kill. Fail CLOSED in that case (return null → evaluateBudget
-    // halts via its Number.isFinite guard) rather than trusting a bogus count.
-    execFileSync("git", ["merge-base", "--is-ancestor", startSha, endSha], {
-      cwd,
-      stdio: ["ignore", "ignore", "ignore"],
-    });
-    if (
-      linear &&
-      execFileSync("git", ["rev-list", "--merges", `${startSha}..${endSha}`], {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim()
-    )
-      return null;
-    const out = execFileSync(
-      "git",
-      ["rev-list", "--count", `${startSha}..${endSha}`],
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    );
-    const parsed = parseInt(out.trim(), 10);
-    return Number.isFinite(parsed) ? parsed : null;
-  } catch {
-    // Non-zero exit from --is-ancestor (baseline not an ancestor) OR any git
-    // failure both land here → null → fail closed.
-    return null;
-  }
-}
-
-/**
- * Resolve the run-scoped fix-commit count for a given state + cwd.
- *
- * Preferred path: `start_commit_sha` present → count `<sha>..HEAD` directly
- * (rebase/checkout-immune). This returns commits-USED, not a total; callers
- * pass it as `commitCount` and `evaluateBudget` treats it accordingly.
- *
- * Legacy fallback: sentinels written before `start_commit_sha` existed only
- * have `start_commit_count`, so fall back to total-ancestry `HEAD` count and
- * let `evaluateBudget` do the subtraction (the old, rebase-fragile behavior —
- * but no worse than before, and only for in-flight pre-upgrade runs).
- */
-// Count linear repair intervals around trusted exact-replay carries. Moving
-// across a carry costs zero; moving to its source does not erase prior repairs.
-// Ambiguous sources and merged intervals cannot establish a reliable count.
-function carriedCommitCount(cwd, startSha, carries, endSha) {
-  if (!Array.isArray(carries) || carries.length === 0) return null;
-  let current = startSha;
-  let consumed = 0;
-  const seen = new Set([current]);
-  for (let step = 0; step < carries.length; step += 1) {
-    const eligible = carries.filter(
-      (entry) =>
-        entry &&
-        typeof entry.reviewedHead === "string" &&
-        typeof entry.head === "string" &&
-        /^[0-9a-f]{40}$/.test(entry.reviewedHead) &&
-        /^[0-9a-f]{40}$/.test(entry.head) &&
-        (entry.reviewedHead === current ||
-          isAncestorOfHead(cwd, current, entry.reviewedHead)),
-    );
-    if (eligible.length === 0) break;
-    if (eligible.length !== 1) return null;
-    const carry = eligible[0];
-    const interval = commitsSinceBaseline(
-      cwd,
-      current,
-      carry.reviewedHead,
-      true,
-    );
-    if (interval === null) return null;
-    if (seen.has(carry.head)) return null;
-    consumed += interval;
-    seen.add(carry.head);
-    current = carry.head;
-  }
-  if (current === startSha) return null;
-  const remaining = commitsSinceBaseline(cwd, current, endSha, true);
-  return remaining === null ? null : consumed + remaining;
-}
-
-function isAncestorOfHead(cwd, sha, endSha = "HEAD") {
-  try {
-    execFileSync("git", ["merge-base", "--is-ancestor", sha, endSha], {
-      cwd,
-      stdio: ["ignore", "ignore", "ignore"],
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
+// Preserve the legacy public governor interface; shared Git identity owns
+// exact-endpoint repair lineage for the governor and review authorization.
 function resolveCommitCount(cwd, state, endSha = "HEAD") {
   if (endSha !== "HEAD" && !/^[0-9a-f]{40}$/.test(endSha)) return null;
   if (state && typeof state.start_commit_sha === "string") {
-    const direct = commitsSinceBaseline(cwd, state.start_commit_sha, endSha);
-    if (direct !== null) return direct;
-    // The original baseline is no longer in history. Before failing closed,
-    // see whether a proven rebase carried it to a commit that still is.
-    return carriedCommitCount(
-      cwd,
-      state.start_commit_sha,
-      state.review_rebase_carries,
-      endSha,
+    return (
+      repairLineage(
+        cwd,
+        state.start_commit_sha,
+        endSha,
+        state.review_rebase_carries,
+      )?.count ?? null
     );
   }
   return currentCommitCount(cwd);

@@ -198,6 +198,101 @@ function isAncestorOf(root, ancestor, descendant) {
   }
 }
 
+// Ordinary repair intervals are counted only when their endpoints establish
+// ancestry. Recovery intervals must also be linear, so merged upstream work
+// cannot masquerade as repairs. Legacy direct counting remains conservative.
+function commitInterval(root, from, to, linear = false) {
+  if (!/^[0-9a-f]{7,40}$/i.test(from || "") || !isAncestorOf(root, from, to))
+    return null;
+  try {
+    if (linear && git(root, ["rev-list", "--merges", `${from}..${to}`]))
+      return null;
+    const count = Number(git(root, ["rev-list", "--count", `${from}..${to}`]));
+    return Number.isFinite(count) ? count : null;
+  } catch {
+    return null;
+  }
+}
+
+// Pure history seam. The caller supplies trusted carry identities and an exact
+// endpoint. Returned carries let authorization consumers verify replay proof
+// without duplicating traversal. Reachability is not review coverage.
+function repairLineage(root, from, to, carries) {
+  if (to !== "HEAD" && !/^[0-9a-f]{40}$/.test(to || "")) return null;
+  const direct = commitInterval(root, from, to);
+  if (direct !== null) return { count: direct, carries: [] };
+  if (!Array.isArray(carries) || !carries.length) return null;
+  let current = from;
+  let count = 0;
+  let endpoint = null;
+  const used = [];
+  const seen = new Set([current]);
+  for (let step = 0; step < carries.length; step++) {
+    const eligible = carries.filter(
+      (entry) =>
+        entry &&
+        /^[0-9a-f]{40}$/.test(entry.reviewedHead || "") &&
+        /^[0-9a-f]{40}$/.test(entry.head || "") &&
+        (entry.reviewedHead === current ||
+          isAncestorOf(root, current, entry.reviewedHead)),
+    );
+    if (!eligible.length) break;
+    if (eligible.length !== 1) return null;
+    const carry = eligible[0];
+    const interval = commitInterval(root, current, carry.reviewedHead, true);
+    if (interval === null || seen.has(carry.head)) return null;
+    count += interval;
+    used.push(carry);
+    seen.add(carry.head);
+    current = carry.head;
+    // Historical review artifacts remain bound to their own endpoint even
+    // when the campaign now contains later carries.
+    if (endpoint === null && isAncestorOf(root, current, to)) {
+      const remaining = commitInterval(root, current, to, true);
+      if (remaining === null) return null;
+      endpoint = { count: count + remaining, carries: [...used] };
+    }
+  }
+  if (!used.length) return null;
+  if (endpoint !== null) return endpoint;
+  const remaining = commitInterval(root, current, to, true);
+  return remaining === null
+    ? null
+    : { count: count + remaining, carries: used };
+}
+
+function selectionLineageValid(root, from, to, carries) {
+  const lineage = repairLineage(root, from, to, carries);
+  if (!lineage) return false;
+  let selected = from;
+  try {
+    return lineage.carries.every((carry) => {
+      if (
+        ![carry.priorBaseSha, carry.baseSha].every((sha) =>
+          /^[0-9a-f]{40}$/.test(sha || ""),
+        ) ||
+        carry.priorBaseSha === selected ||
+        !isAncestorOf(root, carry.priorBaseSha, selected) ||
+        !isAncestorOf(root, carry.baseSha, carry.head)
+      )
+        return false;
+      const replay = replayedTree(
+        root,
+        carry.priorBaseSha,
+        carry.reviewedHead,
+        carry.baseSha,
+      );
+      const valid =
+        replay !== null &&
+        replay === git(root, ["rev-parse", `${carry.head}^{tree}`]);
+      selected = carry.head;
+      return valid;
+    });
+  } catch {
+    return false;
+  }
+}
+
 function gitCommonDir(root) {
   const value = git(root, ["rev-parse", "--git-common-dir"]);
   return fs.realpathSync(path.resolve(root, value));
@@ -242,6 +337,8 @@ module.exports = {
   canonicalRoot,
   replayedTree,
   isAncestorOf,
+  repairLineage,
+  selectionLineageValid,
   gitCommonDir,
   originIdentity,
   repoKey,
