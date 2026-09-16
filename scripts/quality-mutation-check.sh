@@ -909,6 +909,19 @@ for CANDIDATE in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
   else
     git -C "$SANDBOX" rm -q -- "$CANDIDATE"
   fi
+  # The behavioral command must execute the restored subject, not merely a
+  # detached worktree that happens to have been prepared for it.  A passing
+  # test after a no-op restore is not mutation evidence.  Compare Git blobs
+  # rather than timestamps so this also catches an index/worktree mismatch.
+  if git -C "$ROOT" cat-file -e "$MUTATION_BASE:$CANDIDATE" 2>/dev/null; then
+    EXPECTED_BLOB="$(git -C "$ROOT" rev-parse "$MUTATION_BASE:$CANDIDATE")"
+    OBSERVED_BLOB="$(git -C "$SANDBOX" hash-object "$CANDIDATE")"
+    if [ "$OBSERVED_BLOB" != "$EXPECTED_BLOB" ]; then
+      git -C "$ROOT" worktree remove --force "$SANDBOX" >/dev/null
+      echo "quality-mutation-check: controlled restore did not materialize the selected source blob" >&2
+      exit 1
+    fi
+  fi
   ATTEMPTED_PATHS+=("$CANDIDATE")
 
   set +e
