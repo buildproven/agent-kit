@@ -47,6 +47,14 @@ prior reviews, findings, provider use, and budgets, then continues only the
 unfinished exact-head phases. If HEAD advanced, the runner archives the stale
 interruption and reruns descendant-bound gates, mutation evidence, and review.
 
+Test-only remediation replays the prior killed source mutation in a fresh
+current-head sandbox. It must not substitute another candidate or report saved
+execution time. A weakened test remains blocked. Separately, a valid explicit
+`mutation:missing` exception can reopen only a mutation-phase failure through
+an epoch-fenced `recovering` state. The runner continues unfinished review and
+CI; it never jumps from that exception directly to merge. See
+[the mutation recovery decision](decisions/ADR-test-remediation-mutation-recovery.md).
+
 ## Phase ownership
 
 | Phase            | Deterministic runner responsibility                                                    | Model responsibility                                        |

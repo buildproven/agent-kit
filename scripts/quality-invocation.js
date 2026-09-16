@@ -5739,6 +5739,64 @@ function validMutationPaths(paths) {
   );
 }
 
+function mutationReplayPlan(manifest) {
+  const carry = manifest.mutationCarry;
+  if (!carry) return null;
+  const root = manifest.repo.realpath;
+  const head = manifest.revisions.currentHead;
+  const files = changedFiles(root, carry.priorHead, head);
+  if (
+    !files.length ||
+    !files.every((file) =>
+      /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.[^/]+$/.test(
+        file,
+      ),
+    )
+  )
+    return null;
+  if (
+    !fs.existsSync(carry.artifactPath) ||
+    sha256File(carry.artifactPath) !== carry.artifactSha256
+  ) {
+    throw new Error("test-only mutation replay requires intact prior evidence");
+  }
+  const prior = parseJson(
+    fs.readFileSync(carry.artifactPath, "utf8"),
+    "prior mutation replay evidence",
+  );
+  const candidateBase = prior.candidateBase || prior.base;
+  if (
+    prior.schemaVersion !== 1 ||
+    prior.invocationId !== manifest.invocationId ||
+    prior.head !== carry.priorHead ||
+    prior.base !== manifest.revisions.baseSha ||
+    prior.tier !== manifest.risk.tier ||
+    prior.method !== "revert-diff" ||
+    prior.testFailureObserved !== true ||
+    !validMutationPaths(prior.mutatedPaths) ||
+    prior.mutatedPaths.length !== 1 ||
+    !isAncestorOf(root, candidateBase, carry.priorHead) ||
+    !isAncestorOf(root, carry.priorHead, head)
+  ) {
+    throw new Error(
+      "test-only mutation replay requires one prior killed source mutation with matching ancestry",
+    );
+  }
+  const subject = prior.mutatedPaths[0];
+  if (
+    git(root, ["rev-parse", `${carry.priorHead}:${subject}`]) !==
+    git(root, ["rev-parse", `${head}:${subject}`])
+  ) {
+    throw new Error("test-only mutation replay subject changed");
+  }
+  return {
+    candidateBase,
+    subject,
+    priorHead: carry.priorHead,
+    artifactSha256: carry.artifactSha256,
+  };
+}
+
 function validMutationArtifact(manifest, artifact) {
   const identityValid = [
     artifact.schemaVersion === 1,
@@ -5749,7 +5807,20 @@ function validMutationArtifact(manifest, artifact) {
   ].every(Boolean);
   if (!identityValid) return false;
   const candidateBase = artifact.candidateBase || artifact.base;
-  if (candidateBase !== artifact.base) {
+  if (artifact.replay) {
+    const replay = mutationReplayPlan(manifest);
+    if (
+      !replay ||
+      JSON.stringify(canonicalJson(replay)) !==
+        JSON.stringify(canonicalJson(artifact.replay)) ||
+      candidateBase !== replay.candidateBase ||
+      artifact.avoidedSeconds !== 0 ||
+      artifact.reusedArtifactSha256 !== null ||
+      artifact.method !== "revert-diff" ||
+      JSON.stringify(artifact.mutatedPaths) !== JSON.stringify([replay.subject])
+    )
+      return false;
+  } else if (candidateBase !== artifact.base) {
     const carry = manifest.mutationCarry;
     const rebaseCarry = manifest.revisions.baseRebaseCarry;
     const freshRebaseProof = Boolean(
@@ -5832,7 +5903,7 @@ function mutationEvidenceValid(manifest, options = {}) {
   if (
     Array.isArray(manifest.approval?.acceptedConditions) &&
     manifest.approval.acceptedConditions.includes("mutation:missing") &&
-    manifest.approval.head === manifest.revisions.currentHead
+    approvalValid(manifest)
   ) {
     return true;
   }
@@ -5957,6 +6028,10 @@ function reviewTrailers(manifest) {
 // the merge scripts regardless of what was accepted here.
 function operatorOverrideAuthorization(manifest) {
   const acceptedConditions = manifest.approval.acceptedConditions || [];
+  const mutationOnly =
+    acceptedConditions.length === 1 &&
+    acceptedConditions[0] === "mutation:missing";
+  const mutationReview = mutationOnly ? reviewCoverage(manifest) : null;
   verifyGateEvidence(manifest, acceptedConditions);
   if (["high", "critical"].includes(manifest.risk?.tier)) {
     assertMutationEvidence(manifest, acceptedConditions);
@@ -5984,8 +6059,22 @@ function operatorOverrideAuthorization(manifest) {
     fallback: "unavailable",
     tier: manifest.risk.tier,
     blockingCount: 0,
-    leads: 0,
-    reviewStatus: "incomplete",
+    leads: mutationOnly ? providerFindings(manifest).length : 0,
+    reviewStatus: mutationOnly
+      ? authorizationReviews(manifest).some(
+          (review) => review.status === "incomplete",
+        )
+        ? "incomplete"
+        : "complete"
+      : "incomplete",
+    ...(mutationReview
+      ? {
+          reviewEvidenceSha256: crypto
+            .createHash("sha256")
+            .update(reviewedEvidence(manifest))
+            .digest("hex"),
+        }
+      : {}),
     contractVersion: manifest.reviewContractVersion || 1,
     policyDigest: manifest.risk.reviewPolicyDigest || null,
     agentsSha256: agentsSha256(manifest),
@@ -6335,6 +6424,14 @@ function recordTerminalState(manifestPath, state, detail = null, options = {}) {
       terminalEpoch: currentEpoch,
       recordedAt: new Date().toISOString(),
     };
+    if (
+      state === "blocked" &&
+      /^mutation failed with exit [1-9][0-9]*$/.test(detail || "") &&
+      manifest.orchestration?.head === manifest.revisions.currentHead &&
+      manifest.orchestration.phase === "mutation"
+    ) {
+      manifest.terminalState.failureCode = "mutation-failed";
+    }
     return state;
   };
   // Written under the manifest lock, but persisted WITHOUT bumping
@@ -7150,6 +7247,63 @@ function resumeInterruptedTerminal(manifestPath) {
   return resumed;
 }
 
+function resumeAcceptedMutationFailure(manifestPath) {
+  const eligible = (manifest) => {
+    const terminal = manifest.terminalState;
+    if (
+      !terminal ||
+      terminal.head !== manifest.revisions.currentHead ||
+      manifest.governor?.activeExecution ||
+      !approvalValid(manifest) ||
+      manifest.approval.scope !== "operator-quality-override" ||
+      !manifest.approval.acceptedConditions.includes("mutation:missing")
+    )
+      return false;
+    if (terminal.state === "recovering") {
+      return (
+        terminal.recovery?.kind === "accepted-mutation-failure" &&
+        terminal.recovery.approvalSha256 === manifest.approval.artifactSha256
+      );
+    }
+    return (
+      terminal.state === "blocked" &&
+      /^mutation failed with exit [1-9][0-9]*$/.test(terminal.detail || "") &&
+      manifest.orchestration?.head === manifest.revisions.currentHead &&
+      manifest.orchestration.phase === "mutation" &&
+      (!terminal.failureCode || terminal.failureCode === "mutation-failed")
+    );
+  };
+  if (!eligible(loadManifest(manifestPath).manifest)) return null;
+  let recovered = null;
+  withManifestLock(manifestPath, (manifest) => {
+    if (!eligible(manifest)) return;
+    validateIdentity(manifest, manifest.repo.realpath);
+    verifyGateEvidence(manifest);
+    const terminal = manifest.terminalState;
+    const epoch = terminalEpoch(manifest) + 1;
+    const recordedAt = new Date().toISOString();
+    manifest.terminalHistory ??= [];
+    manifest.terminalHistory.push({
+      ...terminal,
+      disposition: "superseded-by-mutation-capability",
+      supersededAt: recordedAt,
+    });
+    manifest.terminalEpoch = epoch;
+    manifest.terminalState = {
+      state: "recovering",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: epoch,
+      recordedAt,
+      recovery: {
+        kind: "accepted-mutation-failure",
+        approvalSha256: manifest.approval.artifactSha256,
+      },
+    };
+    recovered = manifest.terminalState;
+  });
+  return recovered;
+}
+
 function resumeRecoverableTerminal(manifestPath) {
   const initial = loadManifest(manifestPath);
   if (initial.manifest.options?.merge !== true) return null;
@@ -7471,6 +7625,8 @@ const COMMANDS = {
     mutate(manifestArg, (locked) =>
       recordMutation(locked, parseOptions(rawArgs)),
     ),
+  "mutation-replay-plan": ({ manifest }) =>
+    process.stdout.write(`${JSON.stringify(mutationReplayPlan(manifest))}\n`),
   "mutation-attempt": ({ manifestArg, rawArgs }) => {
     let result;
     mutate(manifestArg, (locked) => {
@@ -7893,6 +8049,7 @@ module.exports = {
   recordPreReviewSelectionFailure,
   resumePreReviewSelectionFailure,
   resumeInterruptedTerminal,
+  resumeAcceptedMutationFailure,
   resumeMergeReadFailure,
   resumeRecoverableTerminal,
   terminalEpoch,

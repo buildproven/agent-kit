@@ -55,6 +55,18 @@ function advanceManifest(file) {
   });
 }
 function resumeMergeReadFailure() { return null; }
+function resumeAcceptedMutationFailure(file) {
+  const manifest = read(file);
+  if (!manifest.behavior?.recoverMutation || manifest.terminalState?.detail !== "mutation failed with exit 1") return null;
+  const epoch = terminalEpoch(manifest) + 1;
+  manifest.terminalHistory ||= [];
+  manifest.terminalHistory.push(manifest.terminalState);
+  manifest.terminalEpoch = epoch;
+  manifest.terminalState = { state: "recovering", head: manifest.revisions.currentHead, terminalEpoch: epoch, recovery: { kind: "accepted-mutation-failure" } };
+  manifest.mutation = true;
+  write(file, manifest);
+  return manifest.terminalState;
+}
 function resumeRecoverableTerminal(file) {
   const manifest = read(file);
   if (!manifest.behavior?.recoverTerminal || !["blocked", "recovering"].includes(manifest.terminalState?.state)) return null;
@@ -231,7 +243,7 @@ if (require.main === module) {
   process.stdout.write(inForce + "\\n");
 }
 module.exports = { advanceHead, incompleteRetryStatus, judgeContext, leadDispositionStatus, loadManifest, mutationEvidenceValid, parseJson, recordTerminalState,
-  advanceManifest, changedFiles, clearMergeAdmissionBlock, recordPreReviewSelectionFailure, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeInterruptedTerminal, resumeMergeReadFailure, resumePreReviewSelectionFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
+  advanceManifest, changedFiles, clearMergeAdmissionBlock, recordPreReviewSelectionFailure, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeAcceptedMutationFailure, resumeInterruptedTerminal, resumeMergeReadFailure, resumePreReviewSelectionFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
 `;
 
 const FAKE_STEP = `
@@ -1620,6 +1632,29 @@ describe("quality-run public orchestration", () => {
     });
     expect(result.manifest.calls.at(-1)).toBe("quality-stamp-and-merge.sh");
     expect(result.manifest.telemetryWrites).toBe(1);
+  });
+
+  it("runs unfinished review after accepted mutation recovery instead of jumping to merge", () => {
+    const entry = fixture(
+      { recoverMutation: true },
+      { merge: true, tier: "high" },
+    );
+    const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    manifest.terminalState = {
+      state: "blocked",
+      head: "abc123",
+      detail: "mutation failed with exit 1",
+    };
+    writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+    const result = run(entry);
+    expect(result.status, result.output).toBe(0);
+    expect(result.manifest.calls).toContain("quality-run-review.sh");
+    expect(result.manifest.calls.indexOf("quality-run-review.sh")).toBeLessThan(
+      result.manifest.calls.indexOf("quality-stamp-and-merge.sh"),
+    );
+    expect(result.manifest.calls).not.toContain("quality-mutation-check.sh");
+    expect(result.manifest.terminalState.state).toBe("merged");
+    expect(result.manifest.terminalHistory[0].state).toBe("blocked");
   });
 
   it("continues only the explicitly recoverable terminal merge campaign", () => {

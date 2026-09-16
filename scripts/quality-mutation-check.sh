@@ -42,6 +42,7 @@ BASE="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" revisions.bas
 HEAD="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" revisions.currentHead)"
 MUTATION_BASE="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.priorHead 2>/dev/null || true)"
 [ -n "$MUTATION_BASE" ] || MUTATION_BASE="$BASE"
+REPLAY_PLAN="$(node "$SCRIPT_DIR/quality-invocation.js" mutation-replay-plan "$MANIFEST")"
 REUSED_ARTIFACT_SHA="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.artifactSha256 2>/dev/null || true)"
 AVOIDED_SECONDS="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.avoidedSeconds 2>/dev/null || true)"
 # A rebase-only advance changes commit identity without changing the PR patch.
@@ -57,6 +58,11 @@ if [ "$REBASE_CARRY_HEAD" = "$HEAD" ] && [ -n "$REBASE_CARRY_BASE" ]; then
   AVOIDED_SECONDS=0
 fi
 case "$AVOIDED_SECONDS" in ''|*[!0-9]*) AVOIDED_SECONDS=0 ;; esac
+if [ "$REPLAY_PLAN" != null ]; then
+  MUTATION_BASE="$(printf '%s' "$REPLAY_PLAN" | jq -er '.candidateBase')"
+  REUSED_ARTIFACT_SHA=""
+  AVOIDED_SECONDS=0
+fi
 STATE_ROOT="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" stateRoot)"
 INVOCATION_ID="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" invocationId)"
 CHECK_SECONDS="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" risk.runtime.checkSeconds)"
@@ -553,6 +559,12 @@ if [ "${#CANDIDATES[@]}" -gt 1 ]; then
   CANDIDATES=("${ORDERED_CANDIDATES[@]+"${ORDERED_CANDIDATES[@]}"}")
 fi
 
+if [ "$REPLAY_PLAN" != null ]; then
+  # Never let an unrelated candidate conceal a weakened test on the prior
+  # killed subject. This is a fresh baseline/revert run, not evidence reuse.
+  CANDIDATES=("$(printf '%s' "$REPLAY_PLAN" | jq -er '.subject')")
+fi
+
 if [ "${#CANDIDATES[@]}" -eq 0 ]; then
   DIFF_RAW="$(git -C "$ROOT" diff --raw --diff-filter=AM "$MUTATION_BASE..$HEAD" --)"
   # `grep -c .` exits 1 on zero matches; `|| true` keeps an empty $DIFF_RAW
@@ -786,8 +798,9 @@ record_evidence() {
     --arg reusedArtifactSha256 "$REUSED_ARTIFACT_SHA" \
     --argjson avoidedSeconds "$AVOIDED_SECONDS" \
     --argjson executionSeconds "$((SECONDS - MUTATION_STARTED_AT))" \
+    --argjson replay "$REPLAY_PLAN" \
     --argjson mutatedPaths "$(printf '%s\n' "${MUTATED_PATHS[@]}" | jq -R . | jq -s .)" \
-    '{schemaVersion: 1, invocationId: $invocationId, base: $base, head: $head, tier: $tier, method: $method, candidateBase: $candidateBase, reusedArtifactSha256: ($reusedArtifactSha256 | if length > 0 then . else null end), avoidedSeconds: $avoidedSeconds, executionSeconds: $executionSeconds, mutatedPaths: $mutatedPaths, testFailureObserved: true}' \
+    '{schemaVersion: 1, invocationId: $invocationId, base: $base, head: $head, tier: $tier, method: $method, candidateBase: $candidateBase, reusedArtifactSha256: ($reusedArtifactSha256 | if length > 0 then . else null end), avoidedSeconds: $avoidedSeconds, executionSeconds: $executionSeconds, replay: $replay, mutatedPaths: $mutatedPaths, testFailureObserved: true}' \
     > "$ARTIFACT"
   complete_mutation_execution
   node "$SCRIPT_DIR/quality-invocation.js" mutation-record "$MANIFEST" \

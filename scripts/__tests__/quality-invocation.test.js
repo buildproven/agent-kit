@@ -695,7 +695,7 @@ describe("mutationEvidenceValid — BUI-914 exact-head acknowledgement", () => {
     approval,
   });
 
-  it("accepts a mutation:missing acknowledgement bound to the current head", () => {
+  it("rejects an unsigned mutation:missing string even at the current head", () => {
     // BUI-914 added the --i-understand-missing-mutation flag, but nothing
     // consumed acceptedConditions on this path: the approval attached,
     // validated, and then changed nothing. The campaign still blocked.
@@ -703,7 +703,7 @@ describe("mutationEvidenceValid — BUI-914 exact-head acknowledgement", () => {
       acceptedConditions: ["mutation:missing"],
       head: "a".repeat(40),
     });
-    expect(invocation.mutationEvidenceValid(manifest)).toBe(true);
+    expect(invocation.mutationEvidenceValid(manifest)).toBe(false);
   });
 
   it("refuses an acknowledgement bound to a different head", () => {
