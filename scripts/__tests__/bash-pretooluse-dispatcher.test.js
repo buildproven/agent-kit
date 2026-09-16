@@ -261,11 +261,14 @@ describe("bash-pretooluse-dispatcher.js", () => {
         writeFileSync(
           preload,
           `const child = require("node:child_process");
-let calls = 0;
 const realSpawnSync = child.spawnSync;
 child.spawnSync = (...args) => {
-  calls += 1;
-  if (calls !== 4) return realSpawnSync(...args);
+  const [executable, childArgs] = args;
+  const isCiBudgetAdmission =
+    executable === process.execPath &&
+    Array.isArray(childArgs) &&
+    /\\/ci-budget-admission\\.js$/.test(childArgs[0]);
+  if (!isCiBudgetAdmission) return realSpawnSync(...args);
   const delayMs = Number(process.env.BS_TEST_EPIPE_DELAY_MS || "0");
   if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
   const error = new Error("spawnSync node EPIPE");
