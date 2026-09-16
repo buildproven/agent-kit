@@ -44,7 +44,7 @@ function valueFlags(source) {
   const flags = [];
   const arms = source.matchAll(/(--[a-z][a-z0-9-]*)\)([\s\S]*?);;/g);
   for (const [, flag, body] of arms) {
-    if (/\bshift 2\b/.test(body) && !flags.includes(flag)) flags.push(flag);
+    if (/\bshift 2\b/.test(body)) flags.push(flag);
   }
   return flags;
 }
@@ -52,9 +52,21 @@ function valueFlags(source) {
 const withParsers = shellScripts()
   .map((entry) => ({ ...entry, source: readFileSync(entry.full, "utf8") }))
   .filter((entry) => entry.source.includes("shift 2"))
-  .flatMap((entry) =>
-    valueFlags(entry.source).map((flag) => ({ ...entry, flag })),
-  );
+  .flatMap((entry) => {
+    // Ralph exposes a separate init parser before its top-level defaults.
+    // Keep both routes even when they consume the same flag name.
+    const sections =
+      entry.name === "ralph-next-run.sh"
+        ? entry.source.split("\n# Defaults\n")
+        : [entry.source];
+    if (entry.name === "ralph-next-run.sh" && sections.length !== 2) {
+      throw new Error("Ralph parser routes changed; update CLI coverage");
+    }
+    return sections.flatMap((source, index) => {
+      const prefix = sections.length === 2 && index === 0 ? ["init"] : [];
+      return valueFlags(source).map((flag) => ({ ...entry, flag, prefix }));
+    });
+  });
 
 describe("option parsers are bounded", () => {
   it("finds the scripts that take flag values", () => {
@@ -65,35 +77,52 @@ describe("option parsers are bounded", () => {
     expect(withParsers.length).toBeGreaterThan(40);
   });
 
-  it.each(withParsers.map((e) => [e.name, e.flag, e.full]))(
-    "%s exits promptly when %s has no value",
-    (_name, flag, full) => {
-      const result = spawnSync("bash", [full, flag], {
-        encoding: "utf8",
-        input: "",
-        timeout: 5000,
-        killSignal: "SIGKILL",
-      });
+  it.each(
+    withParsers.map((e) => [
+      [e.name, ...e.prefix].join(" "),
+      e.flag,
+      e.full,
+      e.prefix,
+    ]),
+  )("%s exits promptly when %s has no value", (_name, flag, full, prefix) => {
+    const result = spawnSync("bash", [full, ...prefix, flag], {
+      encoding: "utf8",
+      input: "",
+      timeout: 5000,
+      killSignal: "SIGKILL",
+    });
 
-      // A hang surfaces as ETIMEDOUT or a kill signal with null status.
-      expect(result.error?.code).not.toBe("ETIMEDOUT");
-      expect(result.signal).toBeNull();
-      expect(result.status).not.toBeNull();
+    // A hang surfaces as ETIMEDOUT or a kill signal with null status.
+    expect(result.error?.code).not.toBe("ETIMEDOUT");
+    expect(result.signal).toBeNull();
+    expect(result.status).not.toBeNull();
 
-      // It must refuse, not silently accept an empty value.
-      expect(result.status).not.toBe(0);
-      expect(`${result.stdout}${result.stderr}`.trim()).not.toBe("");
-    },
-  );
+    // It must refuse, not silently accept an empty value.
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`.trim()).not.toBe("");
+  });
 
-  it("leaves no unguarded `${2:-}` + `shift 2` arm anywhere", () => {
+  it("covers both Ralph parser routes without deduplicating flags", () => {
+    const routes = withParsers
+      .filter(
+        (entry) =>
+          entry.name === "ralph-next-run.sh" && entry.flag === "--until",
+      )
+      .map((entry) => entry.prefix);
+    expect(routes).toEqual([["init"], []]);
+  });
+
+  it("leaves no `${2:-}` + `shift 2` arm across line breaks", () => {
     const offenders = shellScripts()
       .map((entry) => ({
         name: entry.name,
-        hits: readFileSync(entry.full, "utf8")
-          .split("\n")
-          .filter((line) => line.includes("shift 2") && line.includes("${2:-}"))
-          .length,
+        hits: [
+          ...readFileSync(entry.full, "utf8").matchAll(
+            /(--[a-z][a-z0-9-]*)\)([\s\S]*?);;/g,
+          ),
+        ].filter(
+          ([, , body]) => /\bshift 2\b/.test(body) && body.includes("${2:-}"),
+        ).length,
       }))
       .filter((entry) => entry.hits > 0);
 
