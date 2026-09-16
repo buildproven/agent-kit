@@ -90,7 +90,7 @@ const RISK_FLOORS = {
   high: { campaignSeconds: 540, reviewSeconds: 180 },
   // Empirical floor: an xhigh Codex pass over a 1.2k-line security diff took
   // longer than the old 330s "large" allowance. Keep the planning envelope
-  // capped at 15 minutes, but reserve nine minutes for the only provider pass
+  // bounded at one hour, but reserve nine minutes for the only provider pass
   // that can produce the mandatory critical review evidence.
   critical: { campaignSeconds: 900, reviewSeconds: 540 },
 };
@@ -174,6 +174,7 @@ function gateTimeoutExtraSeconds(gateTimeoutSeconds, checkSeconds) {
 function gateCampaignBudget({
   band,
   riskFloor,
+  tier,
   reviewSeconds,
   requiredGateCount,
   declaredGateTimeoutSeconds,
@@ -184,27 +185,44 @@ function gateCampaignBudget({
   );
   const gateReserveSeconds =
     requiredGateCount * band.checkSeconds + declaredGateExtraSeconds;
+  // High and critical campaigns must run a mutation proof after the required
+  // gates. That proof has a bounded watchdog of check + reserve. It is a
+  // mandatory active phase, so the shared per-head cap must fund it as well as
+  // the gate ledger. Otherwise a valid gate can leave too little time for the
+  // mutation baseline and controlled revert to finish.
+  const mutationReserveSeconds = ["high", "critical"].includes(tier)
+    ? band.checkSeconds + band.checkReserveSeconds
+    : 0;
+  const minimumCampaignSeconds =
+    gateReserveSeconds +
+    mutationReserveSeconds +
+    reviewSeconds +
+    ORCHESTRATION_SECONDS;
   if (declaredGateExtraSeconds === 0) {
+    if (minimumCampaignSeconds > MAX_CAMPAIGN_SECONDS) {
+      throw new Error(
+        `required gate, mutation, and review reserves require ${minimumCampaignSeconds}s, above the bounded ${MAX_CAMPAIGN_SECONDS}s campaign maximum`,
+      );
+    }
     return {
       gateReserveSeconds,
-      campaignSeconds: Math.min(
-        900,
-        Math.max(
-          band.campaignSeconds,
-          riskFloor.campaignSeconds,
-          gateReserveSeconds + reviewSeconds + ORCHESTRATION_SECONDS,
-        ),
+      campaignSeconds: Math.max(
+        band.campaignSeconds,
+        riskFloor.campaignSeconds,
+        minimumCampaignSeconds,
       ),
     };
   }
-  const minimumCampaignSeconds =
+  const declaredMinimumCampaignSeconds = Math.max(
+    minimumCampaignSeconds,
     gateReserveSeconds +
-    band.reviewReserveSeconds +
-    band.verificationSeconds +
-    ORCHESTRATION_SECONDS;
-  if (minimumCampaignSeconds > MAX_CAMPAIGN_SECONDS) {
+      band.reviewReserveSeconds +
+      band.verificationSeconds +
+      ORCHESTRATION_SECONDS,
+  );
+  if (declaredMinimumCampaignSeconds > MAX_CAMPAIGN_SECONDS) {
     throw new Error(
-      `declared gate and review reserves require ${minimumCampaignSeconds}s, above the bounded ${MAX_CAMPAIGN_SECONDS}s campaign maximum`,
+      `declared gate, mutation, and review reserves require ${declaredMinimumCampaignSeconds}s, above the bounded ${MAX_CAMPAIGN_SECONDS}s campaign maximum`,
     );
   }
   return {
@@ -212,7 +230,7 @@ function gateCampaignBudget({
     campaignSeconds: Math.max(
       band.campaignSeconds,
       riskFloor.campaignSeconds,
-      minimumCampaignSeconds,
+      declaredMinimumCampaignSeconds,
     ),
   };
 }
@@ -253,6 +271,7 @@ function planRuntime({
   const { gateReserveSeconds, campaignSeconds } = gateCampaignBudget({
     band,
     riskFloor,
+    tier,
     reviewSeconds,
     requiredGateCount,
     declaredGateTimeoutSeconds,
