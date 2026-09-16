@@ -174,6 +174,11 @@ describe("bash-pretooluse-dispatcher.js", () => {
   it.each(["classifier", "admission"])(
     "bounds the %s child and denies before the outer timeout",
     (stage) => {
+      // A real process launch can take longer than 100ms on a busy CI worker.
+      // Keep this behavioral proof below the hook's four-second shared budget,
+      // but give the preceding real Bash guards enough time that the asserted
+      // child, rather than scheduler noise, determines the outcome.
+      const childTimeoutMs = 1000;
       const guardDir = mkdtempSync(path.join(tmpdir(), "bounded-push-"));
       try {
         const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
@@ -201,14 +206,19 @@ describe("bash-pretooluse-dispatcher.js", () => {
             tool_input: { command: "git push origin topic" },
           }),
           encoding: "utf8",
-          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "100" },
-          timeout: 2000,
+          env: {
+            ...process.env,
+            BS_GUARD_TIMEOUT_MS: String(childTimeoutMs),
+          },
+          timeout: childTimeoutMs + 2000,
           killSignal: "SIGKILL",
         });
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(2);
         expect(result.stderr).toMatch(
-          new RegExp(`CI budget ${stage} did not finish within 100ms`),
+          new RegExp(
+            `CI budget ${stage} did not finish within ${childTimeoutMs}ms`,
+          ),
         );
       } finally {
         rmSync(guardDir, { recursive: true, force: true });
@@ -219,8 +229,8 @@ describe("bash-pretooluse-dispatcher.js", () => {
   it.each([
     [
       "after its deadline",
-      "120",
-      /CI budget admission did not finish within 100ms/,
+      "1200",
+      /CI budget admission did not finish within 1000ms/,
     ],
     [
       "before its deadline",
@@ -230,6 +240,7 @@ describe("bash-pretooluse-dispatcher.js", () => {
   ])(
     "classifies an EPIPE %s without weakening the denial",
     (_timing, delayMs, expected) => {
+      const childTimeoutMs = 1000;
       const guardDir = mkdtempSync(path.join(tmpdir(), "bounded-epipe-"));
       try {
         const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
@@ -273,10 +284,10 @@ child.spawnSync = (...args) => {
             encoding: "utf8",
             env: {
               ...process.env,
-              BS_GUARD_TIMEOUT_MS: "100",
+              BS_GUARD_TIMEOUT_MS: String(childTimeoutMs),
               BS_TEST_EPIPE_DELAY_MS: delayMs,
             },
-            timeout: 2000,
+            timeout: childTimeoutMs + 3000,
             killSignal: "SIGKILL",
           },
         );
