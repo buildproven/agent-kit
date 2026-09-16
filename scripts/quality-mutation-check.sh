@@ -859,6 +859,13 @@ fi
 
 for CANDIDATE in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
   [ "${#ATTEMPTED_PATHS[@]}" -lt "$MAX_ATTEMPTS" ] || break
+  # This script's fixture intentionally invokes the mutation runner. Running
+  # it inside a mutation worktree would recurse into another mutation campaign
+  # instead of proving the selected subject. Leave it to its dedicated suite
+  # and continue to the next independently mutable candidate.
+  if [ "$CANDIDATE" = "scripts/quality-mutation-check.sh" ]; then
+    continue
+  fi
   REMAINING=$(( DEADLINE - $(date +%s) ))
   if [ "$REMAINING" -le 0 ]; then
     echo "quality-mutation-check: ${CHECK_SECONDS}s mutation budget exhausted before producing evidence" >&2
