@@ -153,6 +153,11 @@ passes a minimal environment, and binds the execution-profile digest into the
 plan and receipt. This is a target mutation-integrity boundary, not a host
 confidentiality boundary.
 
+Approval is pinned with `-c 'approval_policy="never"'`. Do not pass the
+top-level `-a` option after `codex exec`: that subcommand rejects it before
+starting the worker. Removing the option without the configuration override
+would also remove the explicit approval-policy binding.
+
 Before write handoff, the runner freezes and hashes one binary patch. It permits
 only regular-file additions and content modifications with a stable file mode
 inside planned paths. Protected paths match at any directory depth. Protected,
