@@ -21,6 +21,13 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.10.4](https://github.com/buildproven/agent-kit/compare/v4.10.3...v4.10.4) (2026-09-17)
+
+
+### Bug Fixes
+
+* approve trusted release quality workflows ([#566](https://github.com/buildproven/agent-kit/issues/566)) ([4c37ba5](https://github.com/buildproven/agent-kit/commit/4c37ba5b479b5c73b6c06dd7a641f4bb959e6d9d))
+
 ## [4.10.3](https://github.com/buildproven/agent-kit/compare/v4.10.2...v4.10.3) (2026-09-17)
 
 
