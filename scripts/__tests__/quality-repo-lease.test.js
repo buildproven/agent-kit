@@ -765,6 +765,37 @@ process.exit(4);\n`,
     15000,
   );
 
+  it("uses GitHub auto-merge only after the exact protected-merge instruction", () => {
+    const f = fixture("auto-merge-fallback");
+    git(f.root, ["remote", "set-url", "origin", f.root]);
+    const owner = lease.acquire(f.manifestPath, { waitMs: 0 });
+    const manifest = invocation.loadManifest(f.manifestPath).manifest;
+    const bin = path.join(f.root, "auto-merge-bin");
+    const calls = path.join(bin, "calls");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!${process.execPath}\nconst fs=require('fs'); const args=process.argv.slice(2);\nif(args[0]==='pr'&&args[1]==='merge'){fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');if(!args.includes('--auto')){process.stderr.write('add the '+String.fromCharCode(96)+'--auto'+String.fromCharCode(96)+' flag');process.exit(1)}process.exit(0)}\nif(args[0]==='pr'&&args[1]==='view'){const queued=fs.readFileSync(${JSON.stringify(calls)},'utf8').includes('--auto');process.stdout.write(JSON.stringify({state:queued?'MERGED':'OPEN',mergedAt:queued?'2026-09-17T00:00:00Z':null,mergeCommit:queued?{oid:${JSON.stringify(manifest.revisions.currentHead)}}:null,headRefName:${JSON.stringify(manifest.repo.headRefName)},headRefOid:${JSON.stringify(manifest.revisions.currentHead)},baseRefName:'main'}));process.exit(0)}\nprocess.exit(4);\n`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      expect(
+        lease.performMerge(f.manifestPath, owner.token, {
+          expectedHead: manifest.revisions.currentHead,
+        }),
+      ).toMatchObject({ merged: true });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+    const attempts = fs.readFileSync(calls, "utf8").trim().split("\n");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).not.toContain("--auto");
+    expect(attempts[1]).toContain("--auto");
+    expect(lease.status(f.manifestPath).state).toBe("released");
+  });
+
   it("refuses token-only recreation and symlinked scoped ownership", () => {
     const f = fixture("missing-scoped-owner");
     const owner = lease.acquire(f.manifestPath, { waitMs: 0 });

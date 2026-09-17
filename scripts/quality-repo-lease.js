@@ -2146,11 +2146,29 @@ function performMerge(manifestPath, presentedToken, options = {}) {
     head,
   ];
   if (options.admin) args.push("--admin");
-  const merge = spawnSync("gh", args, {
+  let merge = spawnSync("gh", args, {
     cwd: manifest.repo.realpath,
     encoding: "utf8",
     timeout: 120_000,
   });
+  // GitHub can require auto-merge even after its exact protected check is
+  // green. This is a normal protected-branch policy path, not an
+  // administrator override. Keep the same immutable PR/head binding and
+  // require the authoritative merged read-back below before releasing either
+  // guard or lease.
+  if (
+    merge.status !== 0 &&
+    !options.admin &&
+    /add the `--auto` flag/i.test(
+      `${merge.stdout || ""}\n${merge.stderr || ""}`,
+    )
+  ) {
+    merge = spawnSync("gh", [...args, "--auto"], {
+      cwd: manifest.repo.realpath,
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+  }
   let remote = null;
   let remoteReadError = null;
   try {
