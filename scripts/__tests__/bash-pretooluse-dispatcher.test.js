@@ -95,18 +95,32 @@ describe("bash-pretooluse-dispatcher.js", () => {
             ? `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,600); const fs=require('fs'); const child=require('child_process').spawn('sleep',['30'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);\n`
             : "process.exit(0);\n",
         );
-        const result = spawnSync(process.execPath, [staged], {
-          input: JSON.stringify({
-            tool_input: { command: "git push origin topic" },
-          }),
-          encoding: "utf8",
-          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "2000" },
-          timeout: 8000,
-          killSignal: "SIGKILL",
-        });
-        helperPid = existsSync(pidFile)
-          ? Number(readFileSync(pidFile, "utf8"))
-          : undefined;
+        let result;
+        // A busy CI worker can reject the test's initial subprocess launch
+        // with EPIPE before the staged helper starts. That does prove the
+        // dispatcher fails closed, but it cannot prove process-group cleanup.
+        // Retry that pre-start infrastructure error only; once a helper exists,
+        // the timeout and descendant-death assertions below remain mandatory.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          result = spawnSync(process.execPath, [staged], {
+            input: JSON.stringify({
+              tool_input: { command: "git push origin topic" },
+            }),
+            encoding: "utf8",
+            env: { ...process.env, BS_GUARD_TIMEOUT_MS: "2000" },
+            timeout: 8000,
+            killSignal: "SIGKILL",
+          });
+          helperPid = existsSync(pidFile)
+            ? Number(readFileSync(pidFile, "utf8"))
+            : undefined;
+          if (
+            Number.isSafeInteger(helperPid) ||
+            !String(result.stderr || "").includes("EPIPE")
+          ) {
+            break;
+          }
+        }
         expect(result.error, result.stderr).toBeUndefined();
         expect(result.status, result.stderr).toBe(2);
         expect(result.stderr).toMatch(/did not finish within 2000ms/);
@@ -201,18 +215,22 @@ describe("bash-pretooluse-dispatcher.js", () => {
             ? "setInterval(() => {}, 1000);\n"
             : "process.exit(0);\n",
         );
-        const result = spawnSync(process.execPath, [staged], {
-          input: JSON.stringify({
-            tool_input: { command: "git push origin topic" },
-          }),
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            BS_GUARD_TIMEOUT_MS: String(childTimeoutMs),
-          },
-          timeout: childTimeoutMs + 2000,
-          killSignal: "SIGKILL",
-        });
+        let result;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          result = spawnSync(process.execPath, [staged], {
+            input: JSON.stringify({
+              tool_input: { command: "git push origin topic" },
+            }),
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              BS_GUARD_TIMEOUT_MS: String(childTimeoutMs),
+            },
+            timeout: childTimeoutMs + 2000,
+            killSignal: "SIGKILL",
+          });
+          if (!String(result.stderr || "").includes("EPIPE")) break;
+        }
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(2);
         expect(result.stderr).toMatch(
