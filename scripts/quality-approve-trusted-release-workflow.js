@@ -10,6 +10,7 @@ const { spawnSync } = require("node:child_process");
 
 const RELEASE_HEAD =
   /^release-please--branches--[A-Za-z0-9._/-]+--components--[A-Za-z0-9._/-]+$/;
+const MAX_GH_OUTPUT = 16 * 1024 * 1024;
 
 function optionMap(argv) {
   const options = {};
@@ -109,7 +110,10 @@ function approveEligibleRun(runs, context, approve) {
 }
 
 function ghJson(args) {
-  const result = spawnSync("gh", args, { encoding: "utf8" });
+  const result = spawnSync("gh", args, {
+    encoding: "utf8",
+    maxBuffer: MAX_GH_OUTPUT,
+  });
   if (result.error) throw result.error;
   if (result.status !== 0)
     throw new Error(
@@ -122,13 +126,19 @@ function ghJson(args) {
   }
 }
 
-function main(argv = process.argv.slice(2)) {
-  const context = contextFromOptions(optionMap(argv));
-  const query = new URLSearchParams({
+function workflowRunsQuery(context) {
+  return new URLSearchParams({
     event: "pull_request",
     branch: context.headRef,
-    per_page: "100",
+    // Only the current exact-head run can be eligible. A small page prevents
+    // historical release runs from exhausting the command buffer.
+    per_page: "10",
   });
+}
+
+function main(argv = process.argv.slice(2)) {
+  const context = contextFromOptions(optionMap(argv));
+  const query = workflowRunsQuery(context);
   const response = ghJson([
     "api",
     `repos/${context.repository}/actions/workflows/${context.workflowId}/runs?${query}`,
@@ -175,4 +185,10 @@ if (require.main === module) {
   }
 }
 
-module.exports = { contextFromOptions, matchingRun, approveEligibleRun };
+module.exports = {
+  MAX_GH_OUTPUT,
+  contextFromOptions,
+  matchingRun,
+  approveEligibleRun,
+  workflowRunsQuery,
+};
