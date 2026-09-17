@@ -282,6 +282,22 @@ describe("bash-pretooluse-dispatcher.js", () => {
 const realSpawnSync = child.spawnSync;
 child.spawnSync = (...args) => {
   const [executable, childArgs] = args;
+  const isGuard =
+    executable === "bash" &&
+    Array.isArray(childArgs) &&
+    /\\.sh$/.test(childArgs[0]);
+  // This fixture is about the dispatcher's CI-admission child.  Do not let a
+  // saturated CI worker turn one of the preceding real Bash launches into an
+  // unrelated EPIPE before the fixture reaches that child.
+  if (isGuard) {
+    const classifier = childArgs.includes("--ci-budget-classify");
+    return {
+      pid: 999998,
+      status: 0,
+      stdout: classifier ? "ci\\n" : "",
+      stderr: "",
+    };
+  }
   const isCiBudgetAdmission =
     executable === process.execPath &&
     Array.isArray(childArgs) &&
