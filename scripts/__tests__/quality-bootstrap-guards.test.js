@@ -12,13 +12,13 @@ const path = require("node:path");
 
 const SCRIPT = path.resolve(__dirname, "..", "quality-bootstrap.sh");
 
-function run(args, { env, cwd } = {}) {
+function run(args, { env, cwd, script = SCRIPT } = {}) {
   const errFile = path.join(
     os.tmpdir(),
     `qbg-err-${process.pid}-${Math.random().toString(36).slice(2)}`,
   );
   try {
-    const stdout = execFileSync("bash", [SCRIPT, ...args], {
+    const stdout = execFileSync("bash", [script, ...args], {
       env: { ...process.env, ...env },
       cwd,
       encoding: "utf8",
@@ -80,6 +80,13 @@ describe("quality-bootstrap explicit-target crash guard (BUI-401)", () => {
       path.join(resolverRoot, "scripts", "quality-target-resolver.js"),
       "process.stderr.write('resolver fixture crashed\\n'); process.exit(70);\\n",
     );
+    // Bootstrap must resolve helpers from its own checkout before any
+    // installed configuration. Run a copy beside the crashing resolver so
+    // this test exercises that checkout-local failure path.
+    fs.copyFileSync(
+      SCRIPT,
+      path.join(resolverRoot, "scripts", "quality-bootstrap.sh"),
+    );
   });
 
   afterEach(() => {
@@ -100,7 +107,10 @@ describe("quality-bootstrap explicit-target crash guard (BUI-401)", () => {
     ["codex/other-branch"],
     ["./other-repo"],
   ])("refuses cwd fallback after a resolver crash for %s", (...args) => {
-    const r = run(args, { env: { CLAUDE_SETUP_ROOT: resolverRoot } });
+    const r = run(args, {
+      env: { CLAUDE_SETUP_ROOT: resolverRoot },
+      script: path.join(resolverRoot, "scripts", "quality-bootstrap.sh"),
+    });
     expect(r.code).not.toBe(0);
     expect(r.stdout).toMatch(/target resolver crashed/i);
     expect(r.stdout).toMatch(/refusing to fall back/i);

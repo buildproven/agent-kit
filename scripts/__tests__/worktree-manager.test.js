@@ -1830,6 +1830,7 @@ describe("canonical-source contract", () => {
     expect(source).toContain(
       "existing PR worktree is stale; materializing fetched exact head.",
     );
+    expect(source).toContain('"$SCRIPT_DIR/quality-target-resolver.js"');
   });
 
   // The lifecycle lock is the ONLY serialization for worktree removal, so a
