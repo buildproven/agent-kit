@@ -1823,6 +1823,13 @@ describe("canonical-source contract", () => {
       "utf8",
     );
     expect(source).toContain("+refs/pull/$RES_PR/head:$WT_BASE_REF");
+    expect(source).toContain(
+      'WT_BRANCH="quality/pr-${RES_PR}-${WT_HEAD:0:12}"',
+    );
+    expect(source).toContain('--branch "$WT_BRANCH"');
+    expect(source).toContain(
+      "existing PR worktree is stale; materializing fetched exact head.",
+    );
   });
 
   // The lifecycle lock is the ONLY serialization for worktree removal, so a

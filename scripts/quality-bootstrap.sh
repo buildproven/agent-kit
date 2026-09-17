@@ -442,6 +442,31 @@ else
       exit 1
     fi
 
+    if [ "$RES_KIND" = "pr" ] && [ -n "${RES_PR:-}" ]; then
+      # Always fetch and compare the exact pull ref, including when the
+      # resolver found an existing worktree for its mutable source branch.
+      # A bot can replace that branch between quality attempts.
+      REPO_ROOT_FOR_WT=$(git -C "$CWD_INPUT" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_INPUT")
+      WT_BASE_REF="refs/remotes/pull/$RES_PR/head"
+      git -C "$REPO_ROOT_FOR_WT" fetch origin \
+        "+refs/pull/$RES_PR/head:$WT_BASE_REF" >/dev/null 2>&1 || {
+        echo "❌ Could not fetch exact head for PR #$RES_PR." >&2
+        exit 1
+      }
+      WT_HEAD=$(git -C "$REPO_ROOT_FOR_WT" rev-parse "$WT_BASE_REF") || {
+        echo "❌ Could not resolve the fetched exact head for PR #$RES_PR." >&2
+        exit 1
+      }
+      WT_BRANCH="quality/pr-${RES_PR}-${WT_HEAD:0:12}"
+      if [ -n "$RES_PATH" ]; then
+        RES_PATH_HEAD=$(git -C "$RES_PATH" rev-parse HEAD 2>/dev/null || true)
+        if [ "$RES_PATH_HEAD" != "$WT_HEAD" ]; then
+          echo "[quality] existing PR worktree is stale; materializing fetched exact head."
+          RES_PATH=""
+        fi
+      fi
+    fi
+
     if [ "$RES_KIND" = "pr" ] || [ "$RES_KIND" = "branch" ]; then
       if [ -z "$RES_PATH" ] && [ -n "$RES_BRANCH" ]; then
         # No local worktree for the branch. The shared manager owns canonical
@@ -458,21 +483,21 @@ else
         # instead, which can fetch/create the same-numbered PR in an
         # unrelated repo, or fail outright from a non-repo directory
         # (BUI-390 review finding).
-        REPO_ROOT_FOR_WT=$(git -C "$CWD_INPUT" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_INPUT")
+        REPO_ROOT_FOR_WT=${REPO_ROOT_FOR_WT:-$(git -C "$CWD_INPUT" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_INPUT")}
         WT_BASE_REF="origin/$RES_BRANCH"
+        WT_BRANCH="$RES_BRANCH"
         if [ "$RES_KIND" = pr ] && [ -n "${RES_PR:-}" ]; then
           WT_BASE_REF="refs/remotes/pull/$RES_PR/head"
-          git -C "$REPO_ROOT_FOR_WT" fetch origin \
-            "+refs/pull/$RES_PR/head:$WT_BASE_REF" >/dev/null 2>&1 || {
-            echo "❌ Could not fetch exact head for PR #$RES_PR." >&2
-            exit 1
-          }
+          # Pull-request branches may be force-updated (for example by Release
+          # Please). Materialize an immutable local branch keyed to the exact
+          # fetched head, rather than reusing a stale local copy of that branch.
+          WT_BRANCH="quality/pr-${RES_PR}-${WT_HEAD:0:12}"
         else
           git -C "$REPO_ROOT_FOR_WT" fetch origin "$RES_BRANCH" >/dev/null 2>&1 || true
         fi
         WT_CREATE_JSON=$(node "$WORKTREE_MANAGER" create \
           --repo "$REPO_ROOT_FOR_WT" \
-          --branch "$RES_BRANCH" \
+          --branch "$WT_BRANCH" \
           --base "$WT_BASE_REF" \
           --creator "bs:quality" \
           --purpose "quality-target-materialization") || exit 1
