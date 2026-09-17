@@ -1822,7 +1822,7 @@ describe("canonical-source contract", () => {
       path.join(ROOT, "scripts", "quality-bootstrap.sh"),
       "utf8",
     );
-    expect(source).toContain("refs/pull/$RES_PR/head:$WT_BASE_REF");
+    expect(source).toContain("+refs/pull/$RES_PR/head:$WT_BASE_REF");
   });
 
   // The lifecycle lock is the ONLY serialization for worktree removal, so a

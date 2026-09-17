@@ -463,7 +463,7 @@ else
         if [ "$RES_KIND" = pr ] && [ -n "${RES_PR:-}" ]; then
           WT_BASE_REF="refs/remotes/pull/$RES_PR/head"
           git -C "$REPO_ROOT_FOR_WT" fetch origin \
-            "refs/pull/$RES_PR/head:$WT_BASE_REF" >/dev/null 2>&1 || {
+            "+refs/pull/$RES_PR/head:$WT_BASE_REF" >/dev/null 2>&1 || {
             echo "❌ Could not fetch exact head for PR #$RES_PR." >&2
             exit 1
           }
