@@ -62,6 +62,17 @@ describe("trusted release workflow approval", () => {
     expect(approve).toHaveBeenCalledWith(123);
   });
 
+  it("accepts GitHub's same-repository nested PR payload without full_name", () => {
+    const approve = vi.fn();
+    const run = eligibleRun();
+    delete run.pull_requests[0].head.repo.full_name;
+    expect(approveEligibleRun([run], context, approve)).toEqual({
+      approved: true,
+      runId: 123,
+    });
+    expect(approve).toHaveBeenCalledWith(123);
+  });
+
   it.each([
     ["a fork", { head_repository: { full_name: "attacker/repo" } }],
     ["another SHA", { head_sha: "b".repeat(40) }],

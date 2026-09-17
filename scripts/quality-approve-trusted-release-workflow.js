@@ -70,10 +70,10 @@ function matchingPullRequestIdentity(pullRequest, context) {
 }
 
 function matchingPullRequestSource(pullRequest, context) {
-  return (
-    pullRequest?.head?.ref === context.headRef &&
-    pullRequest?.head?.repo?.full_name === context.repository
-  );
+  // GitHub's nested pull_requests[].head.repo shape contains only id, name,
+  // and URL for same-repository runs. The top-level head_repository binding
+  // above is the authoritative full repository identity.
+  return pullRequest?.head?.ref === context.headRef;
 }
 
 function matchingPullRequest(run, context) {
