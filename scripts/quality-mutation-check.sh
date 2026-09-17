@@ -52,6 +52,21 @@ MUTATION_BASE="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" muta
 REPLAY_PLAN="$(node "$SCRIPT_DIR/quality-invocation.js" mutation-replay-plan "$MANIFEST")"
 REUSED_ARTIFACT_SHA="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.artifactSha256 2>/dev/null || true)"
 AVOIDED_SECONDS="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.avoidedSeconds 2>/dev/null || true)"
+# A skip says only that the prior revision had no executable source to revert.
+# It is not red-capable evidence. Starting the next revision from that prior
+# head makes its new skip artifact fail identity validation, so re-run from
+# the immutable campaign base. A prior observed failure remains reusable.
+if [ "$MUTATION_BASE" != "$BASE" ] && [ -n "$REUSED_ARTIFACT_SHA" ]; then
+  MUTATION_CARRY_ARTIFACT="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" mutationCarry.artifactPath 2>/dev/null || true)"
+  MUTATION_CARRY_METHOD="$(jq -r '.method // empty' "$MUTATION_CARRY_ARTIFACT" 2>/dev/null || true)"
+  case "$MUTATION_CARRY_METHOD" in
+    no-mutable-source|gitlink-skip)
+      MUTATION_BASE="$BASE"
+      REUSED_ARTIFACT_SHA=""
+      AVOIDED_SECONDS=0
+      ;;
+  esac
+fi
 # A rebase-only advance changes commit identity without changing the PR patch.
 # Comparing the old and new heads includes commits that arrived only through
 # the protected base, so those paths are not valid mutation subjects for this
