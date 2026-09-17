@@ -374,7 +374,25 @@ else
     --repo "$EXPECTED_REPOSITORY" --base "$BASE_BRANCH" \
     --source-head "$REVIEWED_HEAD" --head "$MERGE_HEAD")" || exit $?
   PREPARED_DISPATCH_COUNT="$(printf '%s' "$PREPARE_JSON" | jq '.dispatches | length')"
-  if [ "$PREPARED_DISPATCH_COUNT" -gt 0 ]; then
+  # A release-please PR is created by GitHub Actions. Some repositories hold
+  # its normal pull_request workflow for approval, even though its head is in
+  # the same repository. Before paying for a second manual workflow, approve
+  # only the exact, trusted release quality run. The helper fails closed for
+  # forks, normal branches, another workflow, another SHA, or another PR.
+  RELEASE_QUALITY_WORKFLOW_ID="$(printf '%s' "$PREPARE_JSON" | jq -r \
+    '[.dispatches[] | select(.context == "quality" and .transport == "workflow_dispatch") | .workflowId] | if length == 1 then .[0] else empty end')"
+  TRUSTED_RELEASE_APPROVED=false
+  if [ -n "$RELEASE_QUALITY_WORKFLOW_ID" ]; then
+    RELEASE_APPROVAL_JSON="$(node "$SCRIPT_DIR/quality-approve-trusted-release-workflow.js" \
+      --repo "$EXPECTED_REPOSITORY" --pr "$PR" --base "$BASE_BRANCH" \
+      --head "$MERGE_HEAD" --head-ref "$EXPECTED_HEAD_REF" \
+      --workflow-id "$RELEASE_QUALITY_WORKFLOW_ID")" || exit $?
+    if [ "$(printf '%s' "$RELEASE_APPROVAL_JSON" | jq -r '.approved')" = true ]; then
+      TRUSTED_RELEASE_APPROVED=true
+      echo "[quality] approved exact trusted release quality workflow; awaiting its required check." >&2
+    fi
+  fi
+  if [ "$PREPARED_DISPATCH_COUNT" -gt 0 ] && [ "$TRUSTED_RELEASE_APPROVED" != true ]; then
     admit_ci_dispatch
     enforce_ci_budget_admission
     ENSURE_JSON="$(node "$SCRIPT_DIR/quality-required-checks.js" ensure \
