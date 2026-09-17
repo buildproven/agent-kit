@@ -421,6 +421,7 @@ else
     RES_KIND=$(echo "$RESOLUTION_JSON" | jq -r '.resolution // ""' 2>/dev/null)
     RES_PATH=$(echo "$RESOLUTION_JSON" | jq -r '.targetPath // ""' 2>/dev/null)
     RES_BRANCH=$(echo "$RESOLUTION_JSON" | jq -r '.targetBranch // ""' 2>/dev/null)
+    RES_HEAD=$(echo "$RESOLUTION_JSON" | jq -r '.targetHead // ""' 2>/dev/null)
     RES_PR=$(echo "$RESOLUTION_JSON" | jq -r '.targetPr // ""' 2>/dev/null)
     RES_REASON=$(echo "$RESOLUTION_JSON" | jq -r '.reason // ""' 2>/dev/null)
     RES_WARNINGS=$(echo "$RESOLUTION_JSON" | jq -r '.warnings[]?' 2>/dev/null)
@@ -443,28 +444,35 @@ else
     fi
 
     if [ "$RES_KIND" = "pr" ] && [ -n "${RES_PR:-}" ]; then
-      # Always fetch and compare the exact pull ref, including when the
-      # resolver found an existing worktree for its mutable source branch.
-      # A bot can replace that branch between quality attempts.
+      # Reuse a local worktree only when the resolver's exact GitHub PR SHA
+      # matches it. A bot can replace the source branch between attempts.
       REPO_ROOT_FOR_WT=$(git -C "$CWD_INPUT" rev-parse --show-toplevel 2>/dev/null || echo "$CWD_INPUT")
       WT_BASE_REF="refs/remotes/pull/$RES_PR/head"
-      git -C "$REPO_ROOT_FOR_WT" fetch origin \
-        "+refs/pull/$RES_PR/head:$WT_BASE_REF" >/dev/null 2>&1 || {
-        echo "❌ Could not fetch exact head for PR #$RES_PR." >&2
-        exit 1
-      }
-      WT_HEAD=$(git -C "$REPO_ROOT_FOR_WT" rev-parse "$WT_BASE_REF") || {
-        echo "❌ Could not resolve the fetched exact head for PR #$RES_PR." >&2
-        exit 1
-      }
-      WT_BRANCH="quality/pr-${RES_PR}-${WT_HEAD:0:12}"
       if [ -n "$RES_PATH" ]; then
         RES_PATH_HEAD=$(git -C "$RES_PATH" rev-parse HEAD 2>/dev/null || true)
-        if [ "$RES_PATH_HEAD" != "$WT_HEAD" ]; then
+        if [ -n "$RES_HEAD" ] && [ "$RES_PATH_HEAD" = "$RES_HEAD" ]; then
+          WT_HEAD="$RES_HEAD"
+        else
           echo "[quality] existing PR worktree is stale; materializing fetched exact head."
           RES_PATH=""
         fi
       fi
+      if [ -z "$RES_PATH" ]; then
+        git -C "$REPO_ROOT_FOR_WT" fetch origin \
+          "+refs/pull/$RES_PR/head:$WT_BASE_REF" >/dev/null 2>&1 || {
+          echo "❌ Could not fetch exact head for PR #$RES_PR." >&2
+          exit 1
+        }
+        WT_HEAD=$(git -C "$REPO_ROOT_FOR_WT" rev-parse "$WT_BASE_REF") || {
+          echo "❌ Could not resolve the fetched exact head for PR #$RES_PR." >&2
+          exit 1
+        }
+        if [ -n "$RES_HEAD" ] && [ "$WT_HEAD" != "$RES_HEAD" ]; then
+          echo "❌ GitHub PR metadata and fetched head disagree for PR #$RES_PR." >&2
+          exit 1
+        fi
+      fi
+      WT_BRANCH="quality/pr-${RES_PR}-${WT_HEAD:0:12}"
     fi
 
     if [ "$RES_KIND" = "pr" ] || [ "$RES_KIND" = "branch" ]; then

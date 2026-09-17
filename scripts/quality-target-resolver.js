@@ -238,6 +238,7 @@ function normalizeTokens(rawArgs) {
  *   reason?: string,
  *   targetPath?: string,
  *   targetBranch?: string,
+ *   targetHead?: string,
  *   targetPr?: number,
  *   resolution: 'pr' | 'branch' | 'path' | 'cwd-worktree' | 'primary-fallback' | 'merge-refuse',
  *   warnings: string[],
@@ -380,6 +381,7 @@ function resolveByPr(parsed, ctx) {
       ok: true,
       targetPath: wtPath,
       targetBranch: pr.headRefName,
+      targetHead: pr.headRefOid || undefined,
       targetPr: parsed.pr,
       resolution: "pr",
       warnings: [],
@@ -388,6 +390,7 @@ function resolveByPr(parsed, ctx) {
   return {
     ok: true,
     targetBranch: pr.headRefName,
+    targetHead: pr.headRefOid || undefined,
     targetPr: parsed.pr,
     resolution: "pr",
     warnings: [

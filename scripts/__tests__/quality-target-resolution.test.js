@@ -185,7 +185,10 @@ describe("resolveTarget", () => {
     const parsed = parseArgs("--merge #410");
     const out = resolveTarget(parsed, {
       ...baseCtx,
-      lookupPr: (n) => (n === 410 ? { headRefName: "codex/foo" } : null),
+      lookupPr: (n) =>
+        n === 410
+          ? { headRefName: "codex/foo", headRefOid: "exact-head" }
+          : null,
       findWorktreeForBranch: (b) =>
         b === "codex/foo" ? "/wt/codex-foo" : null,
       dirExists: (p) => p === "/wt/codex-foo",
@@ -195,6 +198,7 @@ describe("resolveTarget", () => {
     expect(out.targetPath).toBe("/wt/codex-foo");
     expect(out.targetBranch).toBe("codex/foo");
     expect(out.targetPr).toBe(410);
+    expect(out.targetHead).toBe("exact-head");
   });
 
   it("returns ok=true with warning when PR has no local worktree", () => {
