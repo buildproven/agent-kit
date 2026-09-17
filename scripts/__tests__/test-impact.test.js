@@ -42,6 +42,29 @@ describe("cross-language test impact", () => {
     });
   });
 
+  it("selects the lease suite and its cross-process recovery proof without the full invocation suite", () => {
+    const selected = plan(["scripts/quality-repo-lease.js"], loadPolicy(ROOT), {
+      root: ROOT,
+    });
+    expect(selected).toMatchObject({ mode: "focused" });
+    expect(selected.commands).toEqual([
+      {
+        executable: "npx",
+        args: ["vitest", "run", "scripts/__tests__/quality-repo-lease.test.js"],
+      },
+      {
+        executable: "npx",
+        args: [
+          "vitest",
+          "run",
+          "scripts/__tests__/quality-invocation.test.js",
+          "-t",
+          "recovers a dead manifest writer under the exact repository guard",
+        ],
+      },
+    ]);
+  });
+
   it.each([
     "package.json",
     "package-lock.json",
