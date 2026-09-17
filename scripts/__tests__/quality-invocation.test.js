@@ -2,6 +2,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   renameSync,
@@ -21,6 +22,12 @@ import { makeTempDir } from "./helpers/tmp.js";
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const INVOCATION = path.join(ROOT, "scripts", "quality-invocation.js");
 const BOOTSTRAP = path.join(ROOT, "scripts", "quality-bootstrap.sh");
+
+function checkoutBootstrap(scriptsDir) {
+  const bootstrap = path.join(scriptsDir, "quality-bootstrap.sh");
+  copyFileSync(BOOTSTRAP, bootstrap);
+  return bootstrap;
+}
 const LOAD_ROOT = path.join(ROOT, "scripts", "quality-load-root.sh");
 const RISK = path.join(ROOT, "scripts", "quality-risk-resolve.sh");
 const SELECT = path.join(ROOT, "scripts", "quality-select-agents.sh");
@@ -2222,8 +2229,9 @@ process.stdout.write(JSON.stringify({ ok: false, reason: "test stub", resolution
 process.exit(0);
 `,
     );
+    const bootstrap = checkoutBootstrap(fakeScriptsDir);
     const elsewhereCwd = makeTempDir("quality-bootstrap-elsewhere-");
-    spawnSync("bash", [BOOTSTRAP, "--target-dir", target, "--level", "auto"], {
+    spawnSync("bash", [bootstrap, "--target-dir", target, "--level", "auto"], {
       cwd: elsewhereCwd,
       env: {
         ...process.env,
@@ -2258,8 +2266,9 @@ process.stdout.write(JSON.stringify({ ok: false, reason: "test stub", resolution
 process.exit(0);
 `,
     );
+    const bootstrap = checkoutBootstrap(fakeScriptsDir);
     const elsewhereCwd = makeTempDir("quality-bootstrap-elsewhere-envvar-");
-    spawnSync("bash", [BOOTSTRAP, "--merge", "--level", "auto"], {
+    spawnSync("bash", [bootstrap, "--merge", "--level", "auto"], {
       cwd: elsewhereCwd,
       env: {
         ...process.env,
@@ -2298,9 +2307,10 @@ process.stdout.write(JSON.stringify({ ok: false, reason: "test stub", resolution
 process.exit(0);
 `,
     );
+    const bootstrap = checkoutBootstrap(fakeScriptsDir);
     spawnSync(
       "bash",
-      [BOOTSTRAP, "--merge", explicitTarget, "--level", "auto"],
+      [bootstrap, "--merge", explicitTarget, "--level", "auto"],
       {
         cwd: explicitTarget,
         env: {
@@ -2345,10 +2355,11 @@ process.stdout.write(JSON.stringify({ ok: false, reason: "test stub", resolution
 process.exit(0);
 `,
     );
+    const bootstrap = checkoutBootstrap(fakeScriptsDir);
     const literalTildeArg = "~/some/literal/tilde/path";
     spawnSync(
       "bash",
-      [BOOTSTRAP, "--merge", literalTildeArg, "--level", "auto"],
+      [bootstrap, "--merge", literalTildeArg, "--level", "auto"],
       {
         cwd: explicitTarget,
         env: {
@@ -2390,6 +2401,7 @@ process.stdout.write(JSON.stringify({ ok: false, reason: "test stub", resolution
 process.exit(0);
 `,
     );
+    const bootstrap = checkoutBootstrap(fakeScriptsDir);
     // Uses --worktree=<relative-looking-name> deliberately: an *absolute*
     // --worktree value would incidentally satisfy the separate bare-path
     // ("/*") detection this same scanner does, masking whether --worktree
@@ -2397,7 +2409,7 @@ process.exit(0);
     // --worktree=value isolates the flag-recognition behavior under test.
     const worktreeArg = `--worktree=${explicitTarget}`;
     const elsewhereCwd = makeTempDir("quality-bootstrap-elsewhere-worktree-");
-    spawnSync("bash", [BOOTSTRAP, "--merge", worktreeArg, "--level", "auto"], {
+    spawnSync("bash", [bootstrap, "--merge", worktreeArg, "--level", "auto"], {
       cwd: elsewhereCwd,
       env: {
         ...process.env,
