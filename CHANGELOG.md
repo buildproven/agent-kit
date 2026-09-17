@@ -21,6 +21,20 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.11.0](https://github.com/buildproven/agent-kit/compare/v4.10.6...v4.11.0) (2026-09-17)
+
+
+### Features
+
+* expose read-only engineering readiness status ([#575](https://github.com/buildproven/agent-kit/issues/575)) ([66b9dbe](https://github.com/buildproven/agent-kit/commit/66b9dbefa2466e553d37eb5524ea8f9c9badedc8))
+
+
+### Bug Fixes
+
+* keep bounded Darwin runs awake ([#504](https://github.com/buildproven/agent-kit/issues/504)) ([59a455e](https://github.com/buildproven/agent-kit/commit/59a455e19665b3a5d6762ecd7d750d15cfc4396b))
+* reset mutation skip carry to campaign base ([#573](https://github.com/buildproven/agent-kit/issues/573)) ([3f07e31](https://github.com/buildproven/agent-kit/commit/3f07e319609da66487e414ef22e52584f5088956))
+* verify generated hooks in delivery worktrees ([#507](https://github.com/buildproven/agent-kit/issues/507)) ([035f1ac](https://github.com/buildproven/agent-kit/commit/035f1ac31ab6be378e3fb267013b79bbbf0e3e77))
+
 ## [4.10.6](https://github.com/buildproven/agent-kit/compare/v4.10.5...v4.10.6) (2026-09-17)
 
 
