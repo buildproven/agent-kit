@@ -21,6 +21,18 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.10.3](https://github.com/buildproven/agent-kit/compare/v4.10.2...v4.10.3) (2026-09-17)
+
+
+### Bug Fixes
+
+* fund required mutation proof ([#556](https://github.com/buildproven/agent-kit/issues/556)) ([925cfde](https://github.com/buildproven/agent-kit/commit/925cfde54697d626338c37141c7938c78dbabcf7))
+* pin materialized quality PR heads ([#559](https://github.com/buildproven/agent-kit/issues/559)) ([174fd28](https://github.com/buildproven/agent-kit/commit/174fd28cbabfa3c9f5bb43404543742945c21e30))
+* refresh quality PR tracking refs ([#558](https://github.com/buildproven/agent-kit/issues/558)) ([cdd2c4e](https://github.com/buildproven/agent-kit/commit/cdd2c4e1121247c89c8dbfcc8d98c5086d915629))
+* reuse verified quality PR heads ([#560](https://github.com/buildproven/agent-kit/issues/560)) ([cbe1dc5](https://github.com/buildproven/agent-kit/commit/cbe1dc558f14b5d0bfeb8bfa251ea9a4f61dfe0b))
+* scope campaign ownership by pull request ([#554](https://github.com/buildproven/agent-kit/issues/554)) ([695c451](https://github.com/buildproven/agent-kit/commit/695c451d1aa49fa60f19ed4e55786b16810f8f1e))
+* support governed GitHub auto-merge fallback ([#564](https://github.com/buildproven/agent-kit/issues/564)) ([bdc4ea9](https://github.com/buildproven/agent-kit/commit/bdc4ea9fe541f4da4b5b3db8ea34d49a5a906619))
+
 ## [4.10.2](https://github.com/buildproven/agent-kit/compare/v4.10.1...v4.10.2) (2026-09-16)
 
 
