@@ -1347,6 +1347,37 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
     fs.rmdirSync(directory);
   });
 
+  it("treats a guard removed during recovery as a lost recovery race", () => {
+    const directory = path.join(sandbox, "guard-recovery-removal-race");
+    fs.mkdirSync(directory, { mode: 0o700 });
+    const observed = {
+      schemaVersion: 1,
+      pid: 99999999,
+      uid: process.geteuid(),
+      nonce: crypto.randomBytes(16).toString("hex"),
+      processIdentity: null,
+      acquiredAt: "2026-08-05T00:00:00.000Z",
+    };
+    const ownerFile = path.join(directory, "owner.json");
+    fs.writeFileSync(ownerFile, `${JSON.stringify(observed)}\n`, {
+      mode: 0o600,
+    });
+    const original = fs.openSync;
+    const spy = vi.spyOn(fs, "openSync").mockImplementation((file, ...args) => {
+      if (file === ownerFile) {
+        fs.unlinkSync(ownerFile);
+        fs.rmdirSync(directory);
+      }
+      return original(file, ...args);
+    });
+    try {
+      expect(lease._recoverDeadGuard(directory, observed)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.existsSync(`${directory}.recovery-lock`)).toBe(false);
+  });
+
   it("distinguishes a recycled PID from the recorded guard process", () => {
     const directory = path.join(sandbox, "guard-reused-pid");
     fs.mkdirSync(directory, { mode: 0o700 });
