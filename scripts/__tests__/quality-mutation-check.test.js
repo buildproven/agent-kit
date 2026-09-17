@@ -1761,6 +1761,76 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     });
   });
 
+  it("does not carry a no-mutable-source skip into a later revision", () => {
+    const root = makeTempDir("quality-mutation-skip-carry-");
+    git(root, ["init", "-q", "-b", "main"]);
+    git(root, ["config", "user.name", "Quality Test"]);
+    git(root, ["config", "user.email", "quality@example.com"]);
+    writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        scripts: { lint: "true", test: "true", "security:audit": "true" },
+      }),
+    );
+    git(root, ["add", "."]);
+    git(root, ["commit", "-q", "-m", "base"]);
+    git(root, ["remote", "add", "origin", root]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "-c", "feature"]);
+    writeFileSync(path.join(root, "README.md"), "first revision\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-qm", "docs: add readme"]);
+
+    const manifest = execFileSync(
+      "node",
+      [INVOCATION, "create", "--repo", root, "--base-ref", "origin/main"],
+      { cwd: root, encoding: "utf8" },
+    ).trim();
+    execFileSync(
+      "node",
+      [
+        INVOCATION,
+        "risk",
+        manifest,
+        "--tier",
+        "critical",
+        "--task-type",
+        "bugfix",
+        "--score",
+        "100",
+        "--agents",
+        "2",
+        "--codex-depth",
+        "xhigh",
+        "--codex-rounds",
+        "1",
+      ],
+      { cwd: root },
+    );
+    expect(runMutation(root, manifest)).toMatch(
+      /mutation gate omitted: diff contains no source file to mutate/,
+    );
+
+    writeFileSync(path.join(root, "README.md"), "second revision\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-qm", "docs: revise readme"]);
+    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+
+    expect(runMutation(root, manifest)).toMatch(
+      /mutation gate omitted: diff contains no source file to mutate/,
+    );
+    const state = JSON.parse(readFileSync(manifest, "utf8"));
+    const artifact = JSON.parse(
+      readFileSync(state.mutation.artifactPath, "utf8"),
+    );
+    expect(artifact).toMatchObject({
+      method: "no-mutable-source",
+      candidateBase: state.revisions.baseSha,
+      reusedArtifactSha256: null,
+      testFailureObserved: false,
+    });
+  });
+
   it("proves evidence by reverting a config file its test guards", () => {
     // A workflow/policy file plus the test that guards it has no executable
     // source to revert, but a behavioral check exists: revert the config and
