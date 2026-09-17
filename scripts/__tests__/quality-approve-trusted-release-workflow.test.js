@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 const require = createRequire(import.meta.url);
 const {
+  MAX_GH_OUTPUT,
   approveEligibleRun,
   contextFromOptions,
+  workflowRunsQuery,
 } = require("../quality-approve-trusted-release-workflow.js");
 
 const context = contextFromOptions({
@@ -45,6 +47,11 @@ function eligibleRun(overrides = {}) {
 }
 
 describe("trusted release workflow approval", () => {
+  it("bounds workflow discovery while allowing a full GitHub response", () => {
+    expect(workflowRunsQuery(context).get("per_page")).toBe("10");
+    expect(MAX_GH_OUTPUT).toBe(16 * 1024 * 1024);
+  });
+
   it("approves only the exact same-repository release quality run", () => {
     const approve = vi.fn();
     expect(approveEligibleRun([eligibleRun()], context, approve)).toEqual({
