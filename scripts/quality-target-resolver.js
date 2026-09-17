@@ -557,7 +557,7 @@ if (require.main === module) {
     try {
       const args = ["pr", "view", String(n)];
       if (repo) args.push("--repo", repo);
-      args.push("--json", "headRefName,baseRefName,url");
+      args.push("--json", "headRefName,headRefOid,baseRefName,url");
       // Explicit cwd: without it, execFileSync inherits this Node process's
       // own launch directory rather than the target checkout. When invoked
       // from outside the target repo, gh can't determine which repo to
