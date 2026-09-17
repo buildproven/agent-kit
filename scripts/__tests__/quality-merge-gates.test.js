@@ -42,6 +42,10 @@ const STAMP_AND_MERGE = readFileSync(
   path.join(ROOT, "scripts/quality-stamp-and-merge.sh"),
   "utf8",
 );
+const EARLY_RELEASE_CI = readFileSync(
+  path.join(ROOT, "scripts/quality-start-trusted-release-ci.sh"),
+  "utf8",
+);
 const MERGE_CLEANUP = readFileSync(
   path.join(ROOT, "scripts/quality-merge-cleanup.sh"),
   "utf8",
@@ -65,6 +69,20 @@ const WORKFLOW_COMMAND = readFileSync(
  * PASSED. These tests pin the gate that closes that hole.
  */
 describe("quality merge gates", () => {
+  it("starts only an exact release-please quality workflow before local gates", () => {
+    expect(EARLY_RELEASE_CI).toContain('quality-required-checks.js" prepare');
+    expect(EARLY_RELEASE_CI).toContain(
+      "quality-approve-trusted-release-workflow.js",
+    );
+    expect(EARLY_RELEASE_CI).toContain('--source-head "$HEAD" --head "$HEAD"');
+    expect(EARLY_RELEASE_CI).toMatch(
+      /\^release-please--branches--\[A-Za-z0-9\._\/-\]\+--components--\[A-Za-z0-9\._\/-\]\+\$/,
+    );
+    expect(EARLY_RELEASE_CI).not.toContain(
+      'quality-required-checks.js" ensure',
+    );
+  });
+
   it.each([
     {
       command: "wait",

@@ -293,6 +293,7 @@
       "paths": [
         "scripts/engineering-delivery-policy.js",
         "scripts/quality-run.js",
+        "scripts/quality-start-trusted-release-ci.sh",
         "scripts/quality-runner-ownership.js",
         "scripts/quality-runner-reconcile.js",
         "scripts/__tests__/quality-run.test.js",
@@ -310,6 +311,7 @@
             "vitest",
             "run",
             "scripts/__tests__/quality-run.test.js",
+            "scripts/__tests__/quality-approve-trusted-release-workflow.test.js",
             "scripts/__tests__/quality-invocation.test.js",
             "scripts/__tests__/quality-merge-gates.test.js"
           ]
