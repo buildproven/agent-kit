@@ -78,6 +78,17 @@ unknown shell paths must remain `unmapped` and audit-trigger paths must still
 select `npm test`. This is a repository-policy fix, not a new cache or a change
 to the shared planner API.
 
+### Release CI overlap (BUI-933)
+
+For an exact same-repository release-please candidate, the runner starts the
+already-held GitHub quality workflow after immutable target, risk and panel
+validation, before local gates. This overlaps independent CI with local work.
+The starter cannot dispatch a workflow. It approves only one held
+`pull_request` quality workflow whose repository, PR, base, release branch,
+head SHA and GitHub Actions identity match the manifest. Normal branches do
+nothing. Merge still waits for the required exact-head check after local gates
+and review; early approval is scheduling only, never merge evidence.
+
 Campaign ownership and its metadata guard are scoped to repository plus PR.
 Different PRs can execute gates concurrently; the same PR still has one owner.
 The repository merge guard remains held across the actual ref request and its

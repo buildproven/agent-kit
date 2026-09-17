@@ -439,6 +439,7 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   for (const name of [
     "quality-risk-resolve.sh",
     "quality-select-agents.sh",
+    "quality-start-trusted-release-ci.sh",
     "quality-run-gate.sh",
     "quality-mutation-check.sh",
     "quality-authorize-review-round.sh",
@@ -466,6 +467,9 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
         realpath: root,
         origin: "https://github.com/buildproven/fixture.git",
         githubRepositoryId: "123456",
+        headRefName: behavior.releaseHead
+          ? "release-please--branches--main--components--claude-kit"
+          : "feature/fixture",
       },
       revisions: {
         initialHead: "abc123",
@@ -1207,6 +1211,22 @@ describe("quality-run public orchestration", () => {
     });
     expect(resumed.manifest.calls).toEqual(first.manifest.calls);
     expect(resumed.manifest.telemetryWrites).toBe(1);
+  });
+
+  it("starts trusted release CI before local gates", () => {
+    const result = run(fixture({ releaseHead: true }, { merge: true }));
+    expect(result.status).toBe(0);
+    expect(result.manifest.calls).toEqual([
+      "quality-risk-resolve.sh",
+      "quality-select-agents.sh",
+      "quality-start-trusted-release-ci.sh",
+      "quality-run-gate.sh",
+      "quality-run-gate.sh",
+      "quality-run-gate.sh",
+      "quality-authorize-review-round.sh",
+      "quality-run-review.sh",
+      "quality-stamp-and-merge.sh",
+    ]);
   });
 
   it("stops after a failed gate and never starts review", () => {

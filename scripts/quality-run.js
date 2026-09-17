@@ -15,6 +15,8 @@ const ACTION_REQUIRED_EXIT = 3;
 const WORK_REQUIRED_EXIT = 4;
 const BUSY_EXIT = 5;
 const SCRIPT_DIR = __dirname;
+const RELEASE_PLEASE_HEAD =
+  /^release-please--branches--[A-Za-z0-9._/-]+--components--[A-Za-z0-9._/-]+$/;
 
 function parseArgs(argv) {
   if (argv.length !== 2 || argv[0] !== "--manifest" || !argv[1]) {
@@ -132,6 +134,14 @@ function currentReview(manifest) {
     }
     throw error;
   }
+}
+
+function trustedReleaseCiEligible(manifest) {
+  return (
+    manifest.options?.merge === true &&
+    typeof manifest.repo?.headRefName === "string" &&
+    RELEASE_PLEASE_HEAD.test(manifest.repo.headRefName)
+  );
 }
 
 function reviewSummary(manifest) {
@@ -624,6 +634,13 @@ async function runDeterministicPhases(manifestPath, invoke) {
   if (!manifest.panel) {
     await invoke("panel", "bash", [
       script("quality-select-agents.sh"),
+      "--manifest",
+      manifestPath,
+    ]);
+  }
+  if (trustedReleaseCiEligible(manifestAt(manifestPath))) {
+    await invoke("release-ci", "bash", [
+      script("quality-start-trusted-release-ci.sh"),
       "--manifest",
       manifestPath,
     ]);
@@ -1249,6 +1266,7 @@ module.exports = {
   parseArgs,
   pinRepositoryLease,
   reviewSummary,
+  trustedReleaseCiEligible,
   runManifest,
   writeAllSync: runnerOwnership.writeAllSync,
 };
