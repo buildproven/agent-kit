@@ -286,6 +286,7 @@ fi
 # --- resolve the target-resolver script --------------------------------------
 RESOLVER=""
 for candidate in \
+  "$SCRIPT_DIR/quality-target-resolver.js" \
   "${CLAUDE_SETUP_ROOT:-}/scripts/quality-target-resolver.js" \
   "${CLAUDE_PLUGIN_ROOT:-}/../scripts/quality-target-resolver.js" \
   "$HOME/.claude/scripts/quality-target-resolver.js"; do
