@@ -63,7 +63,10 @@ process_tree_postorder() {
     [ -n "$child" ] || continue
     process_tree_postorder "$child"
   done < <(pgrep -P "$pid" 2>/dev/null || true)
-  printf '%s\n' "$pid"
+  # A fast command can exit while a recursive process-tree snapshot is still
+  # writing its output. Ignore only that closed-pipe race; the snapshot is
+  # advisory because cleanup also scans ownership and the live process group.
+  printf '%s\n' "$pid" 2>/dev/null || true
 }
 record_snapshot() {
   local snapshot_pid snapshot_start
@@ -256,7 +259,15 @@ trap 'cleanup_provider 143' TERM
 trap 'cleanup_provider 129' HUP
 trap 'cleanup_provider $?' EXIT
 set -m
-BS_QUALITY_PROCESS_OWNER="$PROCESS_OWNER_ID" "$@" &
+if [ "$(uname -s)" = Darwin ]; then
+  if [ ! -x /usr/bin/caffeinate ]; then
+    echo "quality-run-bounded: /usr/bin/caffeinate is required on Darwin" >&2
+    exit 127
+  fi
+  BS_QUALITY_PROCESS_OWNER="$PROCESS_OWNER_ID" /usr/bin/caffeinate -i "$@" &
+else
+  BS_QUALITY_PROCESS_OWNER="$PROCESS_OWNER_ID" "$@" &
+fi
 CHILD_PID=$!
 set +m
 # The tracker runs asynchronously so it can follow later forks, but its first

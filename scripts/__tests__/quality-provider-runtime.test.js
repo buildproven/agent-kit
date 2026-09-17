@@ -301,6 +301,32 @@ describe("provider review runtime", () => {
     expect(result.signal === "SIGTERM" ? 143 : result.code).toBe(143);
   });
 
+  it("uses the Darwin sleep assertion and preserves command failures", () => {
+    const source = readFileSync(BOUNDED, "utf8");
+    expect(source).toContain('if [ "$(uname -s)" = Darwin ]');
+    expect(source).toContain('/usr/bin/caffeinate -i "$@"');
+    expect(source).toContain(
+      "quality-run-bounded: /usr/bin/caffeinate is required on Darwin",
+    );
+    const result = spawnSync(
+      "bash",
+      [BOUNDED, "--timeout", "20", "--", "bash", "-c", "exit 37"],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    expect(result.status).toBe(37);
+  });
+
+  it("exercises caffeinate through the public command seam on Darwin", () => {
+    const platform = spawnSync("uname", ["-s"], { encoding: "utf8" });
+    if (platform.stdout.trim() !== "Darwin") return;
+    const result = spawnSync(
+      "bash",
+      [BOUNDED, "--timeout", "20", "--", "bash", "-c", "exit 29"],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    expect(result.status).toBe(29);
+  });
+
   it("throttles detached-provider tree snapshots and avoids duplicate writes", () => {
     const source = readFileSync(BOUNDED, "utf8");
     expect(source).toContain('local last_snapshot="" snapshot');
