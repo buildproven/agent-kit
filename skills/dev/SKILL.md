@@ -348,6 +348,12 @@ exception.
 
 **Default: implementation is not terminal. Ship the exact candidate.**
 
+Use focused behavioral tests while editing. The quality campaign owns final
+candidate validation: do not run a complete audit as a preflight and then ask
+the campaign to repeat it. A dependency, release, or selector-policy change
+still needs the complete audit, executed by that campaign. CI remains an
+independent required check; local results do not replace it.
+
 Successful implementation releases the `bs:dev` ownership lock, then hands the
 same worktree directly to the provider-neutral `quality` skill with `--merge`.
 Do not return a completion message and wait for the user to start quality: that

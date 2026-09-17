@@ -18,6 +18,44 @@ const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
   it.each([
+    ["scripts/quality-run-bounded.sh", "quality-provider-runtime.test.js"],
+    [
+      ".github/workflows/product-admission-public-key.yml",
+      "product-admission.test.js",
+    ],
+  ])("selects existing behavioral coverage for %s", (source, test) => {
+    const selected = plan([source], loadPolicy(ROOT), { root: ROOT });
+    expect(selected.mode).toBe("focused");
+    expect(selected.commands).toHaveLength(1);
+    expect(selected.commands[0].executable).toBe("npx");
+    expect(selected.commands[0].args.slice(0, 2)).toEqual(["vitest", "run"]);
+    expect(selected.commands[0].args).toContain(`scripts/__tests__/${test}`);
+  });
+
+  it("reports unknown repository coverage instead of hiding it behind an audit", () => {
+    expect(
+      plan(["scripts/new-unmapped-helper.sh"], loadPolicy(ROOT)),
+    ).toMatchObject({
+      mode: "unmapped",
+      uncovered: ["scripts/new-unmapped-helper.sh"],
+      commands: [],
+    });
+  });
+
+  it.each([
+    "package.json",
+    "package-lock.json",
+    "vitest.config.js",
+    "scripts/test-impact.js",
+    ".buildproven/test-impact.json",
+  ])("preserves complete regression for %s", (source) => {
+    expect(plan([source], loadPolicy(ROOT))).toMatchObject({
+      mode: "audit",
+      commands: [{ executable: "npm", args: ["test"] }],
+    });
+  });
+
+  it.each([
     [false, "quality-invocation.js"],
     [true, "quality-invocation.js"],
     [false, "quality-git-identity.js"],

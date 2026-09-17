@@ -57,6 +57,27 @@ CI; it never jumps from that exception directly to merge. See
 
 ## Phase ownership
 
+### Validation cost (BUI-932)
+
+The builder owns focused red/green checks during editing. The campaign owns
+final local validation of the exact candidate. Do not run an extra full suite
+before handing off to it. On interruption, inspect the saved manifest and
+execution owner; resume that campaign, not a second copy. Missing console
+output is not evidence that a recorded gate needs to run again.
+
+The repository test-impact policy has no automatic full-suite fallback.
+Unknown coverage is an actionable mapping defect. Add a mapping grounded in
+tests that execute the changed behavior. Dependency, release-package, runner,
+and selector-policy changes retain explicit complete-audit rules. CI remains
+independent and required; normal PR CI can overlap local execution.
+
+The initial regression cases are the bounded provider wrapper and the product
+public-key workflow. Both selected `npm test` before this change despite
+existing behavioral coverage. Their tests must select focused commands, while
+unknown shell paths must remain `unmapped` and audit-trigger paths must still
+select `npm test`. This is a repository-policy fix, not a new cache or a change
+to the shared planner API.
+
 Campaign ownership and its metadata guard are scoped to repository plus PR.
 Different PRs can execute gates concurrently; the same PR still has one owner.
 The repository merge guard remains held across the actual ref request and its

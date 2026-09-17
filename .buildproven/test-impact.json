@@ -16,6 +16,7 @@
         "scripts/__tests__/product-completion.test.js",
         "scripts/__tests__/repository-product-trust.test.js",
         ".github/workflows/product-evidence-admission.yml",
+        ".github/workflows/product-admission-public-key.yml",
         ".github/workflows/product-evidence-producer.yml",
         "docs/decisions/ADR-authenticated-product-completion-receipts.md"
       ],
@@ -219,7 +220,10 @@
       ]
     },
     {
-      "paths": ["scripts/quality-review-plan.sh"],
+      "paths": [
+        "scripts/quality-review-plan.sh",
+        "scripts/quality-run-bounded.sh"
+      ],
       "commands": [
         {
           "executable": "npx",
@@ -422,12 +426,6 @@
           "args": ["test"]
         }
       ]
-    }
-  ],
-  "fallback": [
-    {
-      "executable": "npm",
-      "args": ["test"]
     }
   ]
 }
