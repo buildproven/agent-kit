@@ -91,9 +91,9 @@ assert_reviewed_head_current() {
 }
 
 mkdir -p "$REVIEW_OUT"
-git diff "${REVIEW_DIFF_BASE}..${REVIEWED_HEAD}" > "$REVIEW_OUT/diff.txt"
+node "$SCRIPT_DIR/quality-git-identity.js" review-diff \
+  "$GIT_ROOT" "$REVIEW_DIFF_BASE" "$REVIEWED_HEAD" > "$REVIEW_OUT/diff.txt" || exit 1
 git diff --name-only "${REVIEW_DIFF_BASE}..${REVIEWED_HEAD}" > "$REVIEW_OUT/files.txt"
-MAX_SUBMODULE_REVIEW_BYTES=$((768 * 1024))
 
 # A gitlink is executable policy, not a text-only pointer. When the reviewed
 # repository advances a `core` submodule, include the exact recursive diff in
@@ -109,42 +109,9 @@ HEAD_CORE_SHA="$(git ls-tree "$REVIEWED_HEAD" -- core |
   awk '$1 == "160000" && $2 == "commit" {print $3}')"
 # A changed gitlink is executable policy, so an uninitialized checkout cannot
 # silently degrade the review to an opaque pointer-only diff.
-if { [ -n "$BASE_CORE_SHA" ] || [ -n "$HEAD_CORE_SHA" ]; }; then
-  [ -n "$BASE_CORE_SHA" ] && [ -n "$HEAD_CORE_SHA" ] || {
-    echo "quality-run-review: core gitlink exists on only one side of the diff" >&2
-    exit 1
-  }
-  if [ "$BASE_CORE_SHA" != "$HEAD_CORE_SHA" ]; then
-    if ! { [ -d core/.git ] || [ -f core/.git ]; }; then
-      echo "quality-run-review: changed core gitlink requires an initialized checkout for recursive review" >&2
-      exit 1
-    fi
-    git -C core cat-file -e "$BASE_CORE_SHA^{commit}" 2>/dev/null || {
-      echo "quality-run-review: base core commit is unavailable for recursive review" >&2
-      exit 1
-    }
-    git -C core cat-file -e "$HEAD_CORE_SHA^{commit}" 2>/dev/null || {
-      echo "quality-run-review: head core commit is unavailable for recursive review" >&2
-      exit 1
-    }
-    CORE_DIFF_FILE="$(mktemp "${TMPDIR:-/tmp}/quality-core-review.XXXXXX")"
-    git -C core diff --submodule=diff "$BASE_CORE_SHA" "$HEAD_CORE_SHA" > "$CORE_DIFF_FILE"
-    CORE_DIFF_BYTES="$(wc -c < "$CORE_DIFF_FILE" | tr -d ' ')"
-    if [ "$CORE_DIFF_BYTES" -gt "$MAX_SUBMODULE_REVIEW_BYTES" ]; then
-      rm -f "$CORE_DIFF_FILE"
-      echo "quality-run-review: core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink" >&2
-      exit 1
-    fi
-    {
-      printf '\n===== recursive submodule diff: core %s..%s =====\n' \
-        "$BASE_CORE_SHA" "$HEAD_CORE_SHA"
-      cat "$CORE_DIFF_FILE"
-      printf '===== end recursive submodule diff: core =====\n'
-    } >> "$REVIEW_OUT/diff.txt"
-    rm -f "$CORE_DIFF_FILE"
+if { [ -n "$BASE_CORE_SHA" ] && [ -n "$HEAD_CORE_SHA" ] && [ "$BASE_CORE_SHA" != "$HEAD_CORE_SHA" ]; }; then
     git -C core diff --name-only "$BASE_CORE_SHA" "$HEAD_CORE_SHA" |
       sed 's#^#core/#' >> "$REVIEW_OUT/files.txt"
-  fi
 fi
 git log "${REVIEW_DIFF_BASE}..${REVIEWED_HEAD}" --oneline > "$REVIEW_OUT/log.txt"
 node "$SCRIPT_DIR/quality-invocation.js" review-identity "$MANIFEST" \

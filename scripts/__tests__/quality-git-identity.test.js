@@ -38,6 +38,30 @@ function fixture() {
 }
 
 describe("selection lineage identity contract", () => {
+  it("requires the published release to bind an explicit commit SHA", () => {
+    const taggedCommit = "a".repeat(40);
+    expect(
+      identity.publishedReleaseCommit("v4.11.2", () => ({
+        draft: false,
+        published_at: "2026-09-18T00:00:00Z",
+        target_commitish: taggedCommit,
+      })),
+    ).toBe(taggedCommit);
+    expect(
+      identity.publishedReleaseCommit("v4.11.2", () => ({
+        draft: false,
+        published_at: "2026-09-18T00:00:00Z",
+        target_commitish: "main",
+      })),
+    ).toBeNull();
+  });
+
+  it("rejects draft releases before admitting their target", () => {
+    expect(
+      identity.publishedReleaseCommit("v4.11.2", () => ({ draft: true })),
+    ).toBeNull();
+  });
+
   it("rejects a replay that excludes the selected commit from its source range", () => {
     const f = fixture();
     f.git("switch", "-q", "-c", "forged-source", f.base);
