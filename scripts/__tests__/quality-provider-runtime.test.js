@@ -445,13 +445,13 @@ describe("provider review runtime", () => {
 
   it("includes recursive core changes in the immutable review envelope", () => {
     const runner = readFileSync(RUN_REVIEW, "utf8");
-    expect(runner).toContain('git ls-tree "$REVIEW_DIFF_BASE" -- core');
-    expect(runner).toContain('git ls-tree "$REVIEWED_HEAD" -- core');
-    expect(runner).toContain('"160000" && $2 == "commit"');
-    expect(runner).toContain("git -C core diff --submodule=diff");
-    expect(runner).toContain(
-      "quality-run-review: head core commit is unavailable for recursive review",
+    expect(runner).toContain('quality-git-identity.js" review-diff');
+    const identity = readFileSync(
+      path.join(ROOT, "scripts", "quality-git-identity.js"),
+      "utf8",
     );
+    expect(identity).toContain('["-C", "core", "diff", "--submodule=diff"');
+    expect(identity).toContain("separately admitted core release");
   });
 
   it("fails over when Codex cannot refresh an MCP OAuth token", () => {
@@ -890,7 +890,7 @@ Quality-Evidence-Signature: ${signature}`;
     const source = readFileSync(RUN_REVIEW, "utf8");
     expect(source).toMatch(/quality-invocation\.js" review-info/);
     expect(source).toMatch(
-      /git diff "\$\{REVIEW_DIFF_BASE\}\.\.\$\{REVIEWED_HEAD\}"/,
+      /quality-git-identity\.js" review-diff[\s\S]*?\$REVIEW_DIFF_BASE" "\$REVIEWED_HEAD"/,
     );
     expect(source).toMatch(/normalized Codex findings could not be rendered/);
   });
