@@ -134,7 +134,7 @@ function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
     .filter(Boolean);
   for (const tag of tags) {
     try {
-      const target = execFileSync(
+      let target = execFileSync(
         "gh",
         [
           "api",
@@ -144,6 +144,18 @@ function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
         ],
         { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
       ).trim();
+      if (!/^[0-9a-f]{40}$/i.test(target)) {
+        target = execFileSync(
+          "gh",
+          [
+            "api",
+            `repos/${CORE_RELEASE_REPOSITORY}/commits/${target}`,
+            "--jq",
+            ".sha",
+          ],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        ).trim();
+      }
       if (target === headCore) {
         return Buffer.concat([
           diff,
