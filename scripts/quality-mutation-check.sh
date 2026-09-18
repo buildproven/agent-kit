@@ -619,10 +619,11 @@ if [ "${#CANDIDATES[@]}" -eq 0 ]; then
       | grep -c . || true
   )"
   # When the ONLY changed source is a test, and what that test guards is a
-  # config file the extension filter does not recognize (a workflow YAML, a
-  # JSON policy), a behavioral check still exists: revert the config and the
-  # test must go red. Promote those config files to candidates so the normal
-  # revert-diff loop below proves it, instead of failing closed (BUI-511).
+  # config file or executable prompt surface the extension filter does not
+  # recognize, a behavioral check still exists: revert that subject and the
+  # test must go red. Commands and skills are executable prompt surfaces; they
+  # are not ordinary documentation. Promote only those precise paths so the
+  # normal revert-diff loop below proves it, instead of failing closed.
   #
   # Deliberately narrow. Reached only when CANDIDATES is empty (no executable
   # source changed) AND at least one changed file is a test. A diff touching
@@ -642,7 +643,8 @@ if [ "${#CANDIDATES[@]}" -eq 0 ]; then
           /(^|\/)(test|tests|spec|__tests__)(\/|$)/ { next }
           /(^|\/)(package|package-lock|npm-shrinkwrap|composer|Cargo|Gemfile|go)\.(json|lock|toml|sum)$/ { next }
           /(^|\/)(yarn|poetry|uv|pnpm-lock|pnpm-workspace)\.(lock|toml|ya?ml)$/ { next }
-          /\.(ya?ml|json|toml|ini|cfg|conf)$/ { print }
+          /\.(ya?ml|json|toml|ini|cfg|conf)$/ { print; next }
+          /(^|\/)(commands\/.*\.md|skills\/.*\/SKILL\.md|AGENTS\.md|CLAUDE\.md)$/ { print }
         '
     )
     if [ "${#CANDIDATES[@]}" -gt 1 ]; then
