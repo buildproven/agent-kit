@@ -27,10 +27,12 @@ function git(cwd, args) {
   }).trim();
 }
 
-// The review runner expands an initialized `core` gitlink into the exact
-// recursive submodule diff so a provider cannot approve an opaque control-
-// plane pointer. Canonical verification must hash the same byte stream or a
-// valid review is rejected after the provider has already spent its budget.
+// Review the exact gitlink transition with its source. A provider cannot
+// review a commit ID in place of the code it introduces. Keep the source
+// evidence below the smallest supported provider input limit; larger changes
+// fail closed and must use a separately admitted source delivery.
+const MAX_SUBMODULE_REVIEW_BYTES = 768 * 1024;
+
 function reviewDiffBuffer(root, from, to) {
   const diff = execFileSync("git", ["diff", `${from}..${to}`], {
     cwd: root,
@@ -45,43 +47,49 @@ function reviewDiffBuffer(root, from, to) {
   };
   const baseCore = treeEntry(from);
   const headCore = treeEntry(to);
-  const coreCheckout = fs.existsSync(path.join(root, "core", ".git"));
   if (!baseCore && !headCore) return diff;
   if (!baseCore || !headCore) {
     throw new Error("core gitlink exists on only one side of the diff");
   }
   if (baseCore === headCore) return diff;
-  if (!coreCheckout) {
+  const coreDir = path.join(root, "core");
+  if (!fs.existsSync(path.join(coreDir, ".git"))) {
     throw new Error(
       "changed core gitlink requires an initialized checkout for recursive review",
     );
   }
-  for (const commit of [baseCore, headCore]) {
-    execFileSync(
+  let coreDiff;
+  try {
+    coreDiff = execFileSync(
       "git",
-      ["-C", "core", "cat-file", "-e", `${commit}^{commit}`],
+      ["-C", "core", "diff", "--submodule=diff", baseCore, headCore],
       {
         cwd: root,
+        encoding: "buffer",
         stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: MAX_SUBMODULE_REVIEW_BYTES + 1,
       },
     );
+  } catch (error) {
+    if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new Error(
+        `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
-  const recursive = execFileSync(
-    "git",
-    ["-C", "core", "diff", "--submodule=diff", baseCore, headCore],
-    {
-      cwd: root,
-      encoding: "buffer",
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 1024 * 1024 * 64,
-    },
-  );
+  if (coreDiff.length > MAX_SUBMODULE_REVIEW_BYTES) {
+    throw new Error(
+      `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink`,
+    );
+  }
   return Buffer.concat([
     diff,
     Buffer.from(
       `\n===== recursive submodule diff: core ${baseCore}..${headCore} =====\n`,
     ),
-    recursive,
+    coreDiff,
     Buffer.from("===== end recursive submodule diff: core =====\n"),
   ]);
 }

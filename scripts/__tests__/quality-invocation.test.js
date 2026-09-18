@@ -1289,7 +1289,7 @@ describe("quality invocation manifest", () => {
     });
   });
 
-  it("hashes the same recursive core diff that the review envelope contains", () => {
+  it("hashes the same bounded recursive core diff that the review envelope contains", () => {
     const submodule = makeTempDir("quality-core-source-");
     git(submodule, ["init", "-q", "-b", "main"]);
     git(submodule, ["config", "user.name", "Quality Test"]);
@@ -1335,7 +1335,7 @@ describe("quality invocation manifest", () => {
     expect(diff).toContain("+echo head");
   });
 
-  it("refuses an uninitialized checkout when the core gitlink changes", () => {
+  it("refuses a gitlink transition without an initialized core checkout", () => {
     const submodule = makeTempDir("quality-core-uninitialized-source-");
     git(submodule, ["init", "-q", "-b", "main"]);
     git(submodule, ["config", "user.name", "Quality Test"]);
@@ -1375,7 +1375,7 @@ describe("quality invocation manifest", () => {
     rmSync(path.join(root, "core"), { recursive: true, force: true });
 
     expect(() => invocation.reviewDiffBuffer(root, base, head)).toThrow(
-      /changed core gitlink requires an initialized checkout/,
+      "changed core gitlink requires an initialized checkout for recursive review",
     );
   });
 

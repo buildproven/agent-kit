@@ -93,6 +93,7 @@ assert_reviewed_head_current() {
 mkdir -p "$REVIEW_OUT"
 git diff "${REVIEW_DIFF_BASE}..${REVIEWED_HEAD}" > "$REVIEW_OUT/diff.txt"
 git diff --name-only "${REVIEW_DIFF_BASE}..${REVIEWED_HEAD}" > "$REVIEW_OUT/files.txt"
+MAX_SUBMODULE_REVIEW_BYTES=$((768 * 1024))
 
 # A gitlink is executable policy, not a text-only pointer. When the reviewed
 # repository advances a `core` submodule, include the exact recursive diff in
@@ -126,12 +127,21 @@ if { [ -n "$BASE_CORE_SHA" ] || [ -n "$HEAD_CORE_SHA" ]; }; then
       echo "quality-run-review: head core commit is unavailable for recursive review" >&2
       exit 1
     }
+    CORE_DIFF_FILE="$(mktemp "${TMPDIR:-/tmp}/quality-core-review.XXXXXX")"
+    git -C core diff --submodule=diff "$BASE_CORE_SHA" "$HEAD_CORE_SHA" > "$CORE_DIFF_FILE"
+    CORE_DIFF_BYTES="$(wc -c < "$CORE_DIFF_FILE" | tr -d ' ')"
+    if [ "$CORE_DIFF_BYTES" -gt "$MAX_SUBMODULE_REVIEW_BYTES" ]; then
+      rm -f "$CORE_DIFF_FILE"
+      echo "quality-run-review: core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink" >&2
+      exit 1
+    fi
     {
       printf '\n===== recursive submodule diff: core %s..%s =====\n' \
         "$BASE_CORE_SHA" "$HEAD_CORE_SHA"
-      git -C core diff --submodule=diff "$BASE_CORE_SHA" "$HEAD_CORE_SHA"
+      cat "$CORE_DIFF_FILE"
       printf '===== end recursive submodule diff: core =====\n'
     } >> "$REVIEW_OUT/diff.txt"
+    rm -f "$CORE_DIFF_FILE"
     git -C core diff --name-only "$BASE_CORE_SHA" "$HEAD_CORE_SHA" |
       sed 's#^#core/#' >> "$REVIEW_OUT/files.txt"
   fi
