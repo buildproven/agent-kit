@@ -134,16 +134,18 @@ function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
     .filter(Boolean);
   for (const tag of tags) {
     try {
-      let target = execFileSync(
-        "gh",
-        [
-          "api",
-          `repos/${CORE_RELEASE_REPOSITORY}/releases/tags/${tag}`,
-          "--jq",
-          ".target_commitish",
-        ],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-      ).trim();
+      const release = JSON.parse(
+        execFileSync(
+          "gh",
+          ["api", `repos/${CORE_RELEASE_REPOSITORY}/releases/tags/${tag}`],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      );
+      if (release.draft !== false || typeof release.published_at !== "string") {
+        continue;
+      }
+      let target = release.target_commitish;
+      if (typeof target !== "string" || target.length === 0) continue;
       if (!/^[0-9a-f]{40}$/i.test(target)) {
         target = execFileSync(
           "gh",
