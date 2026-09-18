@@ -532,6 +532,8 @@ describe("config-promotion filter", () => {
         "commands/bs/claw.md",
         "skills/claw/SKILL.md",
         "AGENTS.md",
+        "AGENTSxmd",
+        "CLAUDE-md",
         "docs/runbook.md",
       ]),
     ).toEqual(["commands/bs/claw.md", "skills/claw/SKILL.md", "AGENTS.md"]);
