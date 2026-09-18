@@ -38,30 +38,27 @@ function fixture() {
 }
 
 describe("selection lineage identity contract", () => {
-  it("uses the canonical published tag object, not a mutable release target", () => {
+  it("requires the published release to bind an explicit commit SHA", () => {
     const taggedCommit = "a".repeat(40);
-    const result = identity.publishedReleaseTagCommit("v4.11.2", (endpoint) => {
-      if (endpoint.includes("releases/tags")) {
-        return {
-          draft: false,
-          published_at: "2026-09-18T00:00:00Z",
-          target_commitish: "main",
-        };
-      }
-      if (endpoint.includes("git/ref/tags")) {
-        return { object: { type: "tag", sha: "b".repeat(40) } };
-      }
-      if (endpoint.includes("git/tags")) {
-        return { object: { type: "commit", sha: taggedCommit } };
-      }
-      throw new Error(`unexpected endpoint: ${endpoint}`);
-    });
-    expect(result).toBe(taggedCommit);
+    expect(
+      identity.publishedReleaseCommit("v4.11.2", () => ({
+        draft: false,
+        published_at: "2026-09-18T00:00:00Z",
+        target_commitish: taggedCommit,
+      })),
+    ).toBe(taggedCommit);
+    expect(
+      identity.publishedReleaseCommit("v4.11.2", () => ({
+        draft: false,
+        published_at: "2026-09-18T00:00:00Z",
+        target_commitish: "main",
+      })),
+    ).toBeNull();
   });
 
-  it("rejects draft releases before resolving their tag", () => {
+  it("rejects draft releases before admitting their target", () => {
     expect(
-      identity.publishedReleaseTagCommit("v4.11.2", () => ({ draft: true })),
+      identity.publishedReleaseCommit("v4.11.2", () => ({ draft: true })),
     ).toBeNull();
   });
 

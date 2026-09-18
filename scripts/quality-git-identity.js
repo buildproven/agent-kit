@@ -134,7 +134,7 @@ function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
     .filter(Boolean);
   for (const tag of tags) {
     try {
-      if (publishedReleaseTagCommit(tag) === headCore) {
+      if (publishedReleaseCommit(tag) === headCore) {
         return Buffer.concat([
           diff,
           Buffer.from(
@@ -167,29 +167,19 @@ function githubJson(endpoint) {
   }
 }
 
-// A GitHub release can retain a branch name in target_commitish. That field is
-// descriptive and mutable, so admit only the canonical tag object itself.
-function publishedReleaseTagCommit(tag, api = githubJson) {
+// A branch-valued target is mutable. GitHub persists an explicit SHA in the
+// release record, so require that immutable binding and never resolve a ref.
+function publishedReleaseCommit(tag, api = githubJson) {
   const release = api(
     `repos/${CORE_RELEASE_REPOSITORY}/releases/tags/${encodeURIComponent(tag)}`,
   );
   if (release.draft !== false || typeof release.published_at !== "string") {
     return null;
   }
-  let object = api(
-    `repos/${CORE_RELEASE_REPOSITORY}/git/ref/tags/${encodeURIComponent(tag)}`,
-  ).object;
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (!object || typeof object.sha !== "string") return null;
-    if (object.type === "commit") {
-      return /^[0-9a-f]{40}$/i.test(object.sha) ? object.sha : null;
-    }
-    if (object.type !== "tag") return null;
-    object = api(
-      `repos/${CORE_RELEASE_REPOSITORY}/git/tags/${object.sha}`,
-    ).object;
-  }
-  return null;
+  const target = release.target_commitish;
+  return typeof target === "string" && /^[0-9a-f]{40}$/i.test(target)
+    ? target
+    : null;
 }
 
 function canonicalRoot(input) {
@@ -440,7 +430,7 @@ function deterministicInvocationId(identity) {
 module.exports = {
   git,
   reviewDiffBuffer,
-  publishedReleaseTagCommit,
+  publishedReleaseCommit,
   canonicalRoot,
   replayedTree,
   isAncestorOf,
