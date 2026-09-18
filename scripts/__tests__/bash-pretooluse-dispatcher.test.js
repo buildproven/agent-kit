@@ -205,7 +205,7 @@ describe("bash-pretooluse-dispatcher.js", () => {
         ]) {
           const body =
             name === "block-push-main.sh" && stage === "classifier"
-              ? '#!/bin/sh\nif [ "$1" = "--ci-budget-classify" ]; then exec sleep 600; fi\nexit 0\n'
+              ? '#!/bin/sh\nif [ "$1" = "--ci-budget-classify" ]; then cat >/dev/null; exec sleep 600; fi\nexit 0\n'
               : "#!/bin/sh\nexit 0\n";
           writeFileSync(path.join(guardDir, name), body);
         }
