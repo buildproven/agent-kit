@@ -526,6 +526,17 @@ describe("config-promotion filter", () => {
     ]);
   });
 
+  it("promotes changed executable prompt surfaces but not ordinary Markdown", () => {
+    expect(
+      promote([
+        "commands/bs/claw.md",
+        "skills/claw/SKILL.md",
+        "AGENTS.md",
+        "docs/runbook.md",
+      ]),
+    ).toEqual(["commands/bs/claw.md", "skills/claw/SKILL.md", "AGENTS.md"]);
+  });
+
   it("never promotes a test path", () => {
     expect(promote(["__tests__/fixture.json", "spec/config.yml"])).toEqual([]);
   });
