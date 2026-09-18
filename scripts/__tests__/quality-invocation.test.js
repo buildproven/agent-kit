@@ -1289,7 +1289,7 @@ describe("quality invocation manifest", () => {
     });
   });
 
-  it("hashes the same recursive core diff that the review envelope contains", () => {
+  it("hashes the same bounded recursive core diff that the review envelope contains", () => {
     const submodule = makeTempDir("quality-core-source-");
     git(submodule, ["init", "-q", "-b", "main"]);
     git(submodule, ["config", "user.name", "Quality Test"]);
@@ -1329,13 +1329,13 @@ describe("quality invocation manifest", () => {
 
     const diff = invocation.reviewDiffBuffer(root, base, head).toString("utf8");
     expect(diff).toContain(
-      `===== submodule gitlink: core ${baseCore}..${headCore} =====`,
+      `===== recursive submodule diff: core ${baseCore}..${headCore} =====`,
     );
-    expect(diff).not.toContain("-echo base");
-    expect(diff).not.toContain("+echo head");
+    expect(diff).toContain("-echo base");
+    expect(diff).toContain("+echo head");
   });
 
-  it("reviews a gitlink transition without an initialized core checkout", () => {
+  it("refuses a gitlink transition without an initialized core checkout", () => {
     const submodule = makeTempDir("quality-core-uninitialized-source-");
     git(submodule, ["init", "-q", "-b", "main"]);
     git(submodule, ["config", "user.name", "Quality Test"]);
@@ -1374,9 +1374,9 @@ describe("quality invocation manifest", () => {
     const head = git(root, ["rev-parse", "HEAD"]);
     rmSync(path.join(root, "core"), { recursive: true, force: true });
 
-    expect(
-      invocation.reviewDiffBuffer(root, base, head).toString("utf8"),
-    ).toContain(`===== submodule gitlink: core ${baseCore}..${headCore} =====`);
+    expect(() => invocation.reviewDiffBuffer(root, base, head)).toThrow(
+      "changed core gitlink requires an initialized checkout for recursive review",
+    );
   });
 
   it("requires a bound domain selector for v2 agent selection", () => {

@@ -27,10 +27,12 @@ function git(cwd, args) {
   }).trim();
 }
 
-// Review the exact gitlink transition, not the recursive submodule history.
-// A submodule release can contain thousands of files; embedding it makes an
-// otherwise one-line pin exceed provider input limits. The two immutable
-// commit identities remain reviewable and bind the evidence to the change.
+// Review the exact gitlink transition with its source. A provider cannot
+// review a commit ID in place of the code it introduces. Keep the source
+// evidence below the smallest supported provider input limit; larger changes
+// fail closed and must use a separately admitted source delivery.
+const MAX_SUBMODULE_REVIEW_BYTES = 768 * 1024;
+
 function reviewDiffBuffer(root, from, to) {
   const diff = execFileSync("git", ["diff", `${from}..${to}`], {
     cwd: root,
@@ -50,12 +52,45 @@ function reviewDiffBuffer(root, from, to) {
     throw new Error("core gitlink exists on only one side of the diff");
   }
   if (baseCore === headCore) return diff;
+  const coreDir = path.join(root, "core");
+  if (!fs.existsSync(path.join(coreDir, ".git"))) {
+    throw new Error(
+      "changed core gitlink requires an initialized checkout for recursive review",
+    );
+  }
+  let coreDiff;
+  try {
+    coreDiff = execFileSync(
+      "git",
+      ["-C", "core", "diff", "--submodule=diff", baseCore, headCore],
+      {
+        cwd: root,
+        encoding: "buffer",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: MAX_SUBMODULE_REVIEW_BYTES + 1,
+      },
+    );
+  } catch (error) {
+    if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new Error(
+        `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  if (coreDiff.length > MAX_SUBMODULE_REVIEW_BYTES) {
+    throw new Error(
+      `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink`,
+    );
+  }
   return Buffer.concat([
     diff,
     Buffer.from(
-      `\n===== submodule gitlink: core ${baseCore}..${headCore} =====\n`,
+      `\n===== recursive submodule diff: core ${baseCore}..${headCore} =====\n`,
     ),
-    Buffer.from("===== end submodule gitlink: core =====\n"),
+    coreDiff,
+    Buffer.from("===== end recursive submodule diff: core =====\n"),
   ]);
 }
 
