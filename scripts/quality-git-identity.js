@@ -18,6 +18,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const { canonicalJson } = require("./quality-canonical-json.js");
+const CORE_RELEASE_REPOSITORY = "buildproven/agent-kit";
 
 function git(cwd, args) {
   return execFileSync("git", args, {
@@ -71,18 +72,16 @@ function reviewDiffBuffer(root, from, to) {
       },
     );
   } catch (error) {
-    if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-      throw new Error(
-        `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink`,
-        { cause: error },
-      );
+    if (
+      error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+      error.code === "ENOBUFS"
+    ) {
+      return admittedCoreReleaseBuffer(root, diff, headCore, error);
     }
     throw error;
   }
   if (coreDiff.length > MAX_SUBMODULE_REVIEW_BYTES) {
-    throw new Error(
-      `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes; deliver and admit the source repository separately before updating its gitlink`,
-    );
+    return admittedCoreReleaseBuffer(root, diff, headCore);
   }
   return Buffer.concat([
     diff,
@@ -92,6 +91,76 @@ function reviewDiffBuffer(root, from, to) {
     coreDiff,
     Buffer.from("===== end recursive submodule diff: core =====\n"),
   ]);
+}
+
+function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
+  const coreRoot = path.join(root, "core");
+  const remote = git(coreRoot, ["remote", "get-url", "origin"]);
+  let repository;
+  try {
+    repository = execFileSync(
+      "gh",
+      [
+        "repo",
+        "view",
+        remote,
+        "--json",
+        "nameWithOwner",
+        "--jq",
+        ".nameWithOwner",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+  } catch (error) {
+    throw new Error(
+      "core release admission could not resolve canonical repository identity",
+      { cause: error },
+    );
+  }
+  if (repository !== CORE_RELEASE_REPOSITORY) {
+    throw new Error(
+      `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes and canonical repository is not ${CORE_RELEASE_REPOSITORY}`,
+      { cause },
+    );
+  }
+  const tags = git(coreRoot, [
+    "tag",
+    "--points-at",
+    headCore,
+    "--list",
+    "v[0-9]*",
+  ])
+    .split("\n")
+    .filter(Boolean);
+  for (const tag of tags) {
+    try {
+      const target = execFileSync(
+        "gh",
+        [
+          "api",
+          `repos/${CORE_RELEASE_REPOSITORY}/releases/tags/${tag}`,
+          "--jq",
+          ".target_commitish",
+        ],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      ).trim();
+      if (target === headCore) {
+        return Buffer.concat([
+          diff,
+          Buffer.from(
+            `\n===== separately admitted core release: ${CORE_RELEASE_REPOSITORY} ${tag} ${headCore} =====\n`,
+          ),
+          Buffer.from("===== end separately admitted core release =====\n"),
+        ]);
+      }
+    } catch {
+      // A local tag is not admission evidence. Try the next exact tag.
+    }
+  }
+  throw new Error(
+    `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes and ${headCore} has no exact published ${CORE_RELEASE_REPOSITORY} release admission`,
+    { cause },
+  );
 }
 
 function canonicalRoot(input) {
@@ -352,3 +421,19 @@ module.exports = {
   repoKey,
   deterministicInvocationId,
 };
+
+if (require.main === module) {
+  const [command, root, from, to] = process.argv.slice(2);
+  if (command !== "review-diff" || !root || !from || !to) {
+    process.stderr.write(
+      "usage: quality-git-identity.js review-diff <root> <from> <to>\n",
+    );
+    process.exit(1);
+  }
+  try {
+    process.stdout.write(reviewDiffBuffer(root, from, to));
+  } catch (error) {
+    process.stderr.write(`quality-git-identity: ${error.message}\n`);
+    process.exit(1);
+  }
+}
