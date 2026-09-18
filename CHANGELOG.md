@@ -21,6 +21,15 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.11.1](https://github.com/buildproven/agent-kit/compare/v4.11.0...v4.11.1) (2026-09-17)
+
+
+### Performance Improvements
+
+* narrow lease recovery test selection ([#581](https://github.com/buildproven/agent-kit/issues/581)) ([3fa9360](https://github.com/buildproven/agent-kit/commit/3fa936004d24d9d1012ee18a94fbd8acb343ff8b))
+* overlap trusted release CI with local validation ([#580](https://github.com/buildproven/agent-kit/issues/580)) ([50cc214](https://github.com/buildproven/agent-kit/commit/50cc214f67242753f670ca8e513caa3763c3db6f))
+* remove silent full-suite validation fallback ([#578](https://github.com/buildproven/agent-kit/issues/578)) ([18cca85](https://github.com/buildproven/agent-kit/commit/18cca85ffaeeeda29ca1e2395b3992acb0a7dcf4))
+
 ## [4.11.0](https://github.com/buildproven/agent-kit/compare/v4.10.6...v4.11.0) (2026-09-17)
 
 
