@@ -134,31 +134,7 @@ function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
     .filter(Boolean);
   for (const tag of tags) {
     try {
-      const release = JSON.parse(
-        execFileSync(
-          "gh",
-          ["api", `repos/${CORE_RELEASE_REPOSITORY}/releases/tags/${tag}`],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-        ),
-      );
-      if (release.draft !== false || typeof release.published_at !== "string") {
-        continue;
-      }
-      let target = release.target_commitish;
-      if (typeof target !== "string" || target.length === 0) continue;
-      if (!/^[0-9a-f]{40}$/i.test(target)) {
-        target = execFileSync(
-          "gh",
-          [
-            "api",
-            `repos/${CORE_RELEASE_REPOSITORY}/commits/${target}`,
-            "--jq",
-            ".sha",
-          ],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-        ).trim();
-      }
-      if (target === headCore) {
+      if (publishedReleaseTagCommit(tag) === headCore) {
         return Buffer.concat([
           diff,
           Buffer.from(
@@ -175,6 +151,45 @@ function admittedCoreReleaseBuffer(root, diff, headCore, cause) {
     `core recursive review diff exceeds ${MAX_SUBMODULE_REVIEW_BYTES} bytes and ${headCore} has no exact published ${CORE_RELEASE_REPOSITORY} release admission`,
     { cause },
   );
+}
+
+function githubJson(endpoint) {
+  const output = execFileSync("gh", ["api", endpoint], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    return JSON.parse(output);
+  } catch (error) {
+    throw new Error(`GitHub returned invalid JSON for ${endpoint}`, {
+      cause: error,
+    });
+  }
+}
+
+// A GitHub release can retain a branch name in target_commitish. That field is
+// descriptive and mutable, so admit only the canonical tag object itself.
+function publishedReleaseTagCommit(tag, api = githubJson) {
+  const release = api(
+    `repos/${CORE_RELEASE_REPOSITORY}/releases/tags/${encodeURIComponent(tag)}`,
+  );
+  if (release.draft !== false || typeof release.published_at !== "string") {
+    return null;
+  }
+  let object = api(
+    `repos/${CORE_RELEASE_REPOSITORY}/git/ref/tags/${encodeURIComponent(tag)}`,
+  ).object;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (!object || typeof object.sha !== "string") return null;
+    if (object.type === "commit") {
+      return /^[0-9a-f]{40}$/i.test(object.sha) ? object.sha : null;
+    }
+    if (object.type !== "tag") return null;
+    object = api(
+      `repos/${CORE_RELEASE_REPOSITORY}/git/tags/${object.sha}`,
+    ).object;
+  }
+  return null;
 }
 
 function canonicalRoot(input) {
@@ -425,6 +440,7 @@ function deterministicInvocationId(identity) {
 module.exports = {
   git,
   reviewDiffBuffer,
+  publishedReleaseTagCommit,
   canonicalRoot,
   replayedTree,
   isAncestorOf,

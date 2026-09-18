@@ -38,6 +38,33 @@ function fixture() {
 }
 
 describe("selection lineage identity contract", () => {
+  it("uses the canonical published tag object, not a mutable release target", () => {
+    const taggedCommit = "a".repeat(40);
+    const result = identity.publishedReleaseTagCommit("v4.11.2", (endpoint) => {
+      if (endpoint.includes("releases/tags")) {
+        return {
+          draft: false,
+          published_at: "2026-09-18T00:00:00Z",
+          target_commitish: "main",
+        };
+      }
+      if (endpoint.includes("git/ref/tags")) {
+        return { object: { type: "tag", sha: "b".repeat(40) } };
+      }
+      if (endpoint.includes("git/tags")) {
+        return { object: { type: "commit", sha: taggedCommit } };
+      }
+      throw new Error(`unexpected endpoint: ${endpoint}`);
+    });
+    expect(result).toBe(taggedCommit);
+  });
+
+  it("rejects draft releases before resolving their tag", () => {
+    expect(
+      identity.publishedReleaseTagCommit("v4.11.2", () => ({ draft: true })),
+    ).toBeNull();
+  });
+
   it("rejects a replay that excludes the selected commit from its source range", () => {
     const f = fixture();
     f.git("switch", "-q", "-c", "forged-source", f.base);
