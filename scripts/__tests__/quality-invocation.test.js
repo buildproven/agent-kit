@@ -1329,13 +1329,13 @@ describe("quality invocation manifest", () => {
 
     const diff = invocation.reviewDiffBuffer(root, base, head).toString("utf8");
     expect(diff).toContain(
-      `===== recursive submodule diff: core ${baseCore}..${headCore} =====`,
+      `===== submodule gitlink: core ${baseCore}..${headCore} =====`,
     );
-    expect(diff).toContain("-echo base");
-    expect(diff).toContain("+echo head");
+    expect(diff).not.toContain("-echo base");
+    expect(diff).not.toContain("+echo head");
   });
 
-  it("refuses an uninitialized checkout when the core gitlink changes", () => {
+  it("reviews a gitlink transition without an initialized core checkout", () => {
     const submodule = makeTempDir("quality-core-uninitialized-source-");
     git(submodule, ["init", "-q", "-b", "main"]);
     git(submodule, ["config", "user.name", "Quality Test"]);
@@ -1374,9 +1374,9 @@ describe("quality invocation manifest", () => {
     const head = git(root, ["rev-parse", "HEAD"]);
     rmSync(path.join(root, "core"), { recursive: true, force: true });
 
-    expect(() => invocation.reviewDiffBuffer(root, base, head)).toThrow(
-      /changed core gitlink requires an initialized checkout/,
-    );
+    expect(
+      invocation.reviewDiffBuffer(root, base, head).toString("utf8"),
+    ).toContain(`===== submodule gitlink: core ${baseCore}..${headCore} =====`);
   });
 
   it("requires a bound domain selector for v2 agent selection", () => {
