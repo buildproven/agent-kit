@@ -5746,7 +5746,7 @@ function mutationReplayPlan(manifest) {
   if (
     !files.length ||
     !files.every((file) =>
-      /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.[^/]+$/.test(
+      /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.[^/]+$|\.(md|mdx|txt)$/i.test(
         file,
       ),
     )
@@ -5756,7 +5756,7 @@ function mutationReplayPlan(manifest) {
     !fs.existsSync(carry.artifactPath) ||
     sha256File(carry.artifactPath) !== carry.artifactSha256
   ) {
-    throw new Error("test-only mutation replay requires intact prior evidence");
+    throw new Error("non-executable mutation replay requires intact prior evidence");
   }
   const prior = parseJson(
     fs.readFileSync(carry.artifactPath, "utf8"),
