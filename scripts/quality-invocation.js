@@ -18,6 +18,11 @@ const agentSelection = require("./quality-agent-selection.js");
 const conditionTaxonomy = require("./quality-condition-taxonomy.js");
 const { evidenceDigestValid } = require("./quality-ci-billing-waiver.js");
 const testImpact = require("./test-impact.js");
+const {
+  changedFiles,
+  committedFiles,
+  diffTouchesPython,
+} = require("./quality-gate-files.js");
 
 const REVIEW_CONTRACT_VERSION = 2;
 const RUNTIME_PLAN_VERSION = 2;
@@ -268,59 +273,6 @@ function directGate(name, source, executable, args, allowSkip = false) {
 
 function hasPythonTool(pyproject, tool) {
   return new RegExp(`^\\s*\\[tool\\.${tool}(?:[.\\]]|$)`, "m").test(pyproject);
-}
-
-function committedFiles(root, head) {
-  try {
-    return git(root, ["ls-tree", "-r", "--name-only", head])
-      .split("\n")
-      .filter(Boolean)
-      .sort();
-  } catch {
-    return [];
-  }
-}
-
-// Files changed between baseSha and head (diff scope), as opposed to
-// committedFiles' full repo-tree-at-head scope. Used to avoid promoting a
-// repo-wide-but-narrow tool (e.g. mypy for a handful of scripts/ files) into
-// a required, blocking gate for a PR that never touches that surface.
-function changedFiles(root, baseSha, head) {
-  if (!baseSha) return null;
-  try {
-    // -z: NUL-delimited, unquoted paths. Without it, git quotes filenames
-    // containing non-ASCII bytes (core.quotePath's default), which would
-    // otherwise break a suffix check like .endsWith(".py") on a path such
-    // as "café.py".
-    return git(root, [
-      "diff",
-      "-z",
-      "--name-only",
-      "--no-renames",
-      `${baseSha}..${head}`,
-    ])
-      .split("\0")
-      .filter(Boolean);
-  } catch {
-    return null;
-  }
-}
-
-// Unlike lint/test/security, a repo-wide mypy requirement is a real
-// environment dependency (mypy must be installed) for what may be a handful
-// of scripts/ files never touched by most PRs. Only promote it to a
-// required gate when the diff actually changes a .py file — a repo-wide
-// requirement can still be declared explicitly via .quality-gates.json
-// (handled upstream via nativeGates), which always takes precedence over
-// this inference. When baseSha/diff info is unavailable (changedFiles
-// returns null), fail open to the prior repo-wide behavior rather than
-// silently dropping required coverage.
-function diffTouchesPython(root, baseSha, head) {
-  const changed = changedFiles(root, baseSha, head);
-  return (
-    changed === null ||
-    changed.some((file) => file.endsWith(".py") || file.endsWith(".pyi"))
-  );
 }
 
 function isPythonRepository(root, head, pyproject) {
