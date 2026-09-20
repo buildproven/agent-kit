@@ -1306,6 +1306,43 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     expect(state.mutationCarry.priorHead).toBe(priorHead);
   });
 
+  it("carries killed source evidence across a documentation-only descendant", () => {
+    const { root, manifest } = fixture(
+      "docs-only-carry",
+      "if (!require('./logic').isAllowed('admin')) process.exit(1);\n",
+    );
+    runMutation(root, manifest);
+    const prior = JSON.parse(readFileSync(manifest, "utf8"));
+    const priorArtifactSha = prior.mutation.artifactSha256;
+
+    writeFileSync(path.join(root, "README.md"), "Operator guidance only.\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-qm", "docs: clarify operator guidance"]);
+    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+
+    expect(runMutation(root, manifest)).toMatch(
+      /mutation evidence: revert-diff/,
+    );
+    const state = JSON.parse(readFileSync(manifest, "utf8"));
+    const artifact = JSON.parse(
+      readFileSync(state.mutation.artifactPath, "utf8"),
+    );
+    expect(artifact).toMatchObject({
+      head: state.revisions.currentHead,
+      candidateBase: prior.revisions.baseSha,
+      // A documentation delta cannot weaken the source test, but the replay
+      // still restores the exact prior subject and runs the current test.
+      // This preserves red-capable evidence instead of treating docs as a skip.
+      reusedArtifactSha256: null,
+      mutatedPaths: ["logic.js"],
+      testFailureObserved: true,
+    });
+    expect(artifact.replay).toMatchObject({
+      subject: "logic.js",
+      artifactSha256: priorArtifactSha,
+    });
+  });
+
   it("does not replace a weakened prior mutation with another covered source", () => {
     const { root, manifest } = fixture(
       "replay-no-substitution",

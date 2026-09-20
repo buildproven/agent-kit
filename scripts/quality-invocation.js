@@ -5756,7 +5756,9 @@ function mutationReplayPlan(manifest) {
     !fs.existsSync(carry.artifactPath) ||
     sha256File(carry.artifactPath) !== carry.artifactSha256
   ) {
-    throw new Error("non-executable mutation replay requires intact prior evidence");
+    throw new Error(
+      "non-executable mutation replay requires intact prior evidence",
+    );
   }
   const prior = parseJson(
     fs.readFileSync(carry.artifactPath, "utf8"),
@@ -5776,6 +5778,10 @@ function mutationReplayPlan(manifest) {
     !isAncestorOf(root, candidateBase, carry.priorHead) ||
     !isAncestorOf(root, carry.priorHead, head)
   ) {
+    // A previous documentation-only revision has no killed source mutation to
+    // carry. Let the normal selector decide this revision instead of turning a
+    // valid no-mutable-source result into a manifest error.
+    if (prior.method === "no-mutable-source") return null;
     throw new Error(
       "test-only mutation replay requires one prior killed source mutation with matching ancestry",
     );
