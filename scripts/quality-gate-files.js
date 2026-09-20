@@ -38,4 +38,24 @@ function diffTouchesPython(root, baseSha, head) {
   );
 }
 
-module.exports = { changedFiles, committedFiles, diffTouchesPython };
+function unionRequiredGates(existing, discovered, replaceNames = new Set()) {
+  const required = [...existing];
+  for (const gate of discovered) {
+    const currentIndex = required.findIndex(
+      (current) => current.name === gate.name,
+    );
+    if (currentIndex === -1) {
+      required.push(gate);
+    } else if (replaceNames.has(gate.name)) {
+      required[currentIndex] = gate;
+    }
+  }
+  return required;
+}
+
+module.exports = {
+  changedFiles,
+  committedFiles,
+  diffTouchesPython,
+  unionRequiredGates,
+};
