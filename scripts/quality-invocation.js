@@ -22,6 +22,7 @@ const {
   changedFiles,
   committedFiles,
   diffTouchesPython,
+  unionRequiredGates,
 } = require("./quality-gate-files.js");
 
 const REVIEW_CONTRACT_VERSION = 2;
@@ -797,21 +798,6 @@ function discoverVerifyAppGate(options, nativeGates) {
     args: [verifyAppScript],
     allowSkip: false,
   };
-}
-
-function unionRequiredGates(existing, discovered, replaceNames = new Set()) {
-  const required = [...existing];
-  for (const gate of discovered) {
-    const currentIndex = required.findIndex(
-      (current) => current.name === gate.name,
-    );
-    if (currentIndex === -1) {
-      required.push(gate);
-    } else if (replaceNames.has(gate.name)) {
-      required[currentIndex] = gate;
-    }
-  }
-  return required;
 }
 
 function buildProvider(options) {
