@@ -274,8 +274,16 @@ describe("provider review runtime", () => {
     const started = Date.now();
     const result = spawnSync(
       "bash",
-      [BOUNDED, "--timeout", "20", "--", "bash", "-c", "exit 37"],
-      { encoding: "utf8", timeout: 5000 },
+      [
+        "scripts/quality-run-bounded.sh",
+        "--timeout",
+        "20",
+        "--",
+        "bash",
+        "-c",
+        "exit 37",
+      ],
+      { cwd: ROOT, encoding: "utf8", timeout: 5000 },
     );
     expect(result.status).toBe(37);
     expect(Date.now() - started).toBeLessThan(1500);
