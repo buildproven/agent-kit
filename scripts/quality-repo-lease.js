@@ -1765,6 +1765,22 @@ function localAncestor(root, ancestor, descendant) {
   return result.status === 0;
 }
 
+function localTree(root, revision) {
+  const result = spawnSync("git", ["rev-parse", `${revision}^{tree}`], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  const tree = result.stdout?.trim();
+  return result.status === 0 && /^[a-f0-9]{40}$/.test(tree) ? tree : null;
+}
+
+function localMergeContains(root, head, mergeCommit) {
+  if (localAncestor(root, head, mergeCommit)) return true;
+  const headTree = localTree(root, head);
+  return Boolean(headTree && headTree === localTree(root, mergeCommit));
+}
+
 function descendantMergedRemoteOutcome(manifest, remote) {
   const priorHead = mergeHead(manifest);
   if (
@@ -1778,7 +1794,7 @@ function descendantMergedRemoteOutcome(manifest, remote) {
     return null;
   }
   return localAncestor(manifest.repo.realpath, priorHead, remote.headRefOid) &&
-    localAncestor(
+    localMergeContains(
       manifest.repo.realpath,
       remote.headRefOid,
       remote.mergeCommit.oid,

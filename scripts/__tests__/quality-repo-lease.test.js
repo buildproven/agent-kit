@@ -1807,6 +1807,12 @@ printf '%s\\n' '${JSON.stringify({
     git(candidate.root, ["add", "successor.txt"]);
     git(candidate.root, ["commit", "-q", "-m", "successor"]);
     const successorHead = git(candidate.root, ["rev-parse", "HEAD"]);
+    const squashMerge = git(candidate.root, [
+      "commit-tree",
+      `${successorHead}^{tree}`,
+      "-p",
+      manifest.revisions.currentHead,
+    ]);
     const bin = path.join(sandbox, "merged-descendant-reconcile-bin");
     fs.mkdirSync(bin);
     fs.writeFileSync(
@@ -1815,7 +1821,7 @@ printf '%s\\n' '${JSON.stringify({
 printf '%s\\n' '${JSON.stringify({
         state: "MERGED",
         mergedAt: "2026-09-20T22:00:00Z",
-        mergeCommit: { oid: successorHead },
+        mergeCommit: { oid: squashMerge },
         headRefName: manifest.repo.headRefName,
         headRefOid: successorHead,
         baseRefName: "main",
@@ -1840,7 +1846,7 @@ printf '%s\\n' '${JSON.stringify({
         merge: {
           descendantMerge: {
             head: successorHead,
-            mergeCommit: successorHead,
+            mergeCommit: squashMerge,
           },
         },
       });
