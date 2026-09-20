@@ -439,7 +439,7 @@ done < <(
   git -C "$ROOT" diff --name-only --diff-filter=AM "$MUTATION_BASE..$HEAD" -- \
     | awk '
       /(^|\/)(test|tests|spec|__tests__)(\/|$)/ { next }
-      /\.(js|cjs|mjs|jsx|ts|tsx|py|rb|go|java|kt|rs|c|cc|cpp|h|sh|bash|zsh)$/ { print }
+      /\.(js|cjs|mjs|jsx|ts|tsx|mdx|py|rb|go|java|kt|rs|c|cc|cpp|h|sh|bash|zsh)$/ { print }
     '
 )
 
@@ -614,7 +614,7 @@ if [ "${#CANDIDATES[@]}" -eq 0 ]; then
   SOURCE_ENTRY_COUNT="$(
     git -C "$ROOT" diff --name-only --diff-filter=AM "$MUTATION_BASE..$HEAD" -- \
       | awk '
-        /\.(js|cjs|mjs|jsx|ts|tsx|py|rb|go|java|kt|rs|c|cc|cpp|h|sh|bash|zsh)$/ { print }
+        /\.(js|cjs|mjs|jsx|ts|tsx|mdx|py|rb|go|java|kt|rs|c|cc|cpp|h|sh|bash|zsh)$/ { print }
       ' \
       | grep -c . || true
   )"
