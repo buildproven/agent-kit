@@ -1996,6 +1996,56 @@ printf '%s\\n' '${JSON.stringify({
     }
   });
 
+  it("keeps the guard when the remote head changes during its release", () => {
+    const candidate = fixture("superseded-open-merge-race");
+    const owner = lease.acquire(candidate.manifestPath);
+    lease.acquireMergeGuard(candidate.manifestPath, owner.token);
+    const { manifest } = invocation.loadManifest(candidate.manifestPath);
+    const bin = path.join(sandbox, "superseded-open-merge-race-bin");
+    const calls = path.join(bin, "calls");
+    fs.mkdirSync(bin);
+    const first = JSON.stringify({
+      state: "OPEN",
+      mergedAt: null,
+      mergeCommit: null,
+      headRefName: manifest.repo.headRefName,
+      headRefOid: "e".repeat(40),
+      baseRefName: "main",
+      autoMergeRequest: null,
+    });
+    const second = JSON.stringify({
+      state: "OPEN",
+      mergedAt: null,
+      mergeCommit: null,
+      headRefName: manifest.repo.headRefName,
+      headRefOid: manifest.revisions.currentHead,
+      baseRefName: "main",
+      autoMergeRequest: null,
+    });
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh
+if [ -f '${calls}' ]; then
+  printf '%s\\n' '${second}'
+else
+  : > '${calls}'
+  printf '%s\\n' '${first}'
+fi
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      expect(() =>
+        lease.abandonSupersededOpenMerge(candidate.manifestPath, owner.token),
+      ).toThrow(/remote state changed during guarded release/);
+      expect(lease.status(candidate.manifestPath).mergeGuard).not.toBeNull();
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
   it("reconciles an exact merged outcome after the campaign worktree was removed", () => {
     const primary = fixture("removed-worktree-primary");
     const campaign = fixture("removed-worktree-campaign", {

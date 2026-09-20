@@ -1634,13 +1634,13 @@ function abandonSupersededOpenMerge(
     throw new Error("superseded merge recovery requires the exact merge guard");
   }
   const remote = remotePullRequest(manifest, { repositoryScoped: true });
-  if (
-    remote.state !== "OPEN" ||
-    remote.headRefName !== manifest.repo.headRefName ||
-    remote.baseRefName !== baseBranch(manifest) ||
-    remote.headRefOid === guard.head ||
-    remote.autoMergeRequest !== null
-  ) {
+  const cancellable = (candidate, activeGuard) =>
+    candidate.state === "OPEN" &&
+    candidate.headRefName === manifest.repo.headRefName &&
+    candidate.baseRefName === baseBranch(manifest) &&
+    candidate.headRefOid !== activeGuard.head &&
+    candidate.autoMergeRequest === null;
+  if (!cancellable(remote, guard)) {
     throw new Error(
       "superseded merge recovery requires an open PR with a changed head and disabled auto-merge",
     );
@@ -1650,6 +1650,17 @@ function abandonSupersededOpenMerge(
     const lockedGuard = relatedMergeGuard(lockedPaths, record);
     if (!lockedGuard || record.token !== credential.token) {
       throw new Error("superseded merge recovery ownership changed");
+    }
+    const finalRemote = remotePullRequest(manifest, { repositoryScoped: true });
+    if (
+      !cancellable(finalRemote, lockedGuard) ||
+      finalRemote.state !== remote.state ||
+      finalRemote.headRefOid !== remote.headRefOid ||
+      finalRemote.autoMergeRequest !== remote.autoMergeRequest
+    ) {
+      throw new Error(
+        "superseded merge recovery remote state changed during guarded release",
+      );
     }
     const released = tombstone(lockedPaths.mergeGuard);
     exactCleanup(released);
