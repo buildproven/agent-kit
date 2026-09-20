@@ -127,8 +127,12 @@ node ~/.claude/scripts/builder-dispatch.js create \
 
 `--task-id` is the stable work-item or approved-plan reference selected before
 dispatch, never a prompt digest. Reusing it for a corrected or remediation
-prompt preserves the same 900-second campaign budget. A different task ID
-starts a different task, not a retry of the old one.
+prompt preserves the same 900-second campaign budget. Repository identity uses
+the normalized origin when available, so independent clones share that budget;
+disconnected repositories fall back to their shared Git directory. A different
+task ID starts a different task, not a retry of the old one. One failed exact
+attempt may reserve a distinct, signed retry linked to it. Completed attempts
+do not retry, and all attempts still draw from the same 900-second budget.
 
 Launch:
 

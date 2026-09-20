@@ -22,6 +22,7 @@ const {
 } = require("./compute-governor");
 
 const CAMPAIGN_BUDGET_SECONDS = 900;
+const MAX_RETRIES_PER_PLAN = 1;
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_RETRY_MS = 25;
 const OWNERLESS_LOCK_STALE_MS = 2_000;
@@ -476,7 +477,41 @@ function repositoryIdentity(targetDir) {
     // Local fixtures and disconnected repositories have no origin.  The shared
     // Git directory still keeps different worktrees on one stable identity.
   }
-  return sha256(canonicalString({ origin: origin || null, common }));
+  const canonicalOrigin = normalizeOrigin(origin);
+  // A remote identifies one repository across independent clones. The common
+  // Git directory only identifies related local worktrees, so use it only for
+  // disconnected repositories.
+  return sha256(
+    canonicalString(
+      canonicalOrigin
+        ? { origin: canonicalOrigin, common: null }
+        : { origin: null, common },
+    ),
+  );
+}
+
+function normalizeOrigin(origin) {
+  let value = origin.trim();
+  while (value.endsWith("/")) value = value.slice(0, -1);
+  if (value.endsWith(".git")) value = value.slice(0, -4);
+  if (!value) return null;
+  if (value.includes("://")) {
+    try {
+      const parsed = new URL(value);
+      const repository = parsed.pathname.replace(/^\/+/, "");
+      if (parsed.hostname && repository) {
+        return `${parsed.hostname.toLowerCase()}/${repository}`;
+      }
+    } catch {
+      return value;
+    }
+  }
+  const separator = value.indexOf(":");
+  if (separator < 1) return value;
+  const host = value.slice(0, separator).split("@").at(-1);
+  const repository = value.slice(separator + 1);
+  if (!host || !repository) return value;
+  return `${host.toLowerCase()}/${repository}`;
 }
 
 function policyDigest() {
@@ -606,6 +641,8 @@ function validReceiptAttempt(attempt) {
     /^[a-f0-9]{40}$/.test(attempt.targetHead || "") &&
     /^[a-f0-9]{64}$/.test(attempt.planSha256 || "") &&
     /^[a-f0-9]{64}$/.test(attempt.promptSha256 || "") &&
+    (attempt.retryOf === null ||
+      /^[a-f0-9]{64}$/.test(attempt.retryOf || "")) &&
     Number.isInteger(attempt.reservedSeconds) &&
     attempt.reservedSeconds > 0
   );
@@ -739,15 +776,8 @@ function create(input) {
     }),
   );
   const planSha256 = sha256(canonicalString(plan));
-  const attemptId = sha256(
-    canonicalString({
-      schemaVersion: 1,
-      campaignId,
-      targetHead: plan.executionBinding.targetHead,
-      planSha256,
-    }),
-  );
   let envelope;
+  let attemptId;
   let createdReservation = false;
   withLock(layout.root, () => {
     let campaign = readCampaign(layout, campaignId);
@@ -777,17 +807,22 @@ function create(input) {
         "campaign",
       );
     }
-    const existing = campaign.attempts[attemptId];
-    if (existing) {
-      if (existing.status !== "reserved") {
-        throw new DispatchError("builder dispatch attempt is already terminal");
-      }
+    const matchingAttempts = Object.entries(campaign.attempts).filter(
+      ([, attempt]) =>
+        attempt.targetHead === plan.executionBinding.targetHead &&
+        attempt.planSha256 === planSha256,
+    );
+    const reservedAttempt = matchingAttempts.find(
+      ([, attempt]) => attempt.status === "reserved",
+    );
+    if (reservedAttempt) {
+      const [reservedAttemptId, existing] = reservedAttempt;
       const existingEnvelope = existing.receipt;
       const payload = verifyEnvelope(existingEnvelope, keys.publicKey);
       if (
         !receiptPayloadValid(payload) ||
         payload.issuer.publicKeyFingerprint !== keys.fingerprint ||
-        payload.attempt.id !== attemptId ||
+        payload.attempt.id !== reservedAttemptId ||
         payload.attempt.planSha256 !== planSha256
       ) {
         throw new DispatchError(
@@ -797,6 +832,26 @@ function create(input) {
       envelope = existingEnvelope;
       return;
     }
+    const completedAttempt = matchingAttempts.find(
+      ([, attempt]) => attempt.outcome === "completed",
+    );
+    if (completedAttempt) {
+      throw new DispatchError("builder dispatch attempt is already terminal");
+    }
+    if (matchingAttempts.length > MAX_RETRIES_PER_PLAN) {
+      throw new DispatchError("builder dispatch retry capacity is exhausted");
+    }
+    const retryOf =
+      matchingAttempts.length === 0 ? null : matchingAttempts[0][0];
+    attemptId = sha256(
+      canonicalString({
+        schemaVersion: 2,
+        campaignId,
+        targetHead: plan.executionBinding.targetHead,
+        planSha256,
+        retryOf,
+      }),
+    );
     const remaining =
       campaign.budget.limitSeconds -
       campaign.budget.usedSeconds -
@@ -827,6 +882,7 @@ function create(input) {
         targetHead: plan.executionBinding.targetHead,
         promptSha256,
         planSha256,
+        retryOf,
         reservedSeconds,
       },
       plan,
@@ -840,6 +896,7 @@ function create(input) {
       targetHead: plan.executionBinding.targetHead,
       planSha256,
       promptSha256,
+      retryOf,
       reservedSeconds,
       receipt: envelope,
     };

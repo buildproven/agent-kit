@@ -251,6 +251,95 @@ describe("builder dispatch", () => {
     });
   });
 
+  it("shares one campaign budget across independent clones of the same origin", () => {
+    const first = subject();
+    const second = subject();
+    second.state = first.state;
+    execFileSync(
+      "git",
+      ["remote", "add", "origin", "git@github.com:buildproven/agent-kit.git"],
+      {
+        cwd: first.target,
+      },
+    );
+    execFileSync(
+      "git",
+      [
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/buildproven/agent-kit.git",
+      ],
+      {
+        cwd: second.target,
+      },
+    );
+
+    const firstCreated = run(first, "create");
+    expect(firstCreated.status, firstCreated.stderr).toBe(0);
+    const secondCreated = run(second, "create");
+    expect(secondCreated.status).toBe(2);
+    expect(secondCreated.stderr).toContain("campaign budget is exhausted");
+    const firstReceipt = JSON.parse(readFileSync(first.receipt, "utf8"));
+    const [campaign] = readdirSync(path.join(first.state, "campaigns"));
+    expect(campaign).toBe(`${firstReceipt.payload.campaign.id}.json`);
+  });
+
+  it("allows one signed retry after a failed exact attempt without resetting the budget", () => {
+    const value = subject();
+    expect(run(value, "create").status).toBe(0);
+    const firstReceipt = JSON.parse(readFileSync(value.receipt, "utf8"));
+    const runRecord = path.join(
+      makeTempDir("builder-dispatch-failed-record-"),
+      "record.json",
+    );
+    const identity = {
+      provider: firstReceipt.payload.plan.provider,
+      model: firstReceipt.payload.plan.model,
+      effort: firstReceipt.payload.plan.effort,
+      executionProfileSha256: firstReceipt.payload.plan.executionProfile.sha256,
+    };
+    writeFileSync(
+      runRecord,
+      JSON.stringify({
+        schemaVersion: 2,
+        plan: firstReceipt.payload.plan,
+        requested: identity,
+        effective: identity,
+        timing: { startedAtEpochMs: 1000, finishedAtEpochMs: 2000 },
+        outcome: {
+          status: "provider-unavailable",
+          exitCode: 1,
+          category: "unavailable",
+        },
+        usage: null,
+      }),
+    );
+    const firstSettlement = run(value, "settle", ["--run-record", runRecord]);
+    expect(firstSettlement.status, firstSettlement.stderr).toBe(0);
+
+    value.receipt = path.join(
+      makeTempDir("builder-dispatch-retry-receipt-"),
+      "receipt.json",
+    );
+    const retried = run(value, "create");
+    expect(retried.status, retried.stderr).toBe(0);
+    const retryReceipt = JSON.parse(readFileSync(value.receipt, "utf8"));
+    expect(retryReceipt.payload.attempt).toMatchObject({
+      retryOf: firstReceipt.payload.attempt.id,
+      reservedSeconds: 899,
+    });
+
+    expect(run(value, "settle", ["--run-record", runRecord]).status).toBe(0);
+    value.receipt = path.join(
+      makeTempDir("builder-dispatch-exhausted-retry-"),
+      "receipt.json",
+    );
+    const exhausted = run(value, "create");
+    expect(exhausted.status).toBe(2);
+    expect(exhausted.stderr).toContain("retry capacity is exhausted");
+  });
+
   it("keeps a changed remediation prompt in its stable task campaign", () => {
     const value = subject();
     expect(run(value, "create").status).toBe(0);
