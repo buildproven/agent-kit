@@ -1798,6 +1798,133 @@ printf '%s\\n' '${JSON.stringify({
     }
   });
 
+  it("releases a quarantined lease only when GitHub merged a local descendant", () => {
+    const candidate = fixture("merged-descendant-reconcile");
+    const owner = lease.acquire(candidate.manifestPath);
+    lease.acquireMergeGuard(candidate.manifestPath, owner.token);
+    const { manifest } = invocation.loadManifest(candidate.manifestPath);
+    fs.writeFileSync(path.join(candidate.root, "successor.txt"), "successor\n");
+    git(candidate.root, ["add", "successor.txt"]);
+    git(candidate.root, ["commit", "-q", "-m", "successor"]);
+    const successorHead = git(candidate.root, ["rev-parse", "HEAD"]);
+    const squashMerge = git(candidate.root, [
+      "commit-tree",
+      `${successorHead}^{tree}`,
+      "-p",
+      manifest.revisions.currentHead,
+    ]);
+    const bin = path.join(sandbox, "merged-descendant-reconcile-bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh
+printf '%s\\n' '${JSON.stringify({
+        state: "MERGED",
+        mergedAt: "2026-09-20T22:00:00Z",
+        mergeCommit: { oid: squashMerge },
+        headRefName: manifest.repo.headRefName,
+        headRefOid: successorHead,
+        baseRefName: "main",
+      })}'
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      expect(
+        lease.reconcileMergeOutcome(candidate.manifestPath, owner.token),
+      ).toMatchObject({ reconciled: true, outcome: "merged-descendant" });
+      expect(lease.status(candidate.manifestPath)).toMatchObject({
+        state: "released",
+        mergeGuard: null,
+      });
+      expect(
+        invocation.loadManifest(candidate.manifestPath).manifest,
+      ).toMatchObject({
+        revisions: { currentHead: manifest.revisions.currentHead },
+        merge: {
+          descendantMerge: {
+            head: successorHead,
+            mergeCommit: squashMerge,
+          },
+        },
+      });
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  it("keeps an unrelated merged PR head quarantined", () => {
+    const candidate = fixture("unrelated-merged-head");
+    const owner = lease.acquire(candidate.manifestPath);
+    lease.acquireMergeGuard(candidate.manifestPath, owner.token);
+    const { manifest } = invocation.loadManifest(candidate.manifestPath);
+    const bin = path.join(sandbox, "unrelated-merged-head-bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh
+printf '%s\\n' '${JSON.stringify({
+        state: "MERGED",
+        mergedAt: "2026-09-20T22:00:00Z",
+        mergeCommit: { oid: "d".repeat(40) },
+        headRefName: manifest.repo.headRefName,
+        headRefOid: "e".repeat(40),
+        baseRefName: "main",
+      })}'
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      expect(
+        lease.reconcileMergeOutcome(candidate.manifestPath, owner.token),
+      ).toMatchObject({ reconciled: false, outcome: null });
+      expect(lease.status(candidate.manifestPath).mergeGuard).not.toBeNull();
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  it("keeps a post-merge branch advance quarantined", () => {
+    const candidate = fixture("post-merge-branch-advance");
+    const owner = lease.acquire(candidate.manifestPath);
+    lease.acquireMergeGuard(candidate.manifestPath, owner.token);
+    const { manifest } = invocation.loadManifest(candidate.manifestPath);
+    fs.writeFileSync(path.join(candidate.root, "successor.txt"), "successor\n");
+    git(candidate.root, ["add", "successor.txt"]);
+    git(candidate.root, ["commit", "-q", "-m", "successor"]);
+    const successorHead = git(candidate.root, ["rev-parse", "HEAD"]);
+    const bin = path.join(sandbox, "post-merge-branch-advance-bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh
+printf '%s\\n' '${JSON.stringify({
+        state: "MERGED",
+        mergedAt: "2026-09-20T22:00:00Z",
+        mergeCommit: { oid: manifest.revisions.currentHead },
+        headRefName: manifest.repo.headRefName,
+        headRefOid: successorHead,
+        baseRefName: "main",
+      })}'
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      expect(
+        lease.reconcileMergeOutcome(candidate.manifestPath, owner.token),
+      ).toMatchObject({ reconciled: false, outcome: null });
+      expect(lease.status(candidate.manifestPath).mergeGuard).not.toBeNull();
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
   it("reconciles an exact merged outcome after the campaign worktree was removed", () => {
     const primary = fixture("removed-worktree-primary");
     const campaign = fixture("removed-worktree-campaign", {

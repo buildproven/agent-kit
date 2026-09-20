@@ -1750,6 +1750,59 @@ function exactRemoteOutcome(manifest, remote) {
   return null;
 }
 
+function localAncestor(root, ancestor, descendant) {
+  if (
+    !/^[a-f0-9]{40}$/.test(ancestor || "") ||
+    !/^[a-f0-9]{40}$/.test(descendant || "")
+  ) {
+    return false;
+  }
+  const result = spawnSync(
+    "git",
+    ["merge-base", "--is-ancestor", ancestor, descendant],
+    { cwd: root, encoding: "utf8", timeout: 30_000 },
+  );
+  return result.status === 0;
+}
+
+function localTree(root, revision) {
+  const result = spawnSync("git", ["rev-parse", `${revision}^{tree}`], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  const tree = result.stdout?.trim();
+  return result.status === 0 && /^[a-f0-9]{40}$/.test(tree) ? tree : null;
+}
+
+function localMergeContains(root, head, mergeCommit) {
+  if (localAncestor(root, head, mergeCommit)) return true;
+  const headTree = localTree(root, head);
+  return Boolean(headTree && headTree === localTree(root, mergeCommit));
+}
+
+function descendantMergedRemoteOutcome(manifest, remote) {
+  const priorHead = mergeHead(manifest);
+  if (
+    remote?.state !== "MERGED" ||
+    !remote.mergedAt ||
+    !remote.mergeCommit?.oid ||
+    remote.headRefName !== manifest.repo.headRefName ||
+    remote.baseRefName !== baseBranch(manifest) ||
+    remote.headRefOid === priorHead
+  ) {
+    return null;
+  }
+  return localAncestor(manifest.repo.realpath, priorHead, remote.headRefOid) &&
+    localMergeContains(
+      manifest.repo.realpath,
+      remote.headRefOid,
+      remote.mergeCommit.oid,
+    )
+    ? "merged-descendant"
+    : null;
+}
+
 function exactOpenRemoteOutcome(manifest, remote) {
   return Boolean(
     remote?.state === "OPEN" &&
@@ -1793,7 +1846,9 @@ function reconcileMergeOutcome(manifestPath, presentedToken, options = {}) {
   const remote = remotePullRequest(manifest, { repositoryScoped: true });
   const paths = pathsFor(repositoryIdentity(manifest), manifest);
   const guard = relatedMergeGuard(paths, credential);
-  let outcome = exactRemoteOutcome(manifest, remote);
+  let outcome =
+    exactRemoteOutcome(manifest, remote) ??
+    descendantMergedRemoteOutcome(manifest, remote);
   const refCasIntent = refCasIntentMatches(credential, manifest);
   if (
     outcome === "merged" &&
@@ -1802,8 +1857,17 @@ function reconcileMergeOutcome(manifestPath, presentedToken, options = {}) {
   ) {
     outcome = null;
   }
-  if (!outcome || (options.mergedOnly && outcome !== "merged")) {
+  if (
+    !outcome ||
+    (options.mergedOnly && !["merged", "merged-descendant"].includes(outcome))
+  ) {
     return { reconciled: false, outcome: null, remote };
+  }
+  if (outcome === "merged-descendant") {
+    // Persist the observed remote successor before releasing its quarantine.
+    // A crash after this write remains safe: the lease is still held and a
+    // later exact reconciliation will make the same idempotent observation.
+    recordDescendantMergedOutcome(manifestPath, remote);
   }
   releaseVerifiedOutcome(manifestPath, credential.token, outcome);
   return { reconciled: true, outcome, remote };
@@ -1861,6 +1925,21 @@ function recordMergedTelemetry(manifestPath) {
       `[quality] telemetry: merged campaign could not be recorded — ${error.message}\n`,
     );
   }
+}
+
+function recordDescendantMergedOutcome(manifestPath, remote) {
+  require("./quality-invocation").withManifestLockRaw(
+    manifestPath,
+    (manifest) => {
+      manifest.merge ??= {};
+      manifest.merge.descendantMerge = {
+        head: remote.headRefOid,
+        mergeCommit: remote.mergeCommit.oid,
+        mergedAt: remote.mergedAt,
+        recordedAt: new Date().toISOString(),
+      };
+    },
+  );
 }
 
 function releaseVerifiedOutcome(manifestPath, presentedToken, outcome) {
