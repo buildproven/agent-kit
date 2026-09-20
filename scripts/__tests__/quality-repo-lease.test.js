@@ -1815,7 +1815,7 @@ printf '%s\\n' '${JSON.stringify({
 printf '%s\\n' '${JSON.stringify({
         state: "MERGED",
         mergedAt: "2026-09-20T22:00:00Z",
-        mergeCommit: { oid: "c".repeat(40) },
+        mergeCommit: { oid: successorHead },
         headRefName: manifest.repo.headRefName,
         headRefOid: successorHead,
         baseRefName: "main",
@@ -1840,7 +1840,7 @@ printf '%s\\n' '${JSON.stringify({
         merge: {
           descendantMerge: {
             head: successorHead,
-            mergeCommit: "c".repeat(40),
+            mergeCommit: successorHead,
           },
         },
       });
@@ -1865,6 +1865,43 @@ printf '%s\\n' '${JSON.stringify({
         mergeCommit: { oid: "d".repeat(40) },
         headRefName: manifest.repo.headRefName,
         headRefOid: "e".repeat(40),
+        baseRefName: "main",
+      })}'
+`,
+      { mode: 0o700 },
+    );
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}:${previousPath}`;
+    try {
+      expect(
+        lease.reconcileMergeOutcome(candidate.manifestPath, owner.token),
+      ).toMatchObject({ reconciled: false, outcome: null });
+      expect(lease.status(candidate.manifestPath).mergeGuard).not.toBeNull();
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  it("keeps a post-merge branch advance quarantined", () => {
+    const candidate = fixture("post-merge-branch-advance");
+    const owner = lease.acquire(candidate.manifestPath);
+    lease.acquireMergeGuard(candidate.manifestPath, owner.token);
+    const { manifest } = invocation.loadManifest(candidate.manifestPath);
+    fs.writeFileSync(path.join(candidate.root, "successor.txt"), "successor\n");
+    git(candidate.root, ["add", "successor.txt"]);
+    git(candidate.root, ["commit", "-q", "-m", "successor"]);
+    const successorHead = git(candidate.root, ["rev-parse", "HEAD"]);
+    const bin = path.join(sandbox, "post-merge-branch-advance-bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/bin/sh
+printf '%s\\n' '${JSON.stringify({
+        state: "MERGED",
+        mergedAt: "2026-09-20T22:00:00Z",
+        mergeCommit: { oid: manifest.revisions.currentHead },
+        headRefName: manifest.repo.headRefName,
+        headRefOid: successorHead,
         baseRefName: "main",
       })}'
 `,

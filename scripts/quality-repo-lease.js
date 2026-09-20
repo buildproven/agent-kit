@@ -1777,7 +1777,12 @@ function descendantMergedRemoteOutcome(manifest, remote) {
   ) {
     return null;
   }
-  return localAncestor(manifest.repo.realpath, priorHead, remote.headRefOid)
+  return localAncestor(manifest.repo.realpath, priorHead, remote.headRefOid) &&
+    localAncestor(
+      manifest.repo.realpath,
+      remote.headRefOid,
+      remote.mergeCommit.oid,
+    )
     ? "merged-descendant"
     : null;
 }
