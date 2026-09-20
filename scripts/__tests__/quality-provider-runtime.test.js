@@ -270,6 +270,25 @@ describe("provider review runtime", () => {
     expect(Date.now() - started).toBeLessThan(4000);
   });
 
+  it("does not spend a termination grace period after an immediate command", () => {
+    const started = Date.now();
+    const result = spawnSync(
+      "bash",
+      [
+        "scripts/quality-run-bounded.sh",
+        "--timeout",
+        "20",
+        "--",
+        "bash",
+        "-c",
+        "exit 37",
+      ],
+      { cwd: ROOT, encoding: "utf8", timeout: 5000 },
+    );
+    expect(result.status).toBe(37);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
   it("reports an external signal after bounded cleanup", async () => {
     const directory = makeTempDir("bounded-signal-");
     const readyFile = path.join(directory, "ready");

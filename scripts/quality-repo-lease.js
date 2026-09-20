@@ -1590,7 +1590,7 @@ function remotePullRequest(manifest, options = {}) {
       "--repo",
       manifest.repo.githubRepository,
       "--json",
-      "state,mergedAt,mergeCommit,headRefName,headRefOid,baseRefName",
+      "state,mergedAt,mergeCommit,headRefName,headRefOid,baseRefName,autoMergeRequest",
     ],
     {
       cwd: options.repositoryScoped
@@ -1610,6 +1610,63 @@ function remotePullRequest(manifest, options = {}) {
   } catch (error) {
     throw new Error("GitHub merge state was not valid JSON", { cause: error });
   }
+}
+
+// A started GitHub merge is normally quarantined until the remote proves the
+// exact merge outcome. There is one safe cancellation case: the PR is still
+// open, its head has changed beyond the guarded candidate, and GitHub confirms
+// that no auto-merge request remains. In that state GitHub cannot merge the
+// guarded SHA, and the next exact-head campaign needs a new lease.
+function abandonSupersededOpenMerge(
+  manifestPath,
+  presentedToken,
+  options = {},
+) {
+  const credential = reconciliationCredential(
+    manifestPath,
+    presentedToken,
+    options,
+  );
+  const { manifest } = loadManifest(manifestPath);
+  const paths = pathsFor(repositoryIdentity(manifest), manifest);
+  const guard = relatedMergeGuard(paths, credential);
+  if (!guard) {
+    throw new Error("superseded merge recovery requires the exact merge guard");
+  }
+  const remote = remotePullRequest(manifest, { repositoryScoped: true });
+  const cancellable = (candidate, activeGuard) =>
+    candidate.state === "OPEN" &&
+    candidate.headRefName === manifest.repo.headRefName &&
+    candidate.baseRefName === baseBranch(manifest) &&
+    candidate.headRefOid !== activeGuard.head &&
+    candidate.autoMergeRequest === null;
+  if (!cancellable(remote, guard)) {
+    throw new Error(
+      "superseded merge recovery requires an open PR with a changed head and disabled auto-merge",
+    );
+  }
+  withOwnershipTransaction(manifest, (lockedPaths) => {
+    const record = leaseRecord(lockedPaths.lease);
+    const lockedGuard = relatedMergeGuard(lockedPaths, record);
+    if (!lockedGuard || record.token !== credential.token) {
+      throw new Error("superseded merge recovery ownership changed");
+    }
+    const finalRemote = remotePullRequest(manifest, { repositoryScoped: true });
+    if (
+      !cancellable(finalRemote, lockedGuard) ||
+      finalRemote.state !== remote.state ||
+      finalRemote.headRefOid !== remote.headRefOid ||
+      finalRemote.autoMergeRequest !== remote.autoMergeRequest
+    ) {
+      throw new Error(
+        "superseded merge recovery remote state changed during guarded release",
+      );
+    }
+    const released = tombstone(lockedPaths.mergeGuard);
+    exactCleanup(released);
+  });
+  release(manifestPath, credential.token, "superseded-open-merge-cancelled");
+  return { abandoned: true, remote };
 }
 
 function ghJson(manifest, args, label, options = {}) {
@@ -2396,6 +2453,11 @@ function commandHandlers(manifest, options) {
         confirmOwnerInvocationId: options["confirm-owner-invocation-id"],
         confirmOwnerPr: options["confirm-owner-pr"],
       }),
+    "abandon-superseded-open-merge": () =>
+      abandonSupersededOpenMerge(manifest, presentedToken(), {
+        confirmOwnerInvocationId: options["confirm-owner-invocation-id"],
+        confirmOwnerPr: options["confirm-owner-pr"],
+      }),
     recover: () => publicCredential(recoverFromOptions(manifest, options)),
     "rollback-protocol": () => rollbackProtocol(manifest),
   };
@@ -2429,6 +2491,7 @@ module.exports = {
   acquire,
   rollbackProtocol,
   acquireMergeGuard,
+  abandonSupersededOpenMerge,
   assertBase,
   performMerge,
   reconcileMergeOutcome,

@@ -17,6 +17,9 @@ const riskScore = require("./risk-score.js");
 const agentSelection = require("./quality-agent-selection.js");
 const conditionTaxonomy = require("./quality-condition-taxonomy.js");
 const { evidenceDigestValid } = require("./quality-ci-billing-waiver.js");
+const {
+  approvalPayloadIdentityMatches,
+} = require("./quality-approval-identity.js");
 const testImpact = require("./test-impact.js");
 const {
   changedFiles,
@@ -2733,50 +2736,6 @@ function capabilitySignatureValid(manifest, artifact) {
       format: "der",
     }),
     Buffer.from(artifact.signature || "", "base64"),
-  );
-}
-
-// The signed payload always names the head that was actually reviewed and
-// signed (approval.head), never currentHead directly — a rebase never
-// re-signs. approvalRecordValid() is what proves approval.head is either
-// literally currentHead, or a prior head whose patch-id equals currentHead's
-// patch-id right now (rebase-only replay). An operator override's
-// accepted-condition list is part of what was signed; the attached approval
-// record must echo it exactly, so a capability minted for one diagnosed
-// condition set can never be silently reused as authorization for a
-// different one.
-function approvalPayloadCoreIdentityMatches(manifest, approval, payload) {
-  return (
-    payload?.repoKey === manifest.repo.key &&
-    payload?.pr === manifest.repo.pr &&
-    payload?.head === approval.head &&
-    payload?.invocationId === manifest.invocationId &&
-    payload?.approver === approval.approver &&
-    payload?.expiresAt === approval.expiresAt
-  );
-}
-
-function approvalPayloadScopeAndConditionsMatch(approval, payload) {
-  const scopeMatches =
-    (payload?.scope || "standard") === (approval.scope || "standard");
-  const conditionsMatch =
-    JSON.stringify(payload?.acceptedConditions || []) ===
-    JSON.stringify(approval.acceptedConditions || []);
-  return scopeMatches && conditionsMatch;
-}
-
-function approvalPayloadIdentityMatches(manifest, approval, payload) {
-  return (
-    approvalPayloadCoreIdentityMatches(manifest, approval, payload) &&
-    approvalPayloadScopeAndConditionsMatch(approval, payload) &&
-    (approval.ciBillingEvidenceSha256 ?? null) ===
-      (payload.ciBillingEvidenceSha256 || null) &&
-    (approval.protectedNonstrictProtectionDigest ?? null) ===
-      (payload.protectedNonstrictProtectionDigest || null) &&
-    (approval.protectedNonstrictBaseSha ?? null) ===
-      (payload.protectedNonstrictBaseSha || null) &&
-    JSON.stringify(approval.protectedNonstrictRequiredChecks || null) ===
-      JSON.stringify(payload.protectedNonstrictRequiredChecks || null)
   );
 }
 
