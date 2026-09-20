@@ -150,6 +150,17 @@ EOF
 unique_process_records() {
   awk -F '\t' 'NF >= 2 && !seen[$1]++'
 }
+live_process_records() {
+  local processes="$1" pid recorded_start current_start
+  while IFS=$'\t' read -r pid recorded_start; do
+    [ -n "$pid" ] || continue
+    current_start="$(process_start "$pid")"
+    [ -n "$current_start" ] && [ "$current_start" = "$recorded_start" ] || continue
+    printf '%s\t%s\n' "$pid" "$recorded_start"
+  done <<EOF
+$processes
+EOF
+}
 stop_tracker() {
   [ -n "$TRACKER_PID" ] || return 0
   kill -TERM "$TRACKER_PID" 2>/dev/null || true
@@ -157,7 +168,7 @@ stop_tracker() {
 }
 terminate_provider() {
   local targets tracked current_snapshot current_targets owned_targets remaining_targets
-  local child_start self_group child_group
+  local child_start self_group child_group needs_grace=false
   [ -n "$CHILD_PID" ] || return 0
   tracked="$(cat "$TRACKED_PIDS_FILE" 2>/dev/null || true)"
   current_snapshot="$(process_tree_postorder "$CHILD_PID")"
@@ -172,6 +183,7 @@ $owned_targets
 $tracked
 EOF
 )"
+  targets="$(live_process_records "$targets")"
   child_start="$(process_start "$CHILD_PID")"
   self_group="$(process_group "$$")"
   child_group="$(process_group "$CHILD_PID")"
@@ -181,10 +193,16 @@ EOF
      [ "$(process_start "$CHILD_PID")" = "$child_start" ] &&
      [ -n "$child_group" ] && [ "$child_group" != "$self_group" ]; then
     kill -TERM "-$child_group" 2>/dev/null || true
+    needs_grace=true
   fi
   # Descendants first, then the provider leader. This ordering preserves the
   # PID list long enough to kill escaped session leaders as well.
   signal_processes TERM "$targets"
+  [ -z "$targets" ] || needs_grace=true
+  # A normal command has already exited and leaves only stale snapshots. Do
+  # not pay the TERM grace period in that case. A live owned or detached
+  # helper still receives the full TERM then KILL cleanup below.
+  [ "$needs_grace" = true ] || return 0
   sleep 1
   remaining_targets="$(owned_provider_processes)"
   targets="$(unique_process_records <<EOF
@@ -192,6 +210,7 @@ $remaining_targets
 $targets
 EOF
 )"
+  targets="$(live_process_records "$targets")"
   signal_processes KILL "$targets"
 }
 set -m
