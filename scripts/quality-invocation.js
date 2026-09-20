@@ -23,6 +23,9 @@ const {
   committedFiles,
   diffTouchesPython,
   unionRequiredGates,
+  scriptGate,
+  directGate,
+  baselineGate,
 } = require("./quality-gate-files.js");
 
 const REVIEW_CONTRACT_VERSION = 2;
@@ -229,47 +232,6 @@ function packageManagerAt(root, head, packageJson) {
     return "bun";
   }
   return "npm";
-}
-
-function scriptGate(name, script, manager, allowSkip = false) {
-  return {
-    name,
-    source: `package-script:${script}`,
-    command: `${manager} run ${script}`,
-    executable: manager,
-    args: ["run", script],
-    allowSkip,
-  };
-}
-
-function baselineGate(name, scripts, candidates, manager, allowSkip = false) {
-  const script = candidates.find((candidate) =>
-    Object.hasOwn(scripts, candidate),
-  );
-  if (script) return scriptGate(name, script, manager, allowSkip);
-  return allowSkip
-    ? {
-        name,
-        source: "baseline-policy",
-        command: `external:${name}`,
-        executable: null,
-        args: [],
-        allowSkip,
-      }
-    : null;
-}
-
-function directGate(name, source, executable, args, allowSkip = false) {
-  return {
-    name,
-    source,
-    command: [executable, ...args]
-      .map((part) => JSON.stringify(part))
-      .join(" "),
-    executable,
-    args,
-    allowSkip,
-  };
 }
 
 function hasPythonTool(pyproject, tool) {
