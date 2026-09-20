@@ -1016,6 +1016,14 @@ function settle(input) {
       "builder dispatch run record is not bound to the receipt plan",
     );
   }
+  if (
+    record.builderDispatch?.campaignId !== verified.payload.campaign.id ||
+    record.builderDispatch?.attemptId !== verified.payload.attempt.id
+  ) {
+    throw new DispatchError(
+      "builder dispatch run record is not bound to the receipt attempt",
+    );
+  }
   const elapsedMilliseconds =
     record.timing.finishedAtEpochMs - record.timing.startedAtEpochMs;
   const usedSeconds = Math.max(1, Math.ceil(elapsedMilliseconds / 1000));

@@ -87,6 +87,13 @@ function run(subject, command, extra = [], taskId = "BUI-793") {
   );
 }
 
+function builderBinding(receipt) {
+  return {
+    campaignId: receipt.payload.campaign.id,
+    attemptId: receipt.payload.attempt.id,
+  };
+}
+
 describe("builder dispatch", () => {
   it("issues and verifies an exact Terra receipt without inheriting a caller model", () => {
     const value = subject();
@@ -239,6 +246,7 @@ describe("builder dispatch", () => {
         plan: receipt.payload.plan,
         requested: identity,
         effective: identity,
+        builderDispatch: builderBinding(receipt),
         timing: { startedAtEpochMs: 1000, finishedAtEpochMs: 3100 },
         outcome: { status: "completed", exitCode: 0, category: null },
         usage: null,
@@ -306,6 +314,7 @@ describe("builder dispatch", () => {
         plan: firstReceipt.payload.plan,
         requested: identity,
         effective: identity,
+        builderDispatch: builderBinding(firstReceipt),
         timing: { startedAtEpochMs: 1000, finishedAtEpochMs: 2000 },
         outcome: {
           status: "provider-unavailable",
@@ -330,6 +339,26 @@ describe("builder dispatch", () => {
       reservedSeconds: 899,
     });
 
+    const replayed = run(value, "settle", ["--run-record", runRecord]);
+    expect(replayed.status).toBe(2);
+    expect(replayed.stderr).toContain("not bound to the receipt attempt");
+    writeFileSync(
+      runRecord,
+      JSON.stringify({
+        schemaVersion: 2,
+        plan: retryReceipt.payload.plan,
+        requested: identity,
+        effective: identity,
+        builderDispatch: builderBinding(retryReceipt),
+        timing: { startedAtEpochMs: 2000, finishedAtEpochMs: 3000 },
+        outcome: {
+          status: "provider-unavailable",
+          exitCode: 1,
+          category: "unavailable",
+        },
+        usage: null,
+      }),
+    );
     expect(run(value, "settle", ["--run-record", runRecord]).status).toBe(0);
     value.receipt = path.join(
       makeTempDir("builder-dispatch-exhausted-retry-"),
@@ -361,6 +390,7 @@ describe("builder dispatch", () => {
         plan: firstReceipt.payload.plan,
         requested: identity,
         effective: identity,
+        builderDispatch: builderBinding(firstReceipt),
         timing: { startedAtEpochMs: 1000, finishedAtEpochMs: 2000 },
         outcome: { status: "completed", exitCode: 0, category: null },
         usage: null,

@@ -266,6 +266,8 @@ if [ -n "$BUILDER_RECEIPT" ]; then
     --target-dir "$TARGET_DIR" \
     --state-dir "$BUILDER_STATE_DIR" | jq -r '.reservedSeconds') \
     || { echo "provider-run: builder dispatch reservation cannot be verified" >&2; exit 2; }
+  BUILDER_DISPATCH_BINDING=$(jq -ce '{campaignId:.payload.campaign.id,attemptId:.payload.attempt.id}' "$BUILDER_RECEIPT") \
+    || { echo "provider-run: builder dispatch receipt binding is malformed" >&2; exit 2; }
 fi
 
 # Reject a caller-supplied plan before provider discovery. Plan identity is a
@@ -421,7 +423,8 @@ write_governed_record() {
       --argjson startedAt "$GOVERNED_STARTED_AT_MS" \
       --argjson finishedAt "$finished_at_ms" \
       --argjson usage "$usage_json" \
-      '{schemaVersion:2,plan:$plan,requested:{provider:$plan.provider,model:$plan.model,effort:$plan.effort,executionProfileSha256:$plan.executionProfile.sha256},effective:{provider:$plan.provider,model:$plan.model,effort:$plan.effort,executionProfileSha256:$plan.executionProfile.sha256},timing:{startedAtEpochMs:$startedAt,finishedAtEpochMs:$finishedAt},outcome:{status:$status,exitCode:$exitCode,category:(if $category == "" then null else $category end)},usage:$usage}' \
+      --argjson builderDispatch "${BUILDER_DISPATCH_BINDING:-null}" \
+      '{schemaVersion:2,plan:$plan,requested:{provider:$plan.provider,model:$plan.model,effort:$plan.effort,executionProfileSha256:$plan.executionProfile.sha256},effective:{provider:$plan.provider,model:$plan.model,effort:$plan.effort,executionProfileSha256:$plan.executionProfile.sha256},timing:{startedAtEpochMs:$startedAt,finishedAtEpochMs:$finishedAt},outcome:{status:$status,exitCode:$exitCode,category:(if $category == "" then null else $category end)},usage:$usage} + (if $builderDispatch == null then {} else {builderDispatch:$builderDispatch} end)' \
       > "$record_temp"
   else
     jq -n \
