@@ -25,6 +25,7 @@ done
 [ -f "$CONFIG" ] || { echo "fleet config missing: $CONFIG" >&2; exit 2; }
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/buildproven/steward"
+BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-dispatch"
 mkdir -p "$STATE_DIR"
 DISCOVERY="$STATE_DIR/active-repos.json"
 SUMMARY="$STATE_DIR/latest.json"
@@ -105,6 +106,7 @@ print("true" if not blocked and not d["instructionSync"] else "false")
   prompt="$STATE_DIR/$(basename "$repo")-$slug.prompt"
   phase_request="$STATE_DIR/$(basename "$repo")-$slug.phase.json"
   provider_output="$STATE_DIR/$(basename "$repo")-$slug.provider"
+  builder_receipt="$provider_output/builder-receipt.json"
   cat > "$prompt" <<EOF
 Repair the exact fleet-steward audit failures recorded in $audit_file for repository $worktree.
 Preserve unrelated behavior. Run the repository's required checks, commit on the existing feature branch,
@@ -115,7 +117,18 @@ to the default branch. Return the PR URL and final verification evidence.
 EOF
   if [ "$PROVIDER" = codex ]; then
     printf '%s\n' '{"schemaVersion":2,"caller":"fleet-steward","provider":"codex","phase":"implement","evidence":{"localized":false,"reversible":false,"targetedProof":false,"ambiguous":true,"changedFiles":0,"protectedSurfaces":[],"publicContract":false,"crossRepository":false,"plannedPaths":["**"]}}' > "$phase_request"
-    args=(--prompt-file "$prompt" --phase-request "$phase_request" --caller fleet-steward --provider codex --fallback none --target-dir "$worktree" --timeout 3600 --output-dir "$provider_output")
+    mkdir -p "$provider_output"
+    if ! node "$KIT_ROOT/scripts/builder-dispatch.js" create \
+      --receipt "$builder_receipt" \
+      --request "$phase_request" \
+      --task-id "$invocation" \
+      --prompt-file "$prompt" \
+      --target-dir "$worktree" \
+      --state-dir "$BUILDER_STATE_DIR"; then
+      echo "steward: builder dispatch denied $repo before provider launch" >&2
+      continue
+    fi
+    args=(--prompt-file "$prompt" --builder-receipt "$builder_receipt" --builder-state-dir "$BUILDER_STATE_DIR" --caller fleet-steward --provider codex --fallback none --target-dir "$worktree" --timeout 3600 --output-dir "$provider_output")
   else
     printf '%s\n' '{"phase":"implement","localized":false,"reversible":false,"targetedProof":false,"ambiguous":true,"changedFiles":0,"protectedSurfaces":[],"sameFailureStreak":0}' > "$phase_request"
     args=(--prompt-file "$prompt" --execution-facts "$phase_request" --target-dir "$worktree" --timeout 3600 --output-dir "$provider_output")

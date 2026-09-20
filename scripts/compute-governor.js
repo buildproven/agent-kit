@@ -1335,19 +1335,29 @@ function validatePhaseRunRecord(record) {
     "compute-governor: invalid schema-v2 phase run record",
   );
   assertNoSensitiveRecordFields(record);
-  assertExactKeys(
-    record,
-    [
-      "schemaVersion",
-      "plan",
-      "requested",
-      "effective",
-      "timing",
-      "outcome",
-      "usage",
-    ],
-    "schema-v2 run record",
-  );
+  const keys = [
+    "schemaVersion",
+    "plan",
+    "requested",
+    "effective",
+    "timing",
+    "outcome",
+    "usage",
+  ];
+  if (record.builderDispatch !== undefined) keys.push("builderDispatch");
+  assertExactKeys(record, keys, "schema-v2 run record");
+  if (record.builderDispatch !== undefined) {
+    assertExactKeys(
+      record.builderDispatch,
+      ["campaignId", "attemptId"],
+      "schema-v2 builder dispatch binding",
+    );
+    requireCondition(
+      /^[a-f0-9]{64}$/.test(record.builderDispatch.campaignId || "") &&
+        /^[a-f0-9]{64}$/.test(record.builderDispatch.attemptId || ""),
+      "compute-governor: invalid schema-v2 builder dispatch binding",
+    );
+  }
   assertExactKeys(
     record.requested,
     ["provider", "model", "effort", "executionProfileSha256"],

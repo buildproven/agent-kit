@@ -157,11 +157,12 @@ Quality's revision-bound review panel remains under its stronger manifest and
 diversity contract. Strategy panels remain explicit multi-provider
 deliberation. Neither exemption may invoke an ungoverned ordinary
 implementation worker.
-`provider-run.sh` requires exactly one explicit mode: `--phase-request` for v2,
-`--execution-facts` or `--execution-plan` for v1, or a named
-`--specialized-exemption` allowlisted in policy. A raw unclassified launch is
-rejected. Repository caller inventory tests fail if an ordinary caller uses an
-exemption or omits its mode.
+`provider-run.sh` requires exactly one explicit mode. Read-only v2 phases use
+`--phase-request`; workspace-write v2 phases use a signed `--builder-receipt`
+with its external builder state directory; `--execution-facts` and
+`--execution-plan` are frozen v1 interfaces. A raw unclassified launch is
+rejected. Repository caller inventory tests fail if an ordinary writer bypasses
+Builder Dispatch, uses an exemption, or omits its mode.
 
 ## Alternatives
 
@@ -248,6 +249,9 @@ Behavioral tests use the public CLI and `provider-run.sh` seams:
   rollback preserves the exclusion lease;
 - prompt, target, HEAD, plan, policy, phase, access profile, and model tampering
   fail before launch;
+- a schema-v2 write request or plan without a Builder Dispatch receipt fails
+  before provider discovery; the receipt binds the reservation to one external
+  campaign and the terminal run record settles only its observed active time;
 - migrated callers pass canonical phase facts and leave a run record;
 - a v1 plan and record still validate after v2 policy installation;
 - v2 receipts validate each terminal and prelaunch outcome exactly;
