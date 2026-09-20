@@ -263,23 +263,37 @@ function decodedLockOwner(owner, file) {
 
 function readLockOwner(lock) {
   const file = lockOwnerFile(lock);
-  let stat;
+  let descriptor;
   try {
-    stat = fs.lstatSync(file);
+    descriptor = fs.openSync(
+      file,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+    );
   } catch (error) {
     if (error.code === "ENOENT") return { status: "missing", file };
+    if (error.code === "ELOOP") {
+      throw new DispatchError("builder dispatch lock owner is unsafe");
+    }
     throw error;
   }
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4096) {
-    throw new DispatchError("builder dispatch lock owner is unsafe");
-  }
   try {
-    return decodedLockOwner(JSON.parse(fs.readFileSync(file, "utf8")), file);
-  } catch {
-    // A process can crash while writing the record. Treat it as ownerless only
-    // after the directory itself is stale.
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > 4096) {
+      throw new DispatchError("builder dispatch lock owner is unsafe");
+    }
+    try {
+      return decodedLockOwner(
+        JSON.parse(fs.readFileSync(descriptor, "utf8")),
+        file,
+      );
+    } catch {
+      // A process can crash while writing the record. Treat it as ownerless only
+      // after the directory itself is stale.
+      return decodedLockOwner(null, file);
+    }
+  } finally {
+    fs.closeSync(descriptor);
   }
-  return decodedLockOwner(null, file);
 }
 
 function lockOwnerIsCurrent(owner) {
@@ -409,23 +423,30 @@ function signingKeys(layout) {
   const stateDirectory = layout.keys;
   const signingFile = path.join(stateDirectory, "ed25519-signing.der");
   const publicFile = path.join(stateDirectory, "ed25519-public.der");
-  if (!fs.existsSync(signingFile)) {
+  withLock(layout.root, () => {
+    let signingDescriptor;
+    try {
+      signingDescriptor = fs.openSync(signingFile, "wx", 0o600);
+    } catch (error) {
+      if (error.code === "EEXIST") return;
+      throw error;
+    }
     const pair = crypto.generateKeyPairSync("ed25519");
     try {
       fs.writeFileSync(
-        signingFile,
+        signingDescriptor,
         pair.privateKey.export({ format: "der", type: "pkcs8" }),
-        { mode: 0o600, flag: "wx" },
       );
-      fs.writeFileSync(
-        publicFile,
-        pair.publicKey.export({ format: "der", type: "spki" }),
-        { mode: 0o600, flag: "wx" },
-      );
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+      fs.fsyncSync(signingDescriptor);
+    } finally {
+      fs.closeSync(signingDescriptor);
     }
-  }
+    fs.writeFileSync(
+      publicFile,
+      pair.publicKey.export({ format: "der", type: "spki" }),
+      { mode: 0o600, flag: "wx" },
+    );
+  });
   assertRegularFile(signingFile, "builder dispatch signing key");
   assertRegularFile(publicFile, "builder dispatch public key");
   const privateKey = crypto.createPrivateKey({

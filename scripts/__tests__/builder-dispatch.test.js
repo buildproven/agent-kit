@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -184,6 +185,22 @@ describe("builder dispatch", () => {
     const recoveredReusedPid = run(reusedPid, "create");
     expect(recoveredReusedPid.status, recoveredReusedPid.stderr).toBe(0);
     expect(existsSync(reusedPidLock)).toBe(false);
+  });
+
+  it("refuses a lock owner that changes into a symbolic link", () => {
+    const value = subject();
+    const lock = path.join(value.state, ".dispatch.lock");
+    const target = path.join(
+      makeTempDir("builder-dispatch-owner-target-"),
+      "owner.json",
+    );
+    mkdirSync(lock, { mode: 0o700 });
+    writeFileSync(target, "{}\n", { mode: 0o600 });
+    symlinkSync(target, path.join(lock, "owner.json"));
+
+    const result = run(value, "create");
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("builder dispatch lock owner is unsafe");
   });
 
   it("does not reserve budget when the receipt destination is unavailable", () => {
