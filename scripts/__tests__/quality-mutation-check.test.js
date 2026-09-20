@@ -1343,6 +1343,28 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     });
   });
 
+  it("does not carry source evidence across an MDX descendant", () => {
+    const { root, manifest } = fixture(
+      "mdx-is-executable",
+      "if (!require('./logic').isAllowed('admin')) process.exit(1);\n",
+    );
+    runMutation(root, manifest);
+
+    writeFileSync(
+      path.join(root, "page.mdx"),
+      "# Hello\n{dangerousExpression}\n",
+    );
+    git(root, ["add", "page.mdx"]);
+    git(root, ["commit", "-qm", "feat: add executable MDX page"]);
+    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+
+    const result = runMutationProcess(root, manifest);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(
+      /tests remained green after 1 controlled revert/,
+    );
+  });
+
   it("does not replace a weakened prior mutation with another covered source", () => {
     const { root, manifest } = fixture(
       "replay-no-substitution",

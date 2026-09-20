@@ -5746,7 +5746,7 @@ function mutationReplayPlan(manifest) {
   if (
     !files.length ||
     !files.every((file) =>
-      /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.[^/]+$|\.(md|mdx|txt)$/i.test(
+      /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.[^/]+$|\.(md|txt)$/i.test(
         file,
       ),
     )
