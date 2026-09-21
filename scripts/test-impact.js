@@ -196,13 +196,16 @@ const RELEASE_METADATA_FILES = new Set([
 ]);
 
 function jsonAtRevision(root, revision, file) {
-  return JSON.parse(
-    execFileSync("git", ["show", `${revision}:${file}`], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }),
-  );
+  const source = execFileSync("git", ["show", `${revision}:${file}`], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    throw new Error(`cannot parse ${file} at ${revision}`, { cause: error });
+  }
 }
 
 function withoutVersion(value, path) {
