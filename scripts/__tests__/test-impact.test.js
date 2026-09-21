@@ -78,6 +78,74 @@ describe("cross-language test impact", () => {
     });
   });
 
+  it("skips tests only for a range-proven version-only release", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "release-impact-"));
+    const writeRelease = (version, extra = {}) => {
+      mkdirSync(path.join(root, ".claude-plugin"), { recursive: true });
+      writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({ name: "fixture", version, private: true, ...extra }),
+      );
+      writeFileSync(
+        path.join(root, "package-lock.json"),
+        JSON.stringify({
+          name: "fixture",
+          version,
+          lockfileVersion: 3,
+          packages: { "": { name: "fixture", version, ...extra } },
+        }),
+      );
+      writeFileSync(
+        path.join(root, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "fixture", version }),
+      );
+      writeFileSync(
+        path.join(root, ".claude-plugin", "marketplace.json"),
+        JSON.stringify({ plugins: [{ name: "fixture", version }] }),
+      );
+      writeFileSync(
+        path.join(root, ".release-please-manifest.json"),
+        JSON.stringify({ ".": version }),
+      );
+      writeFileSync(path.join(root, "CHANGELOG.md"), `# ${version}\n`);
+    };
+    const git = (args) => execFileSync("git", args, { cwd: root });
+    git(["init", "--quiet"]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "Test"]);
+    writeRelease("1.0.0");
+    git(["add", "."]);
+    git(["commit", "--quiet", "-m", "base"]);
+    const base = git(["rev-parse", "HEAD"]).toString("utf8").trim();
+    writeRelease("1.0.1");
+    git(["add", "."]);
+    git(["commit", "--quiet", "-m", "release"]);
+    const head = git(["rev-parse", "HEAD"]).toString("utf8").trim();
+    const files = [
+      ".claude-plugin/marketplace.json",
+      ".claude-plugin/plugin.json",
+      ".release-please-manifest.json",
+      "CHANGELOG.md",
+      "package-lock.json",
+      "package.json",
+    ];
+    expect(
+      plan(files, loadPolicy(ROOT), { root, gitBase: base, gitHead: head }),
+    ).toMatchObject({ mode: "none", reason: "release-metadata-only" });
+
+    writeRelease("1.0.2", { dependencies: { changed: "1.0.0" } });
+    git(["add", "."]);
+    git(["commit", "--quiet", "-m", "dependency"]);
+    const dependencyHead = git(["rev-parse", "HEAD"]).toString("utf8").trim();
+    expect(
+      plan(files, loadPolicy(ROOT), {
+        root,
+        gitBase: head,
+        gitHead: dependencyHead,
+      }),
+    ).toMatchObject({ mode: "audit" });
+  });
+
   it.each([
     [false, "quality-invocation.js"],
     [true, "quality-invocation.js"],

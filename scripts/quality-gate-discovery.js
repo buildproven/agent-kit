@@ -141,6 +141,7 @@ function discoverImpactTestGate(root, options, head, baseSha) {
   const selection = testImpact.plan(
     impactFiles || [],
     parseJson(impactPolicy.toString("utf8"), ".buildproven/test-impact.json"),
+    { root, gitBase: baseSha, gitHead: head },
   );
   return {
     ...directGate(
@@ -152,8 +153,9 @@ function discoverImpactTestGate(root, options, head, baseSha) {
         "--execute",
         "--policy-sha256",
         crypto.createHash("sha256").update(impactPolicy).digest("hex"),
+        ...(baseSha ? ["--git-range", baseSha, head] : []),
         "--",
-        ...(impactFiles || []),
+        ...(baseSha ? [] : impactFiles || []),
       ],
     ),
     testImpactMode: selection.mode,

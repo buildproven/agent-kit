@@ -186,6 +186,136 @@ function explicitMappingSelection(policy, files) {
   return { commands, covered };
 }
 
+const RELEASE_METADATA_FILES = new Set([
+  ".claude-plugin/marketplace.json",
+  ".claude-plugin/plugin.json",
+  ".release-please-manifest.json",
+  "CHANGELOG.md",
+  "package-lock.json",
+  "package.json",
+]);
+
+function jsonAtRevision(root, revision, file) {
+  const source = execFileSync("git", ["show", `${revision}:${file}`], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    throw new Error(`cannot parse ${file} at ${revision}`, { cause: error });
+  }
+}
+
+function withoutVersion(value, path) {
+  const copy = structuredClone(value);
+  let target = copy;
+  for (const key of path) {
+    if (!target || typeof target !== "object") return null;
+    target = target[key];
+  }
+  if (!target || typeof target !== "object" || !("version" in target))
+    return null;
+  const version = target.version;
+  delete target.version;
+  return { copy, version };
+}
+
+function equalExceptVersion(base, head, path) {
+  const baseResult = withoutVersion(base, path);
+  const headResult = withoutVersion(head, path);
+  if (!baseResult || !headResult) return null;
+  if (JSON.stringify(baseResult.copy) !== JSON.stringify(headResult.copy))
+    return null;
+  return { base: baseResult.version, head: headResult.version };
+}
+
+function equalLockfileExceptRootVersion(base, head) {
+  const baseCopy = structuredClone(base);
+  const headCopy = structuredClone(head);
+  const baseVersion = baseCopy.version;
+  const headVersion = headCopy.version;
+  const basePackageVersion = baseCopy.packages?.[""]?.version;
+  const headPackageVersion = headCopy.packages?.[""]?.version;
+  if (
+    typeof baseVersion !== "string" ||
+    typeof headVersion !== "string" ||
+    basePackageVersion !== baseVersion ||
+    headPackageVersion !== headVersion
+  )
+    return null;
+  delete baseCopy.version;
+  delete headCopy.version;
+  delete baseCopy.packages[""].version;
+  delete headCopy.packages[""].version;
+  if (JSON.stringify(baseCopy) !== JSON.stringify(headCopy)) return null;
+  return { base: baseVersion, head: headVersion };
+}
+
+function releaseMetadataOnly(files, options) {
+  if (
+    !options.root ||
+    !options.gitBase ||
+    !options.gitHead ||
+    files.length !== RELEASE_METADATA_FILES.size ||
+    !files.every((file) => RELEASE_METADATA_FILES.has(file))
+  )
+    return false;
+  try {
+    const root = options.root;
+    const basePackage = jsonAtRevision(root, options.gitBase, "package.json");
+    const headPackage = jsonAtRevision(root, options.gitHead, "package.json");
+    const release = equalExceptVersion(basePackage, headPackage, []);
+    if (!release || release.base === release.head) return false;
+    const lockfile = equalLockfileExceptRootVersion(
+      jsonAtRevision(root, options.gitBase, "package-lock.json"),
+      jsonAtRevision(root, options.gitHead, "package-lock.json"),
+    );
+    if (
+      !lockfile ||
+      lockfile.base !== release.base ||
+      lockfile.head !== release.head
+    )
+      return false;
+    const checks = [
+      [".claude-plugin/plugin.json", []],
+      [".claude-plugin/marketplace.json", ["plugins", "0"]],
+    ];
+    for (const [file, versionPath] of checks) {
+      const result = equalExceptVersion(
+        jsonAtRevision(root, options.gitBase, file),
+        jsonAtRevision(root, options.gitHead, file),
+        versionPath,
+      );
+      if (
+        !result ||
+        result.base !== release.base ||
+        result.head !== release.head
+      )
+        return false;
+    }
+    const baseManifest = jsonAtRevision(
+      root,
+      options.gitBase,
+      ".release-please-manifest.json",
+    );
+    const headManifest = jsonAtRevision(
+      root,
+      options.gitHead,
+      ".release-please-manifest.json",
+    );
+    return (
+      Object.keys(baseManifest).length === 1 &&
+      Object.keys(headManifest).length === 1 &&
+      baseManifest["."] === release.base &&
+      headManifest["."] === release.head
+    );
+  } catch {
+    return false;
+  }
+}
+
 function plan(changed, rawPolicy = { version: 1 }, options = {}) {
   const policy = validatePolicy({ version: 1, ...rawPolicy });
   const files = [...new Set(changed.filter(Boolean))].sort();
@@ -208,6 +338,14 @@ function plan(changed, rawPolicy = { version: 1 }, options = {}) {
       reason: "explicit-mutation-mapping",
       files,
       commands: coalesceExactVitestRuns(explicit.commands),
+    };
+
+  if (releaseMetadataOnly(files, options))
+    return {
+      mode: "none",
+      reason: "release-metadata-only",
+      files,
+      commands: [],
     };
 
   const auditRules = policy.audits.filter((rule) =>
@@ -481,7 +619,12 @@ function main(argv = process.argv.slice(2)) {
   const result = plan(
     files.map((file) => path.normalize(file)),
     loadPolicy(policyRoot),
-    { preferExplicitMappings, root: process.cwd() },
+    {
+      preferExplicitMappings,
+      root: process.cwd(),
+      gitBase,
+      gitHead,
+    },
   );
   if (shouldExecute) return execute(result);
   console.log(JSON.stringify(result, null, 2));
