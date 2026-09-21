@@ -488,10 +488,11 @@ function recoverDeadGuard(directory, observed) {
     try {
       current = guardOwner(directory);
     } catch (error) {
-      // A competing recovery can remove the directory after existsSync and
-      // before the protected read. It won the race; retry acquisition rather
-      // than turning that normal transition into a terminal campaign failure.
-      if (error.code === "ENOENT" && !fs.existsSync(directory)) return false;
+      // A competing recovery can remove the owner or directory after
+      // existsSync and before the protected read. It won the race; retry
+      // acquisition rather than turning that normal transition into a
+      // terminal campaign failure.
+      if (error.code === "ENOENT") return false;
       throw error;
     }
     if (!sameGuardOwner(current, observed)) return false;

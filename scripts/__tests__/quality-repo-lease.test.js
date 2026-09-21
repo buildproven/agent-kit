@@ -1378,7 +1378,7 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
     expect(fs.existsSync(`${directory}.recovery-lock`)).toBe(false);
   });
 
-  it("keeps a missing owner file in an existing guard actionable", () => {
+  it("treats an owner removed during guarded recovery as a lost race", () => {
     const directory = path.join(sandbox, "guard-recovery-missing-owner");
     fs.mkdirSync(directory, { mode: 0o700 });
     const observed = {
@@ -1389,9 +1389,7 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
       processIdentity: null,
       acquiredAt: "2026-08-05T00:00:00.000Z",
     };
-    expect(() => lease._recoverDeadGuard(directory, observed)).toThrow(
-      /ENOENT/,
-    );
+    expect(lease._recoverDeadGuard(directory, observed)).toBe(false);
     expect(fs.existsSync(`${directory}.recovery-lock`)).toBe(false);
     fs.rmdirSync(directory);
   });
