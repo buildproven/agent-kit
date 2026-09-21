@@ -790,7 +790,7 @@ describe("recordCampaign (idempotent append)", () => {
       legacyPath,
       `${JSON.stringify({
         invocationId: "22222222-2222-4222-8222-222222222222",
-        terminalState: "passed",
+        terminalState: null,
         terminalEpoch: 0,
       })}\n`,
     );
