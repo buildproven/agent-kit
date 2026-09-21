@@ -1892,6 +1892,18 @@ describe("quality invocation manifest", () => {
         identity,
       ),
     ).toBeNull();
+
+    predecessor.gates = [];
+    predecessor.leaseCredentialRecoveryOf = {
+      invocationId: "prior-lease-recovery",
+    };
+    expect(
+      invocation.leaseCredentialRecoveryEligibility(
+        predecessor,
+        identity,
+        identity,
+      ),
+    ).toBeNull();
   });
 
   it("marks an environment recovery only when the gate executable is absent", () => {

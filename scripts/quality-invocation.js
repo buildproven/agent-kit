@@ -828,6 +828,10 @@ function leaseCredentialRecoveryEligibility(
     return null;
   }
   if (existing.supersededBy?.invocationId) return null;
+  // A recovery successor must remain blocked until a lease is actually
+  // available. Without this guard, each retry can replace the prior blocked
+  // successor and grow an unbounded chain of no-evidence manifests.
+  if (existing.leaseCredentialRecoveryOf) return null;
   if ((existing.gates || []).length !== 0) return null;
   if ((existing.reviews || []).length !== 0) return null;
   if ((existing.governor?.providerAttempts || []).length !== 0) return null;
