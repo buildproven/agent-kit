@@ -8975,8 +8975,10 @@ exit 1
       "--execute",
       "--policy-sha256",
       expect.stringMatching(/^[0-9a-f]{64}$/),
+      "--git-range",
+      expect.stringMatching(/^[0-9a-f]{40}$/),
+      expect.stringMatching(/^[0-9a-f]{40}$/),
       "--",
-      "file.js",
     ]);
   });
 
