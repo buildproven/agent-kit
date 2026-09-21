@@ -18,7 +18,7 @@
  * DESTINATION (kit stays standalone — see core/CLAUDE.md "this repo never
  * embeds references to anything that overlays it"): the log path resolves to
  *   1. $BS_QUALITY_TELEMETRY_FILE if set (an overlay can pin a committed path)
- *   2. else $XDG_STATE_HOME/claude-kit/quality-telemetry/<repo-key>.jsonl
+ *   2. else $XDG_STATE_HOME/agent-kit/quality-telemetry/<repo-key>.jsonl
  *      (falling back to ~/.local/state)
  * The default is deliberately outside the target repo: auditing a clean
  * worktree must leave it clean. Committed, fleet-visible history remains
@@ -122,6 +122,19 @@ function resolveTelemetryFile(manifest) {
   if (override && override.trim()) {
     return path.resolve(override.trim());
   }
+  const stateHome =
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+  return path.join(
+    stateHome,
+    "agent-kit",
+    "quality-telemetry",
+    `${manifest.repo.key}.jsonl`,
+  );
+}
+
+function resolveLegacyTelemetryFile(manifest) {
+  const override = process.env.BS_QUALITY_TELEMETRY_FILE;
+  if (override && override.trim()) return null;
   const stateHome =
     process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
   return path.join(
@@ -813,6 +826,7 @@ function recordCampaign(manifestPath, deps = {}) {
     return 1;
   }
   const logPath = resolveTelemetryFile(manifest);
+  const legacyLogPath = resolveLegacyTelemetryFile(manifest);
   let record;
   try {
     record = buildRecord(manifest, { execFileSync, nowIso });
@@ -823,6 +837,16 @@ function recordCampaign(manifestPath, deps = {}) {
     return 0;
   }
   if (
+    [logPath, legacyLogPath]
+      .filter((candidate) => candidate && candidate !== logPath)
+      .some((candidate) =>
+        alreadyRecorded(
+          candidate,
+          manifest.invocationId,
+          record.terminalState,
+          record.terminalEpoch,
+        ),
+      ) ||
     alreadyRecorded(
       logPath,
       manifest.invocationId,
@@ -867,6 +891,7 @@ function main() {
 module.exports = {
   TELEMETRY_SCHEMA_VERSION,
   resolveTelemetryFile,
+  resolveLegacyTelemetryFile,
   successfulReviewCount,
   coveredFiles,
   reviewTokenProxy,
