@@ -336,9 +336,12 @@ function baseOwnedQualityRuntimePaths(context) {
   };
   const base = list(context.base);
   const head = list(context.head);
-  if (!base || !head || JSON.stringify(base) !== JSON.stringify(head))
-    return new Set();
-  return new Set(base);
+  if (!base || !head) return new Set();
+  // Ownership is per path. A candidate may add a new quality-runtime script,
+  // but it must not lose the established infrastructure classification for
+  // other paths that existed at the trusted base and still exist at HEAD.
+  const headPaths = new Set(head);
+  return new Set(base.filter((file) => headPaths.has(file)));
 }
 
 function productionCodePath(file, context) {

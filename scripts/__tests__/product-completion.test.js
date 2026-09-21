@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   symlinkSync,
   unlinkSync,
@@ -568,6 +569,33 @@ describe("committed dependency maintenance", () => {
     );
     expect(productionCodeChange("package.json", context)).toBe(false);
     expect(productionCodeChange("src/app.js", context)).toBe(true);
+  });
+
+  it("keeps base-owned quality scripts exempt when a candidate adds one", () => {
+    const repo = mkdtempSync(path.join(tmpdir(), "quality-runtime-ownership-"));
+    const git = (...args) =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    const scripts = path.join(repo, "scripts");
+    mkdirSync(scripts, { recursive: true });
+    writeFileSync(path.join(scripts, "quality-invocation.js"), "base\n");
+    git("add", ".");
+    git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    writeFileSync(path.join(scripts, "quality-invocation.js"), "head\n");
+    writeFileSync(path.join(scripts, "quality-new-check.js"), "new\n");
+    git("add", ".");
+    git("commit", "-qm", "head");
+    const context = { repo, base, head: git("rev-parse", "HEAD") };
+
+    expect(productionCodeChange("scripts/quality-invocation.js", context)).toBe(
+      false,
+    );
+    expect(productionCodeChange("scripts/quality-new-check.js", context)).toBe(
+      true,
+    );
   });
 
   it("classifies only declarative scheduler controls as contract infrastructure", () => {
