@@ -809,7 +809,10 @@ function leaseCredentialRecoveryEligibility(
   existingIdentity,
   campaignIdentity,
 ) {
-  if (existing.options?.merge !== true || campaignIdentity.options?.merge !== true)
+  if (
+    existing.options?.merge !== true ||
+    campaignIdentity.options?.merge !== true
+  )
     return null;
   if (
     JSON.stringify(canonicalJson(existingIdentity)) !==
