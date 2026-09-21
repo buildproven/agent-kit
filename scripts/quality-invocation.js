@@ -798,6 +798,40 @@ function environmentRecoveryEligibility(
   return null;
 }
 
+// A replacement merge manifest can be terminally blocked before it starts if
+// its lease was recovered after the runner had already attempted to pin an
+// absent credential. This is orchestration state, not a code or gate verdict:
+// it has no gate, mutation, or provider evidence to discard. Allow exactly one
+// immutable successor so normal bootstrap can restart it with the recovered
+// lease. Any evidence-bearing or already-superseded campaign remains closed.
+function leaseCredentialRecoveryEligibility(
+  existing,
+  existingIdentity,
+  campaignIdentity,
+) {
+  if (existing.options?.merge !== true || campaignIdentity.options?.merge !== true)
+    return null;
+  if (
+    JSON.stringify(canonicalJson(existingIdentity)) !==
+    JSON.stringify(canonicalJson(campaignIdentity))
+  ) {
+    return null;
+  }
+  if (existing.terminalState?.state !== "blocked") return null;
+  if (
+    existing.terminalState?.detail !==
+    "merge campaign has no repository lease credential"
+  ) {
+    return null;
+  }
+  if (existing.supersededBy?.invocationId) return null;
+  if ((existing.gates || []).length !== 0) return null;
+  if ((existing.reviews || []).length !== 0) return null;
+  if ((existing.governor?.providerAttempts || []).length !== 0) return null;
+  if (existing.governor?.activeExecution !== null) return null;
+  return "merge lease credential was unavailable before execution";
+}
+
 function providerRecoveryProviders(manifest) {
   const inherited = manifest.providerRecovery?.attemptedProviders || [];
   const started = manifest.governor?.providerAttempts || [];
@@ -1006,6 +1040,20 @@ function existingCampaign(
       locked.environmentRecovery ??= { reason: environmentReason };
     });
     return recovered;
+  }
+  const leaseCredentialReason = leaseCredentialRecoveryEligibility(
+    existing,
+    existingIdentity,
+    campaignIdentity,
+  );
+  if (leaseCredentialReason) {
+    return supersedingManifest(
+      manifestPath,
+      existing,
+      campaignIdentity,
+      leaseCredentialReason,
+      "leaseCredentialRecoveryOf",
+    );
   }
   const providerRecovery = providerRecoveryEligibility(
     existing,
@@ -7193,6 +7241,8 @@ module.exports = {
   changedFiles,
   createManifest,
   loadManifest,
+  leaseCredentialRecoveryEligibility,
+  manifestIdentity,
   lifecycleStale,
   parseOptions,
   parseJson,

@@ -1865,6 +1865,35 @@ describe("quality invocation manifest", () => {
     expect(create(ordinaryTimeoutRoot)).toBe(correctlyBudgeted);
   });
 
+  it("allows one successor only for a merge manifest blocked before lease pinning", () => {
+    const root = repo("lease-credential-recovery");
+    const predecessor = invocation.loadManifest(create(root)).manifest;
+    predecessor.options.merge = true;
+    predecessor.terminalState = {
+      state: "blocked",
+      detail: "merge campaign has no repository lease credential",
+    };
+    predecessor.governor.activeExecution = null;
+    const identity = invocation.manifestIdentity(predecessor);
+
+    expect(
+      invocation.leaseCredentialRecoveryEligibility(
+        predecessor,
+        identity,
+        identity,
+      ),
+    ).toBe("merge lease credential was unavailable before execution");
+
+    predecessor.gates.push({ name: "lint", status: "success" });
+    expect(
+      invocation.leaseCredentialRecoveryEligibility(
+        predecessor,
+        identity,
+        identity,
+      ),
+    ).toBeNull();
+  });
+
   it("marks an environment recovery only when the gate executable is absent", () => {
     expect(invocation.executableAvailable("node", process.env)).toBe(true);
     expect(
