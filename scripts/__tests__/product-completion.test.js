@@ -567,12 +567,20 @@ describe("committed dependency maintenance", () => {
     expect(productionCodeChange("src/app.js", context)).toBe(true);
   });
 
-  it("classifies scheduled controls as contract infrastructure but keeps ordinary scripts product-affecting", () => {
+  it("classifies only declarative scheduler controls as contract infrastructure", () => {
+    expect(
+      productionCodeChange(
+        "scripts/scheduled/com.brettstark.agent-setup.daily-steward.plist",
+      ),
+    ).toBe(false);
     expect(
       productionCodeChange(
         "scripts/scheduled/agent-setup-scheduled-dispatcher.sh",
       ),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      productionCodeChange("scripts/scheduled/security-audit-service.sh"),
+    ).toBe(true);
     expect(productionCodeChange("scripts/product-delivery.js")).toBe(true);
   });
 
