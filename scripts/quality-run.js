@@ -877,6 +877,7 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
   // failure. Do not infer that fact from arbitrary stderr: wrappers, transport
   // failures, and external tools can all use the same prose.
   const requiredCiFailure = (() => {
+    if (merge.code !== 2) return null;
     const marker = `QUALITY_REQUIRED_CI_FAILURE_V1 ${expectedHead}`;
     if (!(merge.stderr || "").split("\n").includes(marker)) return null;
     return {

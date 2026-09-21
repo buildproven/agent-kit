@@ -91,6 +91,7 @@ function validateRef(value, name) {
 }
 
 class GhReadTransportError extends GhCommandError {}
+class RequiredCheckFailureError extends Error {}
 class GhWriteTransportError extends GhCommandError {}
 
 function isApiMethod(args, method) {
@@ -227,7 +228,7 @@ function claimDispatchNonce({ repository, eventType, head, base, nonce }) {
     descriptor = fs.openSync(claimPath, "wx", 0o600);
   } catch (error) {
     if (error.code === "EEXIST")
-      throw new Error(
+      throw new RequiredCheckFailureError(
         `dispatch authorization nonce has already been claimed: ${externalId}`,
         { cause: error },
       );
@@ -1913,7 +1914,12 @@ if (require.main === module) {
     main();
   } catch (error) {
     process.stderr.write(`quality required checks: ${error.message}\n`);
-    process.exitCode = error instanceof GhReadTransportError ? 75 : 1;
+    process.exitCode =
+      error instanceof GhReadTransportError
+        ? 75
+        : error instanceof RequiredCheckFailureError
+          ? 2
+          : 1;
   }
 }
 
@@ -1934,6 +1940,7 @@ module.exports = {
   isWriteTransportFailure,
   prepareChecks,
   protectedMonitorLifetimeValid,
+  RequiredCheckFailureError,
   removeRejectedDispatch,
   rememberPersistedDispatch,
   requiredChecks,

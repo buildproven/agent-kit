@@ -430,7 +430,7 @@ if [ "$RC" -ne 0 ]; then
     # This is a machine-readable authorization fact for a later test-only
     # repair carry. The runner records it as structured manifest data; prose
     # diagnostics alone are never sufficient to skip a provider review.
-    if [ "$RC" -ne 124 ]; then
+    if [ "$RC" -eq 2 ]; then
       echo "QUALITY_REQUIRED_CI_FAILURE_V1 $MERGE_HEAD" >&2
     fi
     node "$SCRIPT_DIR/quality-terminal-status.js" \

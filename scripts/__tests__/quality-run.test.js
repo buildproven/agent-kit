@@ -2023,6 +2023,7 @@ describe("quality-run public orchestration", () => {
       fixture(
         {
           failMerge: true,
+          requiredCiMarker: true,
           mergeWarning: "required CI failed on exact candidate abc123",
         },
         { merge: true, tier: "medium" },
@@ -2037,7 +2038,7 @@ describe("quality-run public orchestration", () => {
 
     const typed = run(
       fixture(
-        { failMerge: true, requiredCiMarker: true },
+        { failMerge: true, mergeExit: 2, requiredCiMarker: true },
         { merge: true, tier: "medium" },
       ),
     );
