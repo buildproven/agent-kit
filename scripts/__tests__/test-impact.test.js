@@ -129,15 +129,14 @@ describe("cross-language test impact", () => {
       "package-lock.json",
       "package.json",
     ];
-    expect(plan(files, loadPolicy(ROOT), { root, gitBase: base, gitHead: head }))
-      .toMatchObject({ mode: "none", reason: "release-metadata-only" });
+    expect(
+      plan(files, loadPolicy(ROOT), { root, gitBase: base, gitHead: head }),
+    ).toMatchObject({ mode: "none", reason: "release-metadata-only" });
 
     writeRelease("1.0.2", { dependencies: { changed: "1.0.0" } });
     git(["add", "."]);
     git(["commit", "--quiet", "-m", "dependency"]);
-    const dependencyHead = git(["rev-parse", "HEAD"])
-      .toString("utf8")
-      .trim();
+    const dependencyHead = git(["rev-parse", "HEAD"]).toString("utf8").trim();
     expect(
       plan(files, loadPolicy(ROOT), {
         root,

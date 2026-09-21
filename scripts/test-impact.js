@@ -285,7 +285,11 @@ function releaseMetadataOnly(files, options) {
         jsonAtRevision(root, options.gitHead, file),
         versionPath,
       );
-      if (!result || result.base !== release.base || result.head !== release.head)
+      if (
+        !result ||
+        result.base !== release.base ||
+        result.head !== release.head
+      )
         return false;
     }
     const baseManifest = jsonAtRevision(
