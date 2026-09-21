@@ -747,9 +747,11 @@ function supersedingManifest(
     }
   }
   const previousToken = process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
+  let handoffCompleted = false;
   if (credential)
     process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = credential.token;
   try {
+    let predecessorLinkRequested = false;
     const lockPredecessor =
       transition === "leaseCredentialRecoveryOf"
         ? withManifestLockRaw
@@ -757,6 +759,7 @@ function supersedingManifest(
     lockPredecessor(existingPath, (locked) => {
       if (locked.supersededBy) return;
       locked.supersededBy = { invocationId, manifestPath, reason, at: now };
+      predecessorLinkRequested = true;
       if (
         transition === "environmentRecoveryOf" &&
         reason === "bootstrap environment lacked the required gate executable"
@@ -771,12 +774,19 @@ function supersedingManifest(
         };
       }
     });
+    // withManifestLock returns only after its write has completed. Do not
+    // retain the successor credential merely because its in-memory callback
+    // ran: a failed persistence must release the lease for later recovery.
+    handoffCompleted = predecessorLinkRequested;
   } finally {
-    // The recovery successor is the next campaign owner.  Keep its pinned
-    // lease active through bootstrap and execution; releasing it here leaves
-    // a valid token in the manifest but no live ownership record, so the
-    // runner truthfully blocks with "no repository lease credential".
-    if (credential && transition !== "leaseCredentialRecoveryOf")
+    // Retain a recovery lease only after the predecessor's durable link makes
+    // the successor runnable. Any exception or competing link before that
+    // point must release the new record, otherwise later campaigns see an
+    // owner that has no valid successor.
+    if (
+      credential &&
+      (transition !== "leaseCredentialRecoveryOf" || !handoffCompleted)
+    )
       lease.release(
         transition === "leaseCredentialRecoveryOf"
           ? manifestPath
