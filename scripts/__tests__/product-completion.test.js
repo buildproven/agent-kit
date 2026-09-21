@@ -315,6 +315,7 @@ describe("product completion", () => {
       "scripts/__tests__/product-admission.test.js",
       "scripts/__tests__/quality-run.test.js",
       "scripts/product-admission.js",
+      "scripts/product-completion.js",
       "scripts/product-evidence-producer.js",
       "scripts/product-evidence.js",
       "scripts/quality-run.js",
