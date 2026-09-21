@@ -1347,14 +1347,20 @@ function validatePhaseRunRecord(record) {
   if (record.builderDispatch !== undefined) keys.push("builderDispatch");
   assertExactKeys(record, keys, "schema-v2 run record");
   if (record.builderDispatch !== undefined) {
+    const builderDispatchKeys = ["campaignId", "attemptId"];
+    if (record.builderDispatch.launchId !== undefined) {
+      builderDispatchKeys.push("launchId");
+    }
     assertExactKeys(
       record.builderDispatch,
-      ["campaignId", "attemptId"],
+      builderDispatchKeys,
       "schema-v2 builder dispatch binding",
     );
     requireCondition(
       /^[a-f0-9]{64}$/.test(record.builderDispatch.campaignId || "") &&
-        /^[a-f0-9]{64}$/.test(record.builderDispatch.attemptId || ""),
+        /^[a-f0-9]{64}$/.test(record.builderDispatch.attemptId || "") &&
+        (record.builderDispatch.launchId === undefined ||
+          /^[a-f0-9]{64}$/.test(record.builderDispatch.launchId)),
       "compute-governor: invalid schema-v2 builder dispatch binding",
     );
   }
