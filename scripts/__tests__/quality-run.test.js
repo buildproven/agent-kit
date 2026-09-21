@@ -173,7 +173,8 @@ function reviewCoverage(manifest) {
   const carried = manifest.revisions.reviewRebaseCarries?.some((carry) =>
     carry.head === manifest.revisions.currentHead &&
     manifest.reviews.some((review) => review.to === carry.reviewedHead));
-  if (!exact && !carried) {
+  const ciRepairCarried = manifest.revisions.ciRepairReviewCarry?.head === manifest.revisions.currentHead;
+  if (!exact && !carried && !ciRepairCarried) {
     throw new Error("final HEAD has not been covered by review evidence");
   }
   if (manifest.gates.some((gate) => gate.status !== "success")) {
@@ -1689,7 +1690,7 @@ describe("quality-run public orchestration", () => {
     expect(result.manifest.terminalHistory[0].state).toBe("blocked");
   });
 
-  it("merges a typed CI-repair carry without starting a third review", () => {
+  it("runs fresh exact-head admission for a typed CI-repair carry without starting a third review", () => {
     const entry = fixture(
       { recoverCiRepair: true },
       { merge: true, tier: "medium" },
@@ -1721,7 +1722,8 @@ describe("quality-run public orchestration", () => {
     expect(result.manifest.revisions.ciRepairReviewCarry).toEqual(
       expect.objectContaining({ head: result.manifest.revisions.currentHead }),
     );
-    expect(result.manifest.calls).toEqual(["quality-stamp-and-merge.sh"]);
+    expect(result.manifest.calls).toContain("quality-stamp-and-merge.sh");
+    expect(result.manifest.calls).not.toContain("quality-run-review.sh");
     expect(result.manifest.terminalHistory).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

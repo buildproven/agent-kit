@@ -1173,12 +1173,10 @@ async function runManifest(manifestPath, dependencies = {}) {
       if (ciRepairRecovery) {
         const resumed = manifestAt(manifestPath);
         pinTerminalEpoch(resumed);
-        return await finishWithMerge(
-          context,
-          manifestPath,
-          resumed,
-          reviewSummary(resumed),
-        );
+        // A carried review authorizes only skipping a redundant provider pass.
+        // Re-enter the normal campaign so the repaired exact HEAD must still
+        // pass its deterministic phases and fresh required-CI admission.
+        return await runOpenCampaign(context, manifestPath, resumed);
       }
       const mutationRecovery =
         quality.resumeAcceptedMutationFailure(manifestPath);

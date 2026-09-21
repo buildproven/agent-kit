@@ -4470,6 +4470,8 @@ function ciRepairCarryShapeValid(manifest, carry) {
     reviewedHead,
     head,
     failedCheckHead,
+    failedInvocationId,
+    failedFailureSha256,
     changedPaths,
     changedPathsSha256,
     priorReviewEvidenceSha256,
@@ -4480,6 +4482,9 @@ function ciRepairCarryShapeValid(manifest, carry) {
     ) ||
     head !== manifest.revisions.currentHead ||
     failedCheckHead !== reviewedHead ||
+    failedInvocationId !== manifest.invocationId ||
+    typeof failedFailureSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(failedFailureSha256) ||
     !Array.isArray(changedPaths) ||
     changedPaths.length === 0 ||
     !changedPaths.every(
@@ -4489,6 +4494,23 @@ function ciRepairCarryShapeValid(manifest, carry) {
     typeof priorReviewEvidenceSha256 !== "string" ||
     !isAncestorOf(manifest.repo.realpath, reviewedHead, head)
   );
+}
+
+function ciRepairFailureSha256(manifest, failure) {
+  return crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify({
+        invocationId: manifest.invocationId,
+        repository: manifest.repo.githubRepository || manifest.repo.key,
+        pullRequest: manifest.repo.pr,
+        kind: failure?.kind || null,
+        head: failure?.head || null,
+        exitCode: failure?.exitCode || null,
+        stderr: failure?.stderr || null,
+      }),
+    )
+    .digest("hex");
 }
 
 function ciRepairCarryPathsValid(manifest, carry) {
@@ -4524,7 +4546,8 @@ function ciRepairReviewCarryValid(manifest, carry) {
   const failure = manifest.merge?.readFailure;
   if (
     failure?.head !== carry.reviewedHead ||
-    !/required CI failed on exact candidate/.test(failure.stderr || "")
+    !/required CI failed on exact candidate/.test(failure.stderr || "") ||
+    carry.failedFailureSha256 !== ciRepairFailureSha256(manifest, failure)
   ) {
     return false;
   }
@@ -4561,6 +4584,11 @@ function recordCiRepairReviewCarry(manifest) {
     reviewedHead,
     head: manifest.revisions.currentHead,
     failedCheckHead: reviewedHead,
+    failedInvocationId: manifest.invocationId,
+    failedFailureSha256: ciRepairFailureSha256(
+      manifest,
+      manifest.merge?.readFailure,
+    ),
     changedPaths,
     changedPathsSha256: crypto
       .createHash("sha256")
