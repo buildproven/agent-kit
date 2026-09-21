@@ -776,6 +776,40 @@ describe("recordCampaign (idempotent append)", () => {
     fs.rmSync(stateHome, { recursive: true, force: true });
   });
 
+  it("does not duplicate a campaign already recorded in the legacy namespace", () => {
+    const stateHome = fs.mkdtempSync(path.join(os.tmpdir(), "qtel-state-"));
+    process.env.XDG_STATE_HOME = stateHome;
+    const legacyPath = path.join(
+      stateHome,
+      "claude-kit",
+      "quality-telemetry",
+      "target-repo.jsonl",
+    );
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(
+      legacyPath,
+      `${JSON.stringify({
+        invocationId: "22222222-2222-4222-8222-222222222222",
+        terminalState: "passed",
+        terminalEpoch: 0,
+      })}\n`,
+    );
+
+    expect(
+      recordCampaign(manifestPath, { execFileSync: NO_FILES, nowIso: NOW }),
+    ).toBe(0);
+    expect(
+      fs.existsSync(
+        path.join(
+          stateHome,
+          "agent-kit",
+          "quality-telemetry",
+          "target-repo.jsonl",
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("returns 1 on an unreadable manifest", () => {
     expect(recordCampaign(path.join(repoDir, "missing.json"))).toBe(1);
   });

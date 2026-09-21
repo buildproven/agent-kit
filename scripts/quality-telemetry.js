@@ -132,6 +132,19 @@ function resolveTelemetryFile(manifest) {
   );
 }
 
+function resolveLegacyTelemetryFile(manifest) {
+  const override = process.env.BS_QUALITY_TELEMETRY_FILE;
+  if (override && override.trim()) return null;
+  const stateHome =
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+  return path.join(
+    stateHome,
+    "claude-kit",
+    "quality-telemetry",
+    `${manifest.repo.key}.jsonl`,
+  );
+}
+
 /**
  * Number of successful review rounds actually run this campaign. `reviews` is
  * the authoritative record; governor.roundsUsed can lag a crash mid-round, so
@@ -813,6 +826,7 @@ function recordCampaign(manifestPath, deps = {}) {
     return 1;
   }
   const logPath = resolveTelemetryFile(manifest);
+  const legacyLogPath = resolveLegacyTelemetryFile(manifest);
   let record;
   try {
     record = buildRecord(manifest, { execFileSync, nowIso });
@@ -823,6 +837,16 @@ function recordCampaign(manifestPath, deps = {}) {
     return 0;
   }
   if (
+    [logPath, legacyLogPath]
+      .filter((candidate) => candidate && candidate !== logPath)
+      .some((candidate) =>
+        alreadyRecorded(
+          candidate,
+          manifest.invocationId,
+          record.terminalState,
+          record.terminalEpoch,
+        ),
+      ) ||
     alreadyRecorded(
       logPath,
       manifest.invocationId,
@@ -867,6 +891,7 @@ function main() {
 module.exports = {
   TELEMETRY_SCHEMA_VERSION,
   resolveTelemetryFile,
+  resolveLegacyTelemetryFile,
   successfulReviewCount,
   coveredFiles,
   reviewTokenProxy,
