@@ -250,23 +250,20 @@ if [ -n "$BUILDER_RECEIPT" ]; then
   EXECUTION_PLAN="$OUTPUT_DIR/execution-plan.json"
   PLAN_TEMP=$(mktemp "$OUTPUT_DIR/.execution-plan.XXXXXX") \
     || { echo "provider-run: cannot allocate builder execution plan" >&2; exit 2; }
-  if ! node "$BUILDER_DISPATCH" verify \
+  BUILDER_LAUNCH=$(node "$BUILDER_DISPATCH" launch \
     --receipt "$BUILDER_RECEIPT" \
     --prompt-file "$PROMPT_FILE" \
     --target-dir "$TARGET_DIR" \
-    --state-dir "$BUILDER_STATE_DIR" > "$PLAN_TEMP"; then
+    --state-dir "$BUILDER_STATE_DIR") || {
     rm -f "$PLAN_TEMP"
-    echo "provider-run: builder dispatch receipt cannot be verified" >&2
+    echo "provider-run: builder dispatch receipt cannot be claimed" >&2
     exit 2
-  fi
+  }
+  printf '%s\n' "$BUILDER_LAUNCH" | jq -ce '.plan' > "$PLAN_TEMP" || { rm -f "$PLAN_TEMP"; echo "provider-run: builder dispatch launch is malformed" >&2; exit 2; }
   mv "$PLAN_TEMP" "$EXECUTION_PLAN"
-  BUILDER_TIMEOUT=$(node "$BUILDER_DISPATCH" reservation \
-    --receipt "$BUILDER_RECEIPT" \
-    --prompt-file "$PROMPT_FILE" \
-    --target-dir "$TARGET_DIR" \
-    --state-dir "$BUILDER_STATE_DIR" | jq -r '.reservedSeconds') \
+  BUILDER_TIMEOUT=$(printf '%s\n' "$BUILDER_LAUNCH" | jq -er '.reservedSeconds') \
     || { echo "provider-run: builder dispatch reservation cannot be verified" >&2; exit 2; }
-  BUILDER_DISPATCH_BINDING=$(jq -ce '{campaignId:.payload.campaign.id,attemptId:.payload.attempt.id}' "$BUILDER_RECEIPT") \
+  BUILDER_DISPATCH_BINDING=$(printf '%s\n' "$BUILDER_LAUNCH" | jq -ce '.builderDispatch') \
     || { echo "provider-run: builder dispatch receipt binding is malformed" >&2; exit 2; }
 fi
 

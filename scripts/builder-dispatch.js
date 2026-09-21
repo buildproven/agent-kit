@@ -39,6 +39,7 @@ const REQUIRED_OPTIONS = {
   ],
   verify: ["receipt", "prompt-file", "target-dir", "state-dir"],
   reservation: ["receipt", "prompt-file", "target-dir", "state-dir"],
+  launch: ["receipt", "prompt-file", "target-dir", "state-dir"],
   settle: ["receipt", "prompt-file", "target-dir", "state-dir", "run-record"],
 };
 
@@ -80,9 +81,11 @@ function assertRequiredOptions(command, options) {
 
 function parseArguments(argv) {
   const [command, ...rest] = argv;
-  if (!["create", "verify", "reservation", "settle"].includes(command)) {
+  if (
+    !["create", "verify", "reservation", "launch", "settle"].includes(command)
+  ) {
     throw new DispatchError(
-      "usage: builder-dispatch.js create|verify|reservation|settle --receipt file --prompt-file file --target-dir dir --state-dir dir [--request file --task-id id] [--run-record file]",
+      "usage: builder-dispatch.js create|verify|reservation|launch|settle --receipt file --prompt-file file --target-dir dir --state-dir dir [--request file --task-id id] [--run-record file]",
     );
   }
   const options = {};
@@ -424,28 +427,47 @@ function signingKeys(layout) {
   const signingFile = path.join(stateDirectory, "ed25519-signing.der");
   const publicFile = path.join(stateDirectory, "ed25519-public.der");
   withLock(layout.root, () => {
-    let signingDescriptor;
+    let privateKey;
     try {
-      signingDescriptor = fs.openSync(signingFile, "wx", 0o600);
+      privateKey = crypto.createPrivateKey({
+        key: fs.readFileSync(signingFile),
+        format: "der",
+        type: "pkcs8",
+      });
     } catch (error) {
-      if (error.code === "EEXIST") return;
-      throw error;
+      if (error.code !== "ENOENT") throw error;
+      const pair = crypto.generateKeyPairSync("ed25519");
+      const descriptor = fs.openSync(signingFile, "wx", 0o600);
+      try {
+        fs.writeFileSync(
+          descriptor,
+          pair.privateKey.export({ format: "der", type: "pkcs8" }),
+        );
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      privateKey = pair.privateKey;
     }
-    const pair = crypto.generateKeyPairSync("ed25519");
+    const expectedPublic = crypto
+      .createPublicKey(privateKey)
+      .export({ format: "der", type: "spki" });
     try {
-      fs.writeFileSync(
-        signingDescriptor,
-        pair.privateKey.export({ format: "der", type: "pkcs8" }),
-      );
-      fs.fsyncSync(signingDescriptor);
-    } finally {
-      fs.closeSync(signingDescriptor);
+      const actualPublic = fs.readFileSync(publicFile);
+      if (!crypto.timingSafeEqual(actualPublic, expectedPublic))
+        throw new DispatchError(
+          "builder dispatch public key does not match signing key",
+        );
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const descriptor = fs.openSync(publicFile, "wx", 0o600);
+      try {
+        fs.writeFileSync(descriptor, expectedPublic);
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
     }
-    fs.writeFileSync(
-      publicFile,
-      pair.publicKey.export({ format: "der", type: "spki" }),
-      { mode: 0o600, flag: "wx" },
-    );
   });
   assertRegularFile(signingFile, "builder dispatch signing key");
   assertRegularFile(publicFile, "builder dispatch public key");
@@ -1021,11 +1043,40 @@ function reservation(input) {
   return { reservedSeconds: verified.payload.attempt.reservedSeconds };
 }
 
+function launch(input) {
+  const verified = verifiedReceipt(input);
+  const launchId = crypto.randomBytes(32).toString("hex");
+  withLock(verified.layout.root, () => {
+    const campaign = readCampaign(
+      verified.layout,
+      verified.payload.campaign.id,
+    );
+    const attempt = campaign?.attempts[verified.payload.attempt.id];
+    assertReceiptMatchesLedger(verified.payload, campaign, attempt, true);
+    attempt.status = "launched";
+    attempt.launchId = launchId;
+    attempt.launchedAt = new Date().toISOString();
+    writeJsonAtomically(campaignFile(verified.layout, campaign.id), campaign);
+  });
+  return {
+    plan: verified.payload.plan,
+    reservedSeconds: verified.payload.attempt.reservedSeconds,
+    builderDispatch: {
+      campaignId: verified.payload.campaign.id,
+      attemptId: verified.payload.attempt.id,
+      launchId,
+    },
+  };
+}
+
 function settle(input) {
   // Settlement happens after a workspace-write handoff, so the target is
   // intentionally no longer clean. The immutable receipt and run record bind
   // the settled attempt; launch-time prompt and target validation already ran.
-  const verified = verifiedReceipt(input, { validatePlan: false });
+  const verified = verifiedReceipt(input, {
+    requireReserved: false,
+    validatePlan: false,
+  });
   const record = readJson(input.runRecord, "builder dispatch run record");
   try {
     validatePhaseRunRecord(record);
@@ -1039,7 +1090,9 @@ function settle(input) {
   }
   if (
     record.builderDispatch?.campaignId !== verified.payload.campaign.id ||
-    record.builderDispatch?.attemptId !== verified.payload.attempt.id
+    record.builderDispatch?.attemptId !== verified.payload.attempt.id ||
+    (verified.attempt.status === "launched" &&
+      record.builderDispatch?.launchId !== verified.attempt.launchId)
   ) {
     throw new DispatchError(
       "builder dispatch run record is not bound to the receipt attempt",
@@ -1057,8 +1110,16 @@ function settle(input) {
   withLock(verified.layout.root, () => {
     const campaign = readCampaign(verified.layout, verified.campaign.id);
     const attempt = campaign.attempts[verified.payload.attempt.id];
-    if (!attempt || attempt.status !== "reserved") {
+    if (!attempt || !["reserved", "launched"].includes(attempt.status)) {
       throw new DispatchError("builder dispatch attempt is already terminal");
+    }
+    if (
+      attempt.status === "launched" &&
+      record.builderDispatch?.launchId !== attempt.launchId
+    ) {
+      throw new DispatchError(
+        "builder dispatch run record is not bound to the launched attempt",
+      );
     }
     campaign.budget.reservedSeconds -= attempt.reservedSeconds;
     campaign.budget.usedSeconds += usedSeconds;
@@ -1091,7 +1152,9 @@ function main(argv) {
         ? verify(input)
         : command === "reservation"
           ? reservation(input)
-          : settle(input);
+          : command === "launch"
+            ? launch(input)
+            : settle(input);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
@@ -1109,6 +1172,7 @@ module.exports = {
   create,
   verify,
   reservation,
+  launch,
   settle,
   stateDirectory,
 };

@@ -276,6 +276,65 @@ describe("builder dispatch", () => {
     });
   });
 
+  it("atomically claims a receipt once before provider launch and binds settlement", () => {
+    const value = subject();
+    expect(run(value, "create").status).toBe(0);
+    const receipt = JSON.parse(readFileSync(value.receipt, "utf8"));
+    const launched = run(value, "launch");
+    expect(launched.status, launched.stderr).toBe(0);
+    const claim = JSON.parse(launched.stdout);
+    expect(claim.builderDispatch.launchId).toMatch(/^[a-f0-9]{64}$/);
+    const duplicate = run(value, "launch");
+    expect(duplicate.status).toBe(2);
+    expect(duplicate.stderr).toContain("not an active exact attempt");
+
+    const identity = {
+      provider: receipt.payload.plan.provider,
+      model: receipt.payload.plan.model,
+      effort: receipt.payload.plan.effort,
+      executionProfileSha256: receipt.payload.plan.executionProfile.sha256,
+    };
+    const runRecord = path.join(
+      makeTempDir("builder-dispatch-claim-record-"),
+      "record.json",
+    );
+    writeFileSync(
+      runRecord,
+      JSON.stringify({
+        schemaVersion: 2,
+        plan: receipt.payload.plan,
+        requested: identity,
+        effective: identity,
+        builderDispatch: claim.builderDispatch,
+        timing: { startedAtEpochMs: 1000, finishedAtEpochMs: 2000 },
+        outcome: { status: "completed", exitCode: 0, category: null },
+        usage: null,
+      }),
+    );
+    const legacyRecord = JSON.parse(readFileSync(runRecord, "utf8"));
+    legacyRecord.builderDispatch = builderBinding(receipt);
+    writeFileSync(runRecord, JSON.stringify(legacyRecord));
+    const staleSettlement = run(value, "settle", ["--run-record", runRecord]);
+    expect(staleSettlement.status).toBe(2);
+    expect(staleSettlement.stderr).toContain(
+      "not bound to the receipt attempt",
+    );
+    legacyRecord.builderDispatch = claim.builderDispatch;
+    writeFileSync(runRecord, JSON.stringify(legacyRecord));
+    expect(run(value, "settle", ["--run-record", runRecord]).status).toBe(0);
+  });
+
+  it("repairs a missing public key from an existing signing key", () => {
+    const value = subject();
+    expect(run(value, "create").status).toBe(0);
+    unlinkSync(path.join(value.state, "keys", "ed25519-public.der"));
+    const verified = run(value, "verify");
+    expect(verified.status, verified.stderr).toBe(0);
+    expect(
+      existsSync(path.join(value.state, "keys", "ed25519-public.der")),
+    ).toBe(true);
+  });
+
   it("shares one campaign budget across independent clones of the same origin", () => {
     const first = subject();
     const second = subject();
