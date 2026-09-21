@@ -361,7 +361,7 @@ function prepareCodexReview(
 
 function ciRepairCarryFixture(
   label,
-  changedPath = "scripts/__tests__/repair.test.js",
+  changedPath = "scripts/__tests__/fixtures/repair.json",
 ) {
   const root = repo(`ci-repair-carry-${label}`);
   const manifestPath = create(root);
@@ -412,7 +412,7 @@ describe("CI repair review carry production predicates", () => {
       expect(invocation.recordCiRepairReviewCarry(manifest)).toMatchObject({
         reviewedHead: manifest.merge.readFailure.head,
         head: manifest.revisions.currentHead,
-        changedPaths: ["scripts/__tests__/repair.test.js"],
+        changedPaths: ["scripts/__tests__/fixtures/repair.json"],
       });
     });
   });
@@ -425,6 +425,18 @@ describe("CI repair review carry production predicates", () => {
     const { manifestPath } = ciRepairCarryFixture(
       changedPath.replaceAll("/", "-"),
       changedPath,
+    );
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      expect(() => invocation.recordCiRepairReviewCarry(manifest)).toThrow(
+        "CI repair delta is not eligible for review coverage carry",
+      );
+    });
+  });
+
+  it("rejects executable test code even when the test itself passes", () => {
+    const { manifestPath } = ciRepairCarryFixture(
+      "executable-test",
+      "scripts/__tests__/repair.test.js",
     );
     invocation.withManifestLock(manifestPath, (manifest) => {
       expect(() => invocation.recordCiRepairReviewCarry(manifest)).toThrow(

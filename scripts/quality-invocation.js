@@ -4491,12 +4491,18 @@ function ciRepairCarryShapeValid(manifest, carry) {
     !/^[a-f0-9]{64}$/.test(failedFailureSha256) ||
     !Array.isArray(changedPaths) ||
     changedPaths.length === 0 ||
-    !changedPaths.every(
-      (file) => typeof file === "string" && agentSelection.isTestPath(file),
-    ) ||
+    !changedPaths.every(isNonExecutableCiRepairFixture) ||
     typeof changedPathsSha256 !== "string" ||
     typeof priorReviewEvidenceSha256 !== "string" ||
     !isAncestorOf(manifest.repo.realpath, reviewedHead, head)
+  );
+}
+
+function isNonExecutableCiRepairFixture(file) {
+  return (
+    typeof file === "string" &&
+    agentSelection.isTestPath(file) &&
+    /(?:^|\/)(?:fixtures?|__fixtures__)\/[^/]+\.json$/i.test(file)
   );
 }
 
