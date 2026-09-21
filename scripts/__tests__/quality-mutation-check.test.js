@@ -171,8 +171,9 @@ function installPnpmWorkspace(root, options) {
   }
   try {
     execFileSync(
-      "pnpm",
+      "corepack",
       [
+        "pnpm",
         "--config.manage-package-manager-versions=false",
         "--config.pm-on-fail=ignore",
         "install",
