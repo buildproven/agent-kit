@@ -63,7 +63,7 @@ function resumeCiRepairReviewTerminal(file) {
   manifest.terminalHistory.push({ ...manifest.terminalState, disposition: "superseded-by-ci-repair-review-carry" });
   manifest.terminalEpoch = terminalEpoch(manifest) + 1;
   manifest.revisions.ciRepairReviewCarry = { reviewedHead: "abc123", head: manifest.revisions.currentHead };
-  manifest.terminalState = { state: "recovering", head: manifest.revisions.currentHead, terminalEpoch: manifest.terminalEpoch };
+  manifest.terminalState = { state: "recovering", head: manifest.revisions.currentHead, terminalEpoch: manifest.terminalEpoch, recovery: { kind: "ci-repair-review-carry" } };
   write(file, manifest);
   return manifest.terminalState;
 }
@@ -181,6 +181,10 @@ function reviewCoverage(manifest) {
     throw new Error("required gate evidence is incomplete");
   }
 }
+function ciRepairReviewCarryValid(manifest, carry) {
+  return !manifest.behavior?.invalidCiRepairCarry &&
+    carry?.head === manifest.revisions.currentHead;
+}
 function changedFiles(root, baseSha, head) {
   const manifest = read(process.env.QUALITY_TEST_MANIFEST);
   return manifest.behavior?.changedFiles || [];
@@ -255,7 +259,7 @@ if (require.main === module) {
   write(file, manifest);
   process.stdout.write(inForce + "\\n");
 }
-module.exports = { advanceHead, incompleteRetryStatus, judgeContext, leadDispositionStatus, loadManifest, mutationEvidenceValid, parseJson, recordTerminalState,
+module.exports = { advanceHead, ciRepairReviewCarryValid, incompleteRetryStatus, judgeContext, leadDispositionStatus, loadManifest, mutationEvidenceValid, parseJson, recordTerminalState,
   advanceManifest, changedFiles, clearMergeAdmissionBlock, recordPreReviewSelectionFailure, resolveGreenCiAdmissionBlock, reviewAuthorization, reviewCoverage, resumeAcceptedMutationFailure, resumeCiRepairReviewTerminal, resumeInterruptedTerminal, resumeMergeReadFailure, resumePreReviewSelectionFailure, resumeRecoverableTerminal, terminalEpoch, validateIdentity, withManifestLock };
 `;
 
@@ -1731,6 +1735,41 @@ describe("quality-run public orchestration", () => {
         }),
       ]),
     );
+  });
+
+  it("re-enters a persisted CI-repair recovery without starting a third review", () => {
+    const entry = fixture({}, { merge: true, tier: "medium" });
+    const manifest = JSON.parse(readFileSync(entry.manifestPath, "utf8"));
+    manifest.risk.resolved = true;
+    manifest.gates = manifest.requiredGates.map(({ name }) => ({
+      name,
+      status: "success",
+    }));
+    manifest.reviews = [
+      {
+        from: manifest.revisions.baseSha,
+        to: manifest.revisions.baseSha,
+        status: "complete",
+        leadCount: 0,
+      },
+    ];
+    manifest.revisions.ciRepairReviewCarry = {
+      reviewedHead: manifest.revisions.baseSha,
+      head: manifest.revisions.currentHead,
+    };
+    manifest.terminalState = {
+      state: "recovering",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: 1,
+      recovery: { kind: "ci-repair-review-carry" },
+    };
+    writeFileSync(entry.manifestPath, JSON.stringify(manifest));
+
+    const result = run(entry);
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.manifest.calls).toContain("quality-stamp-and-merge.sh");
+    expect(result.manifest.calls).not.toContain("quality-run-review.sh");
   });
 
   it("continues only the explicitly recoverable terminal merge campaign", () => {
