@@ -676,6 +676,14 @@ async function runDeterministicPhases(manifestPath, invoke) {
 
 async function ensureReview(manifestPath, invoke) {
   const manifest = manifestAt(manifestPath);
+  if (
+    quality.ciRepairReviewCarryValid(
+      manifest,
+      manifest.revisions.ciRepairReviewCarry,
+    )
+  ) {
+    return;
+  }
   if (quality.incompleteRetryStatus(manifest).state === "pending") {
     await invoke("review-retry-reserve", process.execPath, [
       script("quality-invocation.js"),
@@ -1159,6 +1167,9 @@ async function runManifest(manifestPath, dependencies = {}) {
     manifest = manifestAt(manifestPath);
     pinTerminalEpoch(manifest);
     quality.validateIdentity(manifest, manifest.repo.realpath);
+    if (manifest.terminalState?.recovery?.kind === "ci-repair-review-carry") {
+      return await runOpenCampaign(context, manifestPath, manifest);
+    }
     if (manifest.terminalState) {
       const ciRepairRecovery =
         quality.resumeCiRepairReviewTerminal(manifestPath);
