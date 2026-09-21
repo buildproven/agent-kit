@@ -382,6 +382,9 @@ if (step === "quality-stamp-and-merge.sh") {
     if (manifest.behavior.mergeWarning) {
       process.stderr.write(manifest.behavior.mergeWarning + "\\n");
     }
+    if (manifest.behavior.requiredCiMarker) {
+      process.stderr.write("QUALITY_REQUIRED_CI_FAILURE_V1 " + manifest.revisions.currentHead + "\\n");
+    }
     process.stderr.write("required CI failed on exact candidate\\n");
     process.exit(manifest.behavior.mergeExit || 1);
   }
@@ -2013,6 +2016,40 @@ describe("quality-run public orchestration", () => {
       state: "blocked",
     });
     expect(result.manifest.telemetryWrites).toBe(1);
+  });
+
+  it("records a typed required-CI failure only from the versioned runner marker", () => {
+    const untyped = run(
+      fixture(
+        {
+          failMerge: true,
+          mergeWarning: "required CI failed on exact candidate abc123",
+        },
+        { merge: true, tier: "medium" },
+      ),
+    );
+    expect(untyped.manifest.merge.readFailure).toMatchObject({
+      kind: "merge-process-failed",
+    });
+    expect(
+      untyped.manifest.merge.readFailure.requiredCiFailure,
+    ).toBeUndefined();
+
+    const typed = run(
+      fixture(
+        { failMerge: true, requiredCiMarker: true },
+        { merge: true, tier: "medium" },
+      ),
+    );
+    expect(typed.manifest.merge.readFailure).toMatchObject({
+      kind: "required-ci-failed",
+      requiredCiFailure: {
+        schemaVersion: 1,
+        head: "abc123",
+        result: "failure",
+        source: "quality-stamp-and-merge",
+      },
+    });
   });
 
   it("preserves the phase failure when terminal recording also fails", () => {

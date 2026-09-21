@@ -4549,7 +4549,10 @@ function ciRepairReviewCarryValid(manifest, carry) {
   const failure = manifest.merge?.readFailure;
   if (
     failure?.head !== carry.reviewedHead ||
-    !/required CI failed on exact candidate/.test(failure.stderr || "") ||
+    failure?.kind !== "required-ci-failed" ||
+    failure?.requiredCiFailure?.schemaVersion !== 1 ||
+    failure.requiredCiFailure.head !== carry.reviewedHead ||
+    failure.requiredCiFailure.result !== "failure" ||
     carry.failedFailureSha256 !== ciRepairFailureSha256(manifest, failure)
   ) {
     return false;
