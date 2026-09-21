@@ -685,14 +685,6 @@ async function ensureReview(manifestPath, invoke) {
   } else if (currentReview(manifest)) {
     return;
   }
-  if (manifest.governor.roundsUsed >= manifest.governor.maxReviewRounds) {
-    await invoke("ci-repair-review-carry", process.execPath, [
-      script("quality-invocation.js"),
-      "record-ci-repair-review-carry",
-      manifestPath,
-    ]);
-    return;
-  }
   await invoke("review-authorize", "bash", [
     script("quality-authorize-review-round.sh"),
     manifestPath,
