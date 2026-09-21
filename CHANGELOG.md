@@ -21,6 +21,25 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.12.0](https://github.com/buildproven/agent-kit/compare/v4.11.5...v4.12.0) (2026-09-21)
+
+
+### Features
+
+* govern autonomous builder routing ([#594](https://github.com/buildproven/agent-kit/issues/594)) ([da774a9](https://github.com/buildproven/agent-kit/commit/da774a97c30322d4397a482f95cc6302e98de351))
+* write telemetry under agent state namespace ([#602](https://github.com/buildproven/agent-kit/issues/602)) ([bcdbf1a](https://github.com/buildproven/agent-kit/commit/bcdbf1a276c277ee9ab9d3ea916423d4450eedda))
+
+
+### Bug Fixes
+
+* atomically claim builder dispatch receipts ([#603](https://github.com/buildproven/agent-kit/issues/603)) ([afc09d6](https://github.com/buildproven/agent-kit/commit/afc09d6d5bfce36631ada8458bb4d98669c89458))
+* bound lease credential recovery successors ([#606](https://github.com/buildproven/agent-kit/issues/606)) ([d27115b](https://github.com/buildproven/agent-kit/commit/d27115b3eda400f462b59a48a382d47cba76b459))
+* classify scheduled controls as infrastructure ([#605](https://github.com/buildproven/agent-kit/issues/605)) ([5465d20](https://github.com/buildproven/agent-kit/commit/5465d20dd0d6438f3097be9cc5c1d7b42a67c2cf))
+* narrow scheduler infrastructure classification ([#607](https://github.com/buildproven/agent-kit/issues/607)) ([01fca44](https://github.com/buildproven/agent-kit/commit/01fca44acb59109b791ce1a61824aaa8cb0aaab7))
+* reconcile merged successor heads ([#596](https://github.com/buildproven/agent-kit/issues/596)) ([c2eb7eb](https://github.com/buildproven/agent-kit/commit/c2eb7eb2a6e04c343cceaef376eed03c8b8b79c9))
+* recover lease-blocked quality manifests ([#604](https://github.com/buildproven/agent-kit/issues/604)) ([5753398](https://github.com/buildproven/agent-kit/commit/5753398dd629daa26b033cde1ada1a0ef7dbd1e0))
+* skip stale provider cleanup grace ([#597](https://github.com/buildproven/agent-kit/issues/597)) ([77b8783](https://github.com/buildproven/agent-kit/commit/77b8783c8983f1dd69f7a2b337a7df43061638d0))
+
 ## [4.11.5](https://github.com/buildproven/agent-kit/compare/v4.11.4...v4.11.5) (2026-09-20)
 
 
