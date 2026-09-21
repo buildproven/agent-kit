@@ -21,6 +21,7 @@ const {
   approvalPayloadIdentityMatches,
 } = require("./quality-approval-identity.js");
 const testImpact = require("./test-impact.js");
+const { isPythonRepository, pythonGate } = require("./quality-python-gates.js");
 const {
   nativeGate,
   discoverNativeGates,
@@ -242,159 +243,6 @@ function packageManagerAt(root, head, packageJson) {
   return "npm";
 }
 
-function hasPythonTool(pyproject, tool) {
-  return new RegExp(`^\\s*\\[tool\\.${tool}(?:[.\\]]|$)`, "m").test(pyproject);
-}
-
-function isPythonRepository(root, head, pyproject) {
-  if (pyproject !== "") return true;
-  return committedFiles(root, head).some(
-    (file) =>
-      /^requirements[^/]*\.(?:txt|in)$/.test(file) ||
-      [
-        "setup.py",
-        "setup.cfg",
-        "Pipfile",
-        "Pipfile.lock",
-        "poetry.lock",
-        "uv.lock",
-        "pytest.ini",
-        "tox.ini",
-      ].includes(file),
-  );
-}
-
-function pythonEnvironment(root, head, pyproject) {
-  if (committedFile(root, head, "uv.lock") !== null) return "uv";
-  if (
-    committedFile(root, head, "poetry.lock") !== null ||
-    hasPythonTool(pyproject, "poetry")
-  ) {
-    return "poetry";
-  }
-  if (
-    committedFile(root, head, "Pipfile") !== null ||
-    committedFile(root, head, "Pipfile.lock") !== null
-  ) {
-    return "pipenv";
-  }
-  return null;
-}
-
-function pythonDirectGate({
-  root,
-  head,
-  pyproject,
-  name,
-  tool,
-  args,
-  allowSkip,
-}) {
-  const environment = pythonEnvironment(root, head, pyproject);
-  return environment
-    ? directGate(
-        name,
-        `python:${tool}`,
-        environment,
-        ["run", tool, ...args],
-        allowSkip,
-      )
-    : directGate(name, `python:${tool}`, tool, args, allowSkip);
-}
-
-function pythonAuditArgs(root, head, pyproject) {
-  if (pyproject !== "") return ["."];
-  const requirements = committedFiles(root, head).filter((file) =>
-    /^requirements[^/]*\.(?:txt|in)$/.test(file),
-  );
-  if (requirements.length > 0) {
-    return requirements.flatMap((file) => ["-r", file]);
-  }
-  if (
-    committedFile(root, head, "Pipfile") !== null ||
-    committedFile(root, head, "Pipfile.lock") !== null
-  ) {
-    return [];
-  }
-  return null;
-}
-
-function hasCommittedPythonTests(root, head) {
-  return committedFiles(root, head).some((file) =>
-    /(?:^|\/)(?:test_[^/]+|[^/]+_test)\.py$/.test(file),
-  );
-}
-
-function pythonGate({
-  root,
-  head,
-  baseSha,
-  name,
-  pyproject,
-  pythonRepository,
-  allowSkip = false,
-}) {
-  if (!pythonRepository) return null;
-  if (name === "lint" && hasPythonTool(pyproject, "ruff")) {
-    return pythonDirectGate({
-      root,
-      head,
-      pyproject,
-      name,
-      tool: "ruff",
-      args: ["check", "."],
-      allowSkip,
-    });
-  }
-  if (
-    name === "test" &&
-    (hasPythonTool(pyproject, "pytest") ||
-      committedFile(root, head, "pytest.ini") !== null ||
-      committedFile(root, head, "tox.ini") !== null ||
-      hasCommittedPythonTests(root, head))
-  ) {
-    return pythonDirectGate({
-      root,
-      head,
-      pyproject,
-      name,
-      tool: "pytest",
-      args: [],
-      allowSkip,
-    });
-  }
-  if (name === "security") {
-    const args = pythonAuditArgs(root, head, pyproject);
-    return args === null
-      ? null
-      : pythonDirectGate({
-          root,
-          head,
-          pyproject,
-          name,
-          tool: "pip-audit",
-          args,
-          allowSkip,
-        });
-  }
-  if (
-    name === "type" &&
-    hasPythonTool(pyproject, "mypy") &&
-    diffTouchesPython(root, baseSha, head)
-  ) {
-    return pythonDirectGate({
-      root,
-      head,
-      pyproject,
-      name,
-      tool: "mypy",
-      args: ["."],
-      allowSkip,
-    });
-  }
-  return null;
-}
-
 function preferredRequiredGate({
   root,
   head,
@@ -419,6 +267,10 @@ function preferredRequiredGate({
       pyproject,
       pythonRepository,
       allowSkip,
+      committedFile,
+      committedFiles,
+      diffTouchesPython,
+      directGate,
     })
   );
 }
@@ -458,6 +310,10 @@ function optionalTypeGate({
         name: "type",
         pyproject,
         pythonRepository,
+        committedFile,
+        committedFiles,
+        diffTouchesPython,
+        directGate,
       });
 }
 
@@ -476,7 +332,9 @@ function discoverRequiredGates(
   }
   const manager = packageManagerAt(root, head, packageJson);
   const pyproject = committedFile(root, head, "pyproject.toml") || "";
-  const pythonRepository = isPythonRepository(root, head, pyproject);
+  const pythonRepository = isPythonRepository(root, head, pyproject, {
+    committedFiles,
+  });
   const nativeGates = discoverNativeGates({
     root,
     head,
