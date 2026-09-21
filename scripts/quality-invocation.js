@@ -3260,6 +3260,13 @@ function reviewedEvidence(manifest) {
     .join(":");
 }
 
+function reviewEvidenceSha256(manifest) {
+  return crypto
+    .createHash("sha256")
+    .update(reviewedEvidence(manifest))
+    .digest("hex");
+}
+
 function recordJudge(manifest, options) {
   const authorization = reviewCoverage(manifest);
   if (!options.artifact) {
@@ -3733,10 +3740,7 @@ function judgeContext(manifest) {
     repositoryKey: manifest.repo.key,
     head: authorization.head,
     reviewCount: coveredReviews(manifest).length,
-    evidenceSha256: crypto
-      .createHash("sha256")
-      .update(reviewedEvidence(manifest))
-      .digest("hex"),
+    evidenceSha256: reviewEvidenceSha256(manifest),
     findings: providerFindings(manifest),
   };
 }
@@ -4363,7 +4367,7 @@ function verifyReviewAuthorization(manifest, review) {
   }
 }
 
-function reviewCoverage(manifest) {
+function reviewCoverage(manifest, { verifyGates = true } = {}) {
   const covered = authorizationReviews(manifest);
   if (covered.length === 0) throw new Error("no review coverage");
   let expectedFrom = manifest.revisions.baseSha;
@@ -4428,7 +4432,7 @@ function reviewCoverage(manifest) {
   ) {
     throw new Error("review provider evidence is incomplete");
   }
-  verifyGateEvidence(manifest);
+  if (verifyGates) verifyGateEvidence(manifest);
   const authorizationBase = effectiveBaseSha(manifest);
   const completeDiffSha256 = crypto
     .createHash("sha256")
@@ -4533,9 +4537,8 @@ function ciRepairPriorReviewMatches(manifest, carry) {
   prior.revisions.currentHead = carry.reviewedHead;
   delete prior.revisions.ciRepairReviewCarry;
   try {
-    return (
-      reviewCoverage(prior).evidenceSha256 === carry.priorReviewEvidenceSha256
-    );
+    reviewCoverage(prior, { verifyGates: false });
+    return reviewEvidenceSha256(prior) === carry.priorReviewEvidenceSha256;
   } catch {
     return false;
   }
@@ -4574,7 +4577,8 @@ function recordCiRepairReviewCarry(manifest) {
   prior.revisions.currentHead = reviewedHead;
   let priorReviewEvidenceSha256;
   try {
-    priorReviewEvidenceSha256 = reviewCoverage(prior).evidenceSha256;
+    reviewCoverage(prior, { verifyGates: false });
+    priorReviewEvidenceSha256 = reviewEvidenceSha256(prior);
   } catch {
     throw new Error("CI repair requires complete prior review coverage");
   }
@@ -5589,10 +5593,7 @@ function reviewAuthorization(manifest) {
   // human-intervention gate.
   const authorization = reviewCoverage(manifest);
   const covered = authorizationReviews(manifest);
-  const evidenceSha256 = crypto
-    .createHash("sha256")
-    .update(reviewedEvidence(manifest))
-    .digest("hex");
+  const evidenceSha256 = reviewEvidenceSha256(manifest);
   if ((manifest.reviewContractVersion || 1) >= 2) {
     const leads = providerFindings(manifest).length;
     const reviewStatus = covered.every((review) => review.status === "exempt")
