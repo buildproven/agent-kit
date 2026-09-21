@@ -4567,7 +4567,10 @@ function recordCiRepairReviewCarry(manifest) {
   if (manifest.revisions.ciRepairReviewCarry) {
     throw new Error("CI repair review carry already exists");
   }
-  const reviewedHead = authorizationReviews(manifest).at(-1)?.to;
+  // A valid review-rebase carry can extend provider coverage beyond the last
+  // raw provider review. The failed exact head is the only candidate that can
+  // both bind CI evidence and be proven covered by reviewCoverage below.
+  const reviewedHead = manifest.merge?.readFailure?.head;
   if (!reviewedHead) {
     throw new Error("CI repair requires completed prior review coverage");
   }
