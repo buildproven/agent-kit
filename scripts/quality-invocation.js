@@ -751,6 +751,7 @@ function supersedingManifest(
   if (credential)
     process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = credential.token;
   try {
+    let predecessorLinkRequested = false;
     const lockPredecessor =
       transition === "leaseCredentialRecoveryOf"
         ? withManifestLockRaw
@@ -758,7 +759,7 @@ function supersedingManifest(
     lockPredecessor(existingPath, (locked) => {
       if (locked.supersededBy) return;
       locked.supersededBy = { invocationId, manifestPath, reason, at: now };
-      handoffCompleted = true;
+      predecessorLinkRequested = true;
       if (
         transition === "environmentRecoveryOf" &&
         reason === "bootstrap environment lacked the required gate executable"
@@ -773,6 +774,10 @@ function supersedingManifest(
         };
       }
     });
+    // withManifestLock returns only after its write has completed. Do not
+    // retain the successor credential merely because its in-memory callback
+    // ran: a failed persistence must release the lease for later recovery.
+    handoffCompleted = predecessorLinkRequested;
   } finally {
     // Retain a recovery lease only after the predecessor's durable link makes
     // the successor runnable. Any exception or competing link before that
