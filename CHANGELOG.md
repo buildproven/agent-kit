@@ -21,6 +21,23 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.12.2](https://github.com/buildproven/agent-kit/compare/v4.12.1...v4.12.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* bind infrastructure paths to reviewed policy ([#616](https://github.com/buildproven/agent-kit/issues/616)) ([8418f75](https://github.com/buildproven/agent-kit/commit/8418f75a119d18e4d8cbd90135ca1aa232526a3e))
+* bind quality infrastructure to base ownership ([#619](https://github.com/buildproven/agent-kit/issues/619)) ([072f22f](https://github.com/buildproven/agent-kit/commit/072f22f3f62291e3f2853fb67a9dc532b0ddc296))
+* carry reviewed coverage for CI test repair ([#613](https://github.com/buildproven/agent-kit/issues/613)) ([b12355c](https://github.com/buildproven/agent-kit/commit/b12355c2868ecee59ec426e22063a8483dd054d0))
+* preserve historical review evidence for CI repair ([#614](https://github.com/buildproven/agent-kit/issues/614)) ([71a6439](https://github.com/buildproven/agent-kit/commit/71a64393cafbe4b316879006888d315d92bd1900))
+* prove CI repair carry predicates ([#620](https://github.com/buildproven/agent-kit/issues/620)) ([35bc7c2](https://github.com/buildproven/agent-kit/commit/35bc7c228cda52e09961eec7cb7921de1b260a30))
+* release incomplete lease recovery handoffs ([#612](https://github.com/buildproven/agent-kit/issues/612)) ([8266392](https://github.com/buildproven/agent-kit/commit/8266392a5c449b50bdf02bffaeac7383cd6b5503))
+* require typed CI failure for review carry ([#617](https://github.com/buildproven/agent-kit/issues/617)) ([9f199ab](https://github.com/buildproven/agent-kit/commit/9f199ab1ecbefb21b2c259f5160f8c66db0e3307))
+* restrict CI repair carries to JSON fixtures ([#621](https://github.com/buildproven/agent-kit/issues/621)) ([eb556da](https://github.com/buildproven/agent-kit/commit/eb556da3eab52f630f4f6d023242482b3bad7b2c))
+* resume validated CI repair carries ([#615](https://github.com/buildproven/agent-kit/issues/615)) ([0c5f06d](https://github.com/buildproven/agent-kit/commit/0c5f06d90de850894d31877a6aa25493c160e782))
+* retain lease for recovery successor ([#610](https://github.com/buildproven/agent-kit/issues/610)) ([1cf3d49](https://github.com/buildproven/agent-kit/commit/1cf3d49fd4ccba254a76f5a9b1215a523fa02688))
+* type verified required check failures ([#618](https://github.com/buildproven/agent-kit/issues/618)) ([b3363e6](https://github.com/buildproven/agent-kit/commit/b3363e677943651b981aae8a92acda34e0cc5afd))
+
 ## [4.12.1](https://github.com/buildproven/agent-kit/compare/v4.12.0...v4.12.1) (2026-09-21)
 
 
