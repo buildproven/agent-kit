@@ -117,6 +117,22 @@
     },
     {
       "paths": [
+        "scripts/quality-gate-discovery.js",
+        "scripts/__tests__/quality-gate-discovery.test.js"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/quality-gate-discovery.test.js"
+          ]
+        }
+      ]
+    },
+    {
+      "paths": [
         "scripts/quality-mutation-check.sh",
         "scripts/quality-invocation.js",
         "scripts/quality-git-identity.js"
