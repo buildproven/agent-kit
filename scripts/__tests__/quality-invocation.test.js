@@ -359,6 +359,133 @@ function prepareCodexReview(
   return info;
 }
 
+function ciRepairCarryFixture(
+  label,
+  changedPath = "scripts/__tests__/repair.test.js",
+) {
+  const root = repo(`ci-repair-carry-${label}`);
+  const manifestPath = create(root);
+  invocation.withManifestLock(manifestPath, (manifest) => {
+    invocation.setRisk(manifest, {
+      tier: "high",
+      taskType: "bugfix",
+      score: 70,
+      agents: 1,
+      "codex-depth": "high",
+      "codex-rounds": 1,
+    });
+    invocation.setAgents(manifest, ["silent-failure-hunter"]);
+  });
+  prepareCodexReview(root, manifestPath);
+  const reviewedHead = git(root, ["rev-parse", "HEAD"]);
+  const target = path.join(root, changedPath);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, "export const repaired = true;\n");
+  git(root, ["add", changedPath]);
+  git(root, ["commit", "-q", "-m", "test: repair required check"]);
+  invocation.withManifestLock(manifestPath, (manifest) => {
+    invocation.advanceHead(manifest, root);
+    manifest.merge ??= {};
+    manifest.merge.readFailure = {
+      kind: "required-ci-failed",
+      head: reviewedHead,
+      exitCode: 2,
+      stderr: "required check failed",
+      requiredCiFailure: {
+        schemaVersion: 1,
+        head: reviewedHead,
+        result: "failure",
+      },
+    };
+  });
+  for (const name of ["lint", "test", "security"]) {
+    recordGateFixture(manifestPath, name);
+  }
+  recordMutationFixture(manifestPath);
+  return { root, manifestPath, reviewedHead };
+}
+
+describe("CI repair review carry production predicates", () => {
+  it("accepts a typed failed required check followed by a test-only repair", () => {
+    const { manifestPath } = ciRepairCarryFixture("eligible");
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      expect(invocation.recordCiRepairReviewCarry(manifest)).toMatchObject({
+        reviewedHead: manifest.merge.readFailure.head,
+        head: manifest.revisions.currentHead,
+        changedPaths: ["scripts/__tests__/repair.test.js"],
+      });
+    });
+  });
+
+  it.each([
+    ["a production path", "src/repair.js"],
+    ["a workflow path", ".github/workflows/quality.yml"],
+    ["a policy path", ".buildproven/test-impact.json"],
+  ])("rejects a repair that changes %s", (_label, changedPath) => {
+    const { manifestPath } = ciRepairCarryFixture(
+      changedPath.replaceAll("/", "-"),
+      changedPath,
+    );
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      expect(() => invocation.recordCiRepairReviewCarry(manifest)).toThrow(
+        "CI repair delta is not eligible for review coverage carry",
+      );
+    });
+  });
+
+  it("rejects stale failed-check evidence, missing mutation proof, and a second carry", () => {
+    const { manifestPath, reviewedHead } = ciRepairCarryFixture("refusals");
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      manifest.merge.readFailure.head = "f".repeat(40);
+      expect(() => invocation.recordCiRepairReviewCarry(manifest)).toThrow(
+        "CI repair requires complete prior review coverage",
+      );
+      manifest.merge.readFailure.head = reviewedHead;
+      manifest.mutation = {};
+      expect(() => invocation.recordCiRepairReviewCarry(manifest)).toThrow();
+    });
+    recordMutationFixture(manifestPath);
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      expect(invocation.recordCiRepairReviewCarry(manifest)).toBeTruthy();
+      expect(() => invocation.recordCiRepairReviewCarry(manifest)).toThrow(
+        "CI repair review carry already exists",
+      );
+    });
+  });
+
+  it("rejects a carry when its bound review identity or ancestry is changed", () => {
+    const { manifestPath, root } = ciRepairCarryFixture("identity");
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      const carry = invocation.recordCiRepairReviewCarry(manifest);
+      expect(invocation.ciRepairReviewCarryValid(manifest, carry)).toBe(true);
+      expect(
+        invocation.ciRepairReviewCarryValid(manifest, {
+          ...carry,
+          priorReviewEvidenceSha256: "0".repeat(64),
+        }),
+      ).toBe(false);
+    });
+    git(root, ["switch", "-q", "--orphan", "unrelated-repair"]);
+    writeFileSync(
+      path.join(root, "unrelated.test.js"),
+      "export const x = 1;\n",
+    );
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-q", "-m", "test: unrelated repair"]);
+    const unrelatedHead = git(root, ["rev-parse", "HEAD"]);
+    invocation.withManifestLock(manifestPath, (manifest) => {
+      const carry = manifest.revisions.ciRepairReviewCarry;
+      manifest.revisions.currentHead = unrelatedHead;
+      expect(
+        invocation.ciRepairReviewCarryValid(manifest, {
+          ...carry,
+          head: unrelatedHead,
+        }),
+      ).toBe(false);
+    });
+  });
+});
+
 function preparePolicyExemptReview(root, manifestPath) {
   execFileSync("node", [GOVERNOR, "bump-round", manifestPath], { cwd: root });
   const info = JSON.parse(
