@@ -1113,6 +1113,14 @@ function settle(input) {
     if (!attempt || !["reserved", "launched"].includes(attempt.status)) {
       throw new DispatchError("builder dispatch attempt is already terminal");
     }
+    if (
+      attempt.status === "launched" &&
+      record.builderDispatch?.launchId !== attempt.launchId
+    ) {
+      throw new DispatchError(
+        "builder dispatch run record is not bound to the launched attempt",
+      );
+    }
     campaign.budget.reservedSeconds -= attempt.reservedSeconds;
     campaign.budget.usedSeconds += usedSeconds;
     attempt.status = "settled";

@@ -311,6 +311,16 @@ describe("builder dispatch", () => {
         usage: null,
       }),
     );
+    const legacyRecord = JSON.parse(readFileSync(runRecord, "utf8"));
+    legacyRecord.builderDispatch = builderBinding(receipt);
+    writeFileSync(runRecord, JSON.stringify(legacyRecord));
+    const staleSettlement = run(value, "settle", ["--run-record", runRecord]);
+    expect(staleSettlement.status).toBe(2);
+    expect(staleSettlement.stderr).toContain(
+      "not bound to the receipt attempt",
+    );
+    legacyRecord.builderDispatch = claim.builderDispatch;
+    writeFileSync(runRecord, JSON.stringify(legacyRecord));
     expect(run(value, "settle", ["--run-record", runRecord]).status).toBe(0);
   });
 
