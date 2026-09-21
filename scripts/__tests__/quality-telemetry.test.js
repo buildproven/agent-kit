@@ -63,7 +63,7 @@ describe("resolveTelemetryFile", () => {
     const telemetry = resolveTelemetryFile(baseManifest());
     expect(telemetry).not.toContain("/tmp/target-repo/");
     expect(telemetry).toMatch(
-      /claude-kit[/\\]quality-telemetry[/\\]target-repo\.jsonl$/,
+      /agent-kit[/\\]quality-telemetry[/\\]target-repo\.jsonl$/,
     );
   });
 
@@ -767,7 +767,7 @@ describe("recordCampaign (idempotent append)", () => {
       fs.existsSync(
         path.join(
           stateHome,
-          "claude-kit",
+          "agent-kit",
           "quality-telemetry",
           "target-repo.jsonl",
         ),

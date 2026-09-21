@@ -18,7 +18,7 @@
  * DESTINATION (kit stays standalone — see core/CLAUDE.md "this repo never
  * embeds references to anything that overlays it"): the log path resolves to
  *   1. $BS_QUALITY_TELEMETRY_FILE if set (an overlay can pin a committed path)
- *   2. else $XDG_STATE_HOME/claude-kit/quality-telemetry/<repo-key>.jsonl
+ *   2. else $XDG_STATE_HOME/agent-kit/quality-telemetry/<repo-key>.jsonl
  *      (falling back to ~/.local/state)
  * The default is deliberately outside the target repo: auditing a clean
  * worktree must leave it clean. Committed, fleet-visible history remains
@@ -126,7 +126,7 @@ function resolveTelemetryFile(manifest) {
     process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
   return path.join(
     stateHome,
-    "claude-kit",
+    "agent-kit",
     "quality-telemetry",
     `${manifest.repo.key}.jsonl`,
   );
