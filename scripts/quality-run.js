@@ -1160,6 +1160,16 @@ async function runManifest(manifestPath, dependencies = {}) {
     pinTerminalEpoch(manifest);
     quality.validateIdentity(manifest, manifest.repo.realpath);
     if (manifest.terminalState) {
+      const ciRepairRecovery =
+        quality.resumeCiRepairReviewTerminal(manifestPath);
+      if (ciRepairRecovery) {
+        const resumed = manifestAt(manifestPath);
+        pinTerminalEpoch(resumed);
+        // A carried review authorizes only skipping a redundant provider pass.
+        // Re-enter the normal campaign so the repaired exact HEAD must still
+        // pass its deterministic phases and fresh required-CI admission.
+        return await runOpenCampaign(context, manifestPath, resumed);
+      }
       const mutationRecovery =
         quality.resumeAcceptedMutationFailure(manifestPath);
       if (mutationRecovery) {
