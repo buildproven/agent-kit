@@ -4410,6 +4410,14 @@ function reviewCoverage(manifest) {
     seenHeads.add(carry.head);
     expectedFrom = carry.head;
   }
+  const ciRepairCarry = manifest.revisions.ciRepairReviewCarry;
+  if (
+    expectedFrom !== manifest.revisions.currentHead &&
+    ciRepairReviewCarryValid(manifest, ciRepairCarry) &&
+    expectedFrom === ciRepairCarry.reviewedHead
+  ) {
+    expectedFrom = ciRepairCarry.head;
+  }
   if (expectedFrom !== manifest.revisions.currentHead) {
     throw new Error("final HEAD has not been covered by review evidence");
   }
@@ -4454,6 +4462,122 @@ function reviewCoverage(manifest) {
     repositoryKey: manifest.repo.githubRepository || manifest.repo.key,
     diffSha256: completeDiffSha256,
   };
+}
+
+function ciRepairCarryShapeValid(manifest, carry) {
+  if (!carry || typeof carry !== "object") return false;
+  const {
+    reviewedHead,
+    head,
+    failedCheckHead,
+    changedPaths,
+    changedPathsSha256,
+    priorReviewEvidenceSha256,
+  } = carry;
+  return !(
+    ![reviewedHead, head, failedCheckHead].every((value) =>
+      /^[a-f0-9]{40}$/.test(value || ""),
+    ) ||
+    head !== manifest.revisions.currentHead ||
+    failedCheckHead !== reviewedHead ||
+    !Array.isArray(changedPaths) ||
+    changedPaths.length === 0 ||
+    !changedPaths.every(
+      (file) => typeof file === "string" && agentSelection.isTestPath(file),
+    ) ||
+    typeof changedPathsSha256 !== "string" ||
+    typeof priorReviewEvidenceSha256 !== "string" ||
+    !isAncestorOf(manifest.repo.realpath, reviewedHead, head)
+  );
+}
+
+function ciRepairCarryPathsValid(manifest, carry) {
+  const actualPaths = changedFiles(
+    manifest.repo.realpath,
+    carry.reviewedHead,
+    carry.head,
+  );
+  return (
+    JSON.stringify(actualPaths) === JSON.stringify(carry.changedPaths) &&
+    crypto
+      .createHash("sha256")
+      .update(JSON.stringify(actualPaths))
+      .digest("hex") === carry.changedPathsSha256
+  );
+}
+
+function ciRepairPriorReviewMatches(manifest, carry) {
+  const prior = structuredClone(manifest);
+  prior.revisions.currentHead = carry.reviewedHead;
+  delete prior.revisions.ciRepairReviewCarry;
+  try {
+    return (
+      reviewCoverage(prior).evidenceSha256 === carry.priorReviewEvidenceSha256
+    );
+  } catch {
+    return false;
+  }
+}
+
+function ciRepairReviewCarryValid(manifest, carry) {
+  if (!ciRepairCarryShapeValid(manifest, carry)) return false;
+  const failure = manifest.merge?.readFailure;
+  if (
+    failure?.head !== carry.reviewedHead ||
+    !/required CI failed on exact candidate/.test(failure.stderr || "")
+  ) {
+    return false;
+  }
+  return (
+    ciRepairCarryPathsValid(manifest, carry) &&
+    ciRepairPriorReviewMatches(manifest, carry)
+  );
+}
+
+function recordCiRepairReviewCarry(manifest) {
+  if (manifest.revisions.ciRepairReviewCarry) {
+    throw new Error("CI repair review carry already exists");
+  }
+  const reviewedHead = authorizationReviews(manifest).at(-1)?.to;
+  if (!reviewedHead) {
+    throw new Error("CI repair requires completed prior review coverage");
+  }
+  const changedPaths = changedFiles(
+    manifest.repo.realpath,
+    reviewedHead,
+    manifest.revisions.currentHead,
+  );
+  const prior = structuredClone(manifest);
+  prior.revisions.currentHead = reviewedHead;
+  let priorReviewEvidenceSha256;
+  try {
+    priorReviewEvidenceSha256 = reviewCoverage(prior).evidenceSha256;
+  } catch {
+    throw new Error("CI repair requires complete prior review coverage");
+  }
+  verifyGateEvidence(manifest);
+  assertMutationEvidence(manifest);
+  const candidate = {
+    reviewedHead,
+    head: manifest.revisions.currentHead,
+    failedCheckHead: reviewedHead,
+    changedPaths,
+    changedPathsSha256: crypto
+      .createHash("sha256")
+      .update(JSON.stringify(changedPaths))
+      .digest("hex"),
+    priorReviewEvidenceSha256,
+  };
+  if (!ciRepairReviewCarryValid(manifest, candidate)) {
+    throw new Error(
+      "CI repair delta is not eligible for review coverage carry",
+    );
+  }
+  manifest.revisions.ciRepairReviewCarry = {
+    ...candidate,
+    recordedAt: new Date().toISOString(),
+  };
+  return manifest.revisions.ciRepairReviewCarry;
 }
 
 function gateEvidenceIdentity(manifest, options) {
@@ -6649,6 +6773,55 @@ function resumeRecoverableTerminal(manifestPath) {
   return recovered;
 }
 
+function resumeCiRepairReviewTerminal(manifestPath) {
+  const initial = loadManifest(manifestPath).manifest;
+  const terminal = initial.terminalState;
+  if (
+    initial.options?.merge !== true ||
+    terminal?.state !== "blocked" ||
+    terminal.head !== initial.revisions.currentHead ||
+    terminal.detail !== "review-authorize failed with exit 1"
+  ) {
+    return null;
+  }
+  let recovered = null;
+  withManifestLock(manifestPath, (manifest) => {
+    const current = manifest.terminalState;
+    if (
+      current?.state !== "blocked" ||
+      current.head !== manifest.revisions.currentHead ||
+      current.detail !== "review-authorize failed with exit 1"
+    )
+      return;
+    const carry = recordCiRepairReviewCarry(manifest);
+    const nextEpoch = terminalEpoch(manifest) + 1;
+    const recordedAt = new Date().toISOString();
+    manifest.terminalHistory ??= [];
+    manifest.terminalHistory.push({
+      ...current,
+      disposition: "superseded-by-ci-repair-review-carry",
+      supersededAt: recordedAt,
+    });
+    manifest.terminalHistory.push({
+      event: "reopened-by-ci-repair-review-carry",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: nextEpoch,
+      carry,
+      recordedAt,
+    });
+    manifest.terminalEpoch = nextEpoch;
+    manifest.terminalState = {
+      state: "recovering",
+      head: manifest.revisions.currentHead,
+      terminalEpoch: nextEpoch,
+      recordedAt,
+      recovery: { kind: "ci-repair-review-carry" },
+    };
+    recovered = manifest.terminalState;
+  });
+  return recovered;
+}
+
 function isTerminal(manifest) {
   return Boolean(manifest?.terminalState);
 }
@@ -6875,6 +7048,8 @@ const COMMANDS = {
     mutate(manifestArg, (locked) =>
       recordPolicyExemptReview(locked, parseOptions(rawArgs)),
     ),
+  "record-ci-repair-review-carry": ({ manifestArg }) =>
+    mutate(manifestArg, recordCiRepairReviewCarry),
   "record-incomplete-review": ({ manifestArg, rawArgs }) =>
     mutate(manifestArg, (locked) =>
       recordIncompleteReview(locked, parseOptions(rawArgs)),
@@ -7328,6 +7503,7 @@ module.exports = {
   resumeAcceptedMutationFailure,
   resumeMergeReadFailure,
   resumeRecoverableTerminal,
+  resumeCiRepairReviewTerminal,
   terminalEpoch,
   isTerminal,
   TERMINAL_STATES,
@@ -7343,6 +7519,8 @@ module.exports = {
   reviewDiffBuffer,
   reviewInfo,
   reviewCoverage,
+  ciRepairReviewCarryValid,
+  recordCiRepairReviewCarry,
   verifyGateEvidence,
   incompleteRetryStatus,
   reserveIncompleteRetry,

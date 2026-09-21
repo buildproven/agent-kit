@@ -171,4 +171,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { selectReviewers, selectReviewersForRange };
+module.exports = { isTestPath, selectReviewers, selectReviewersForRange };

@@ -55,6 +55,14 @@ an epoch-fenced `recovering` state. The runner continues unfinished review and
 CI; it never jumps from that exception directly to merge. See
 [the mutation recovery decision](decisions/ADR-test-remediation-mutation-recovery.md).
 
+When required CI fails after completed review coverage, one later descendant
+may carry that coverage only for a test-or-fixture-only repair. The runner
+requires the failed exact reviewed head, a valid ancestor relation, fresh
+current-head gates and mutation proof, and fresh required CI. It records the
+carry and never starts another provider round. Production, workflow, policy,
+model, or review-configuration changes are not eligible. See
+[the CI-repair carry decision](decisions/ADR-ci-repair-review-coverage-carry.md).
+
 ## Phase ownership
 
 ### Validation cost (BUI-932)
