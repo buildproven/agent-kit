@@ -309,6 +309,9 @@ function contractInfrastructurePaths(context) {
 function productionCodePath(file, context) {
   if (typeof file !== "string" || file.length === 0) return false;
   if (NON_PRODUCT_EXACT_PATHS.has(file)) return false;
+  // These runtime paths are protected by the bootstrap admission contract
+  // below. They are quality infrastructure, not customer product behavior.
+  if (PROTECTED_INFRASTRUCTURE_PATHS.has(file)) return false;
   if (contractInfrastructurePaths(context).has(file)) return false;
   const rootName = file.includes("/")
     ? null
