@@ -6314,6 +6314,14 @@ exit 1
     );
     expect(after.governor.maxFixCommits).toBe(before.governor.maxFixCommits);
     expect(() => invocation.reviewCoverage(after)).not.toThrow();
+    const historical = structuredClone(after);
+    for (const gate of historical.gates) gate.head = "0".repeat(40);
+    expect(() => invocation.reviewCoverage(historical)).toThrow(
+      /required .* gate evidence is missing or stale/,
+    );
+    expect(() =>
+      invocation.reviewCoverage(historical, { verifyGates: false }),
+    ).not.toThrow();
     git(root, ["switch", "-q", "main"]);
     writeFileSync(
       path.join(root, "later-upstream.js"),
