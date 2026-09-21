@@ -567,6 +567,15 @@ describe("committed dependency maintenance", () => {
     expect(productionCodeChange("src/app.js", context)).toBe(true);
   });
 
+  it("classifies scheduled controls as contract infrastructure but keeps ordinary scripts product-affecting", () => {
+    expect(
+      productionCodeChange(
+        "scripts/scheduled/agent-setup-scheduled-dispatcher.sh",
+      ),
+    ).toBe(false);
+    expect(productionCodeChange("scripts/product-delivery.js")).toBe(true);
+  });
+
   it.each([
     ["dependencies", 42],
     ["devDependencies", []],
