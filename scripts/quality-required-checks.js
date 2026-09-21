@@ -1724,7 +1724,10 @@ function assertChecks(repository, base, head, monitor = null) {
   const states = inspectChecks(repository, base, head, monitor);
   const incomplete = states.filter((entry) => entry.state !== "success");
   if (incomplete.length > 0) {
-    throw new Error(
+    const ErrorType = incomplete.some((entry) => entry.state === "failed")
+      ? RequiredCheckFailureError
+      : Error;
+    throw new ErrorType(
       `required exact-head checks are not successful: ${incomplete
         .map((entry) => `${entry.context}=${entry.state}`)
         .join(", ")}`,
@@ -1758,7 +1761,7 @@ function waitForChecks({
       failed.length > 0 &&
       Date.now() - startedAt >= failureGraceSeconds * 1000
     ) {
-      throw new Error(
+      throw new RequiredCheckFailureError(
         `required exact-head checks failed: ${failed
           .map((entry) => entry.context)
           .join(", ")}`,
