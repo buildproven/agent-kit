@@ -1953,6 +1953,10 @@ describe("quality invocation manifest", () => {
     expect(invocation.loadManifest(predecessorPath).manifest).toMatchObject({
       supersededBy: { manifestPath: successorPath },
     });
+    expect(lease.acquire(successorPath).token).toBe(
+      invocation.loadManifest(successorPath).manifest.merge.repositoryLease
+        .token,
+    );
   });
 
   it("marks an environment recovery only when the gate executable is absent", () => {
