@@ -19,6 +19,8 @@ const NON_PRODUCT_TEST_FILE = /(?:\.test|\.spec)\.[^/]+$/i;
 // owned by both revisions. A candidate must not gain that exemption merely by
 // naming a new product-affecting script `quality-*`.
 const NON_PRODUCT_QUALITY_RUNTIME = /^scripts\/quality-[^/]+\.(?:[cm]?js|sh)$/i;
+const CONTRACT_INFRASTRUCTURE_PATHS = new Map();
+const BASE_OWNED_QUALITY_RUNTIME_PATHS = new Map();
 const NON_PRODUCT_EXACT_PATHS = new Set([
   "harness-config.json",
   "package-lock.json",
@@ -277,6 +279,9 @@ function productionCodeChange(file, context) {
 
 function contractInfrastructurePaths(context) {
   if (!context?.repo || !context.base || !context.head) return new Set();
+  const cacheKey = `${context.repo}\0${context.base}\0${context.head}`;
+  const cached = CONTRACT_INFRASTRUCTURE_PATHS.get(cacheKey);
+  if (cached) return cached;
   const readPolicy = (revision) => {
     const result = spawnSync(
       "git",
@@ -306,13 +311,19 @@ function contractInfrastructurePaths(context) {
   const head = readPolicy(context.head);
   // A candidate cannot self-authorize a product path: the exact allowlist
   // must already exist at base and remain byte-for-byte equivalent at HEAD.
-  if (!base || !head || JSON.stringify(base) !== JSON.stringify(head))
-    return new Set();
-  return new Set(base);
+  const paths =
+    !base || !head || JSON.stringify(base) !== JSON.stringify(head)
+      ? new Set()
+      : new Set(base);
+  CONTRACT_INFRASTRUCTURE_PATHS.set(cacheKey, paths);
+  return paths;
 }
 
 function baseOwnedQualityRuntimePaths(context) {
   if (!context?.repo || !context.base || !context.head) return new Set();
+  const cacheKey = `${context.repo}\0${context.base}\0${context.head}`;
+  const cached = BASE_OWNED_QUALITY_RUNTIME_PATHS.get(cacheKey);
+  if (cached) return cached;
   const list = (revision) => {
     const result = spawnSync(
       "git",
@@ -336,12 +347,18 @@ function baseOwnedQualityRuntimePaths(context) {
   };
   const base = list(context.base);
   const head = list(context.head);
-  if (!base || !head) return new Set();
+  if (!base || !head) {
+    const paths = new Set();
+    BASE_OWNED_QUALITY_RUNTIME_PATHS.set(cacheKey, paths);
+    return paths;
+  }
   // Ownership is per path. A candidate may add a new quality-runtime script,
   // but it must not lose the established infrastructure classification for
   // other paths that existed at the trusted base and still exist at HEAD.
   const headPaths = new Set(head);
-  return new Set(base.filter((file) => headPaths.has(file)));
+  const paths = new Set(base.filter((file) => headPaths.has(file)));
+  BASE_OWNED_QUALITY_RUNTIME_PATHS.set(cacheKey, paths);
+  return paths;
 }
 
 function productionCodePath(file, context) {
