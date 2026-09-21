@@ -26,6 +26,7 @@ const {
   claimDispatchNonce,
   claimRemoteDispatchNonce,
   cleanupRemoteDispatchClaims,
+  DispatchAuthorizationError,
   ensureChecks,
   inspectChecks,
   isWriteTransportFailure,
@@ -400,7 +401,13 @@ esac
     expect(fs.readFileSync(claim.claimPath, "utf8")).toContain(
       claim.externalId,
     );
-    expect(() => claimDispatchNonce(fields)).toThrow(/already been claimed/);
+    try {
+      claimDispatchNonce(fields);
+      throw new Error("expected duplicate dispatch nonce to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DispatchAuthorizationError);
+      expect(error.message).toMatch(/already been claimed/);
+    }
   });
 
   it("uses an atomic Git ref as the cross-host dispatch claim", () => {

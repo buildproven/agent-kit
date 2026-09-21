@@ -92,6 +92,10 @@ function validateRef(value, name) {
 
 class GhReadTransportError extends GhCommandError {}
 class RequiredCheckFailureError extends Error {}
+// A dispatch nonce collision is an authorization/retry-state error. It is not
+// evidence that an exact required check ran and failed, so it must never share
+// the typed required-CI failure exit used by repair-carry authorization.
+class DispatchAuthorizationError extends Error {}
 class GhWriteTransportError extends GhCommandError {}
 
 function isApiMethod(args, method) {
@@ -228,7 +232,7 @@ function claimDispatchNonce({ repository, eventType, head, base, nonce }) {
     descriptor = fs.openSync(claimPath, "wx", 0o600);
   } catch (error) {
     if (error.code === "EEXIST")
-      throw new RequiredCheckFailureError(
+      throw new DispatchAuthorizationError(
         `dispatch authorization nonce has already been claimed: ${externalId}`,
         { cause: error },
       );
@@ -1930,6 +1934,7 @@ module.exports = {
   checkState,
   claimDispatchNonce,
   claimRemoteDispatchNonce,
+  DispatchAuthorizationError,
   cleanupRemoteDispatchClaims,
   dispatchedRunsForHead,
   ensureChecks,
