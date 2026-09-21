@@ -772,7 +772,11 @@ function supersedingManifest(
       }
     });
   } finally {
-    if (credential)
+    // The recovery successor is the next campaign owner.  Keep its pinned
+    // lease active through bootstrap and execution; releasing it here leaves
+    // a valid token in the manifest but no live ownership record, so the
+    // runner truthfully blocks with "no repository lease credential".
+    if (credential && transition !== "leaseCredentialRecoveryOf")
       lease.release(
         transition === "leaseCredentialRecoveryOf"
           ? manifestPath
