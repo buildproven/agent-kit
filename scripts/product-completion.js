@@ -15,9 +15,9 @@ const NON_PRODUCT_PATH =
 // change autonomous behavior and must retain normal delivery evidence.
 const NON_PRODUCT_SCHEDULED_DECLARATION = /^scripts\/scheduled\/[^/]+\.plist$/i;
 const NON_PRODUCT_TEST_FILE = /(?:\.test|\.spec)\.[^/]+$/i;
-// Quality runtime code controls engineering proof and delivery governance. It
-// is not customer product behavior; treating it as such makes infrastructure
-// repairs require product evidence that they cannot truthfully provide.
+// A quality-runtime path is contract infrastructure only if it was already
+// owned by both revisions. A candidate must not gain that exemption merely by
+// naming a new product-affecting script `quality-*`.
 const NON_PRODUCT_QUALITY_RUNTIME = /^scripts\/quality-[^/]+\.(?:[cm]?js|sh)$/i;
 const NON_PRODUCT_EXACT_PATHS = new Set([
   "harness-config.json",
@@ -311,6 +311,36 @@ function contractInfrastructurePaths(context) {
   return new Set(base);
 }
 
+function baseOwnedQualityRuntimePaths(context) {
+  if (!context?.repo || !context.base || !context.head) return new Set();
+  const list = (revision) => {
+    const result = spawnSync(
+      "git",
+      [
+        "-C",
+        context.repo,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        revision,
+        "--",
+        "scripts",
+      ],
+      { encoding: "utf8" },
+    );
+    if (result.status !== 0) return null;
+    return result.stdout
+      .split("\n")
+      .filter((file) => NON_PRODUCT_QUALITY_RUNTIME.test(file))
+      .sort();
+  };
+  const base = list(context.base);
+  const head = list(context.head);
+  if (!base || !head || JSON.stringify(base) !== JSON.stringify(head))
+    return new Set();
+  return new Set(base);
+}
+
 function productionCodePath(file, context) {
   if (typeof file !== "string" || file.length === 0) return false;
   if (NON_PRODUCT_EXACT_PATHS.has(file)) return false;
@@ -318,6 +348,11 @@ function productionCodePath(file, context) {
   // below. They are quality infrastructure, not customer product behavior.
   if (PROTECTED_INFRASTRUCTURE_PATHS.has(file)) return false;
   if (contractInfrastructurePaths(context).has(file)) return false;
+  if (baseOwnedQualityRuntimePaths(context).has(file)) return false;
+  // Direct classification callers have no candidate revision to validate.
+  // Keep their static infrastructure classification conservative; admission
+  // always supplies a base/head context and therefore uses the exact allowlist.
+  if (!context && NON_PRODUCT_QUALITY_RUNTIME.test(file)) return false;
   const rootName = file.includes("/")
     ? null
     : file.split(".", 1)[0].toUpperCase();
@@ -325,7 +360,6 @@ function productionCodePath(file, context) {
     !NON_PRODUCT_PATH.test(file) &&
     !NON_PRODUCT_SCHEDULED_DECLARATION.test(file) &&
     !NON_PRODUCT_TEST_FILE.test(file) &&
-    !NON_PRODUCT_QUALITY_RUNTIME.test(file) &&
     !NON_PRODUCT_ROOT_NAMES.has(rootName)
   );
 }
