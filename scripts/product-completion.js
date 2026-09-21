@@ -261,7 +261,7 @@ function classifyChange(file, context) {
       reason: "committed manifests differ only in dependency fields",
     };
   }
-  return productionCodePath(file)
+  return productionCodePath(file, context)
     ? { kind: "product", reason: "product-affecting path or manifest settings" }
     : { kind: "contract", reason: "documentation, tests, or infrastructure" };
 }
@@ -270,9 +270,46 @@ function productionCodeChange(file, context) {
   return classifyChange(file, context).kind === "product";
 }
 
-function productionCodePath(file) {
+function contractInfrastructurePaths(context) {
+  if (!context?.repo || !context.base || !context.head) return new Set();
+  const readPolicy = (revision) => {
+    const result = spawnSync(
+      "git",
+      ["-C", context.repo, "show", `${revision}:harness-config.json`],
+      { encoding: "utf8" },
+    );
+    if (result.status !== 0) return null;
+    try {
+      const paths = JSON.parse(result.stdout).contractInfrastructurePaths;
+      if (
+        !Array.isArray(paths) ||
+        !paths.every(
+          (entry) =>
+            typeof entry === "string" &&
+            entry.length > 0 &&
+            !entry.includes("..") &&
+            !entry.includes("*"),
+        )
+      )
+        return null;
+      return paths.slice().sort();
+    } catch {
+      return null;
+    }
+  };
+  const base = readPolicy(context.base);
+  const head = readPolicy(context.head);
+  // A candidate cannot self-authorize a product path: the exact allowlist
+  // must already exist at base and remain byte-for-byte equivalent at HEAD.
+  if (!base || !head || JSON.stringify(base) !== JSON.stringify(head))
+    return new Set();
+  return new Set(base);
+}
+
+function productionCodePath(file, context) {
   if (typeof file !== "string" || file.length === 0) return false;
   if (NON_PRODUCT_EXACT_PATHS.has(file)) return false;
+  if (contractInfrastructurePaths(context).has(file)) return false;
   const rootName = file.includes("/")
     ? null
     : file.split(".", 1)[0].toUpperCase();
