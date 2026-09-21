@@ -11,10 +11,9 @@ const PHASES = new Set(["contract", "implementation", "hosted", "validation"]);
 const CLAIMS = new Set(["contract", "local-product", "hosted", "validated"]);
 const NON_PRODUCT_PATH =
   /^(?:\.buildproven\/|\.github\/|docs?\/|tests?\/|fixtures?\/)|(?:^|\/)(?:__tests__|__fixtures__)\//i;
-// Scheduled entrypoints are operational controls. They may run application
-// commands, but they are not themselves customer-facing product behavior.
-// Product code elsewhere under scripts/ remains admission-gated.
-const NON_PRODUCT_SCHEDULED_CONTROL = /^scripts\/scheduled\//i;
+// Declarative launchd plists are infrastructure. Scheduled executable code can
+// change autonomous behavior and must retain normal delivery evidence.
+const NON_PRODUCT_SCHEDULED_DECLARATION = /^scripts\/scheduled\/[^/]+\.plist$/i;
 const NON_PRODUCT_TEST_FILE = /(?:\.test|\.spec)\.[^/]+$/i;
 const NON_PRODUCT_EXACT_PATHS = new Set([
   "harness-config.json",
@@ -279,7 +278,7 @@ function productionCodePath(file) {
     : file.split(".", 1)[0].toUpperCase();
   return (
     !NON_PRODUCT_PATH.test(file) &&
-    !NON_PRODUCT_SCHEDULED_CONTROL.test(file) &&
+    !NON_PRODUCT_SCHEDULED_DECLARATION.test(file) &&
     !NON_PRODUCT_TEST_FILE.test(file) &&
     !NON_PRODUCT_ROOT_NAMES.has(rootName)
   );
