@@ -435,6 +435,9 @@ if [ "$RC" -ne 0 ]; then
     fi
     node "$SCRIPT_DIR/quality-terminal-status.js" \
       --manifest "$MANIFEST" --category github-ci --detail "$DETAIL" || true
+    # Preserve the typed monitor result for quality-run. Other nonzero results
+    # remain ordinary merge failures and cannot authorize a review carry.
+    [ "$RC" -eq 2 ] && exit 2
     exit 1
   fi
 fi
