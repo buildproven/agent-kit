@@ -395,6 +395,8 @@ describe("product completion", () => {
       "package-lock.json",
       "core",
       "scripts/ci-workflow-contract.js",
+      "scripts/quality-invocation.js",
+      "scripts/quality-stamp-and-merge.sh",
       "vitest.config.mjs",
     ]) {
       expect(productionCodeChange(file)).toBe(false);
