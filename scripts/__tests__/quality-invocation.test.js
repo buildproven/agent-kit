@@ -1906,6 +1906,55 @@ describe("quality invocation manifest", () => {
     ).toBeNull();
   });
 
+  it("pins a lease before linking a lease-credential recovery successor", () => {
+    const root = repo("lease-credential-successor-pin");
+    const predecessorPath = create(root, ["--merge"]);
+    const predecessor = invocation.loadManifest(predecessorPath).manifest;
+    const predecessorToken = predecessor.merge.repositoryLease.token;
+    invocation.withManifestLock(predecessorPath, (manifest) => {
+      manifest.terminalState = {
+        state: "blocked",
+        detail: "merge campaign has no repository lease credential",
+      };
+      manifest.governor.activeExecution = null;
+    });
+    lease.release(predecessorPath, predecessorToken, "test-fixture");
+
+    const githubRepository = fixtureRepository(root);
+    const successorPath = execFileSync(
+      "node",
+      [
+        INVOCATION,
+        "create",
+        "--repo",
+        root,
+        "--base-ref",
+        "origin/main",
+        "--merge",
+        "--pr",
+        "7",
+        "--github-repo",
+        githubRepository,
+        "--head-ref",
+        "feature",
+        "--head-repository",
+        githubRepository,
+        "--cross-repository",
+        "false",
+      ],
+      { cwd: root, encoding: "utf8" },
+    ).trim();
+
+    expect(successorPath).not.toBe(predecessorPath);
+    expect(invocation.loadManifest(successorPath).manifest).toMatchObject({
+      leaseCredentialRecoveryOf: { invocationId: predecessor.invocationId },
+      merge: { repositoryLease: { token: expect.any(String) } },
+    });
+    expect(invocation.loadManifest(predecessorPath).manifest).toMatchObject({
+      supersededBy: { manifestPath: successorPath },
+    });
+  });
+
   it("marks an environment recovery only when the gate executable is absent", () => {
     expect(invocation.executableAvailable("node", process.env)).toBe(true);
     expect(

@@ -709,18 +709,52 @@ function supersedingManifest(
           },
         }
       : {}),
+    ...(transition === "leaseCredentialRecoveryOf"
+      ? {
+          leaseCredentialRecoveryOf: {
+            invocationId: existing.invocationId,
+          },
+        }
+      : {}),
   };
   if (!atomicCreate(manifestPath, manifest)) return manifestPath;
   const lease = require("./quality-repo-lease");
-  const credential =
-    existing.options?.merge === true
-      ? lease.acquire(existingPath, { waitMs: 0 })
-      : null;
+  // A lease-credential recovery is useful only if its replacement has already
+  // pinned its own credential.  Linking the predecessor first makes a
+  // transient lease failure permanent: bootstrap selects the linked successor,
+  // then finds that it cannot acquire a token, while the one-successor guard
+  // prevents another recovery.  Pin the successor before publishing the
+  // supersession edge.  Other recovery types retain their historical
+  // predecessor lease because they do not repair a missing credential.
+  let credential = null;
+  if (existing.options?.merge === true) {
+    try {
+      credential = lease.acquire(
+        transition === "leaseCredentialRecoveryOf"
+          ? manifestPath
+          : existingPath,
+        { waitMs: 0 },
+      );
+    } catch (error) {
+      if (transition === "leaseCredentialRecoveryOf") {
+        fs.unlinkSync(manifestPath);
+        throw new Error(
+          `merge lease credential is still unavailable; recovery successor was not created: ${error.message}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
   const previousToken = process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
   if (credential)
     process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = credential.token;
   try {
-    withManifestLock(existingPath, (locked) => {
+    const lockPredecessor =
+      transition === "leaseCredentialRecoveryOf"
+        ? withManifestLockRaw
+        : withManifestLock;
+    lockPredecessor(existingPath, (locked) => {
       if (locked.supersededBy) return;
       locked.supersededBy = { invocationId, manifestPath, reason, at: now };
       if (
@@ -738,7 +772,14 @@ function supersedingManifest(
       }
     });
   } finally {
-    if (credential) lease.release(existingPath, credential.token, "superseded");
+    if (credential)
+      lease.release(
+        transition === "leaseCredentialRecoveryOf"
+          ? manifestPath
+          : existingPath,
+        credential.token,
+        "superseded",
+      );
     if (previousToken === undefined)
       delete process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
     else process.env.BS_QUALITY_REPOSITORY_LEASE_TOKEN = previousToken;
