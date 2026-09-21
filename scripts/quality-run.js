@@ -872,14 +872,34 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
       head: afterMerge.revisions.currentHead,
     };
   }
+  // A CI-repair review carry is authorized only by the versioned marker emitted
+  // by quality-stamp-and-merge after its required-check monitor reports a
+  // failure. Do not infer that fact from arbitrary stderr: wrappers, transport
+  // failures, and external tools can all use the same prose.
+  const requiredCiFailure = (() => {
+    if (merge.code !== 2) return null;
+    const marker = `QUALITY_REQUIRED_CI_FAILURE_V1 ${expectedHead}`;
+    if (!(merge.stderr || "").split("\n").includes(marker)) return null;
+    return {
+      schemaVersion: 1,
+      head: expectedHead,
+      result: "failure",
+      source: "quality-stamp-and-merge",
+    };
+  })();
   quality.withManifestLock(manifestPath, (locked) => {
     locked.merge.readFailure = {
       kind:
-        merge.code === 75 ? "ci-admission-read-failed" : "merge-process-failed",
+        merge.code === 75
+          ? "ci-admission-read-failed"
+          : requiredCiFailure
+            ? "required-ci-failed"
+            : "merge-process-failed",
       head: expectedHead,
       exitCode: merge.code,
       stdout: (merge.stdout || "").slice(-8192),
       stderr: (merge.stderr || "").slice(-8192),
+      ...(requiredCiFailure ? { requiredCiFailure } : {}),
       recordedAt: new Date().toISOString(),
     };
   });

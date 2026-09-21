@@ -427,8 +427,17 @@ if [ "$RC" -ne 0 ]; then
       DETAIL="required CI failed on exact candidate $MERGE_HEAD"
     fi
     echo "❌ MERGE BLOCKED: $DETAIL." >&2
+    # This is a machine-readable authorization fact for a later test-only
+    # repair carry. The runner records it as structured manifest data; prose
+    # diagnostics alone are never sufficient to skip a provider review.
+    if [ "$RC" -eq 2 ]; then
+      echo "QUALITY_REQUIRED_CI_FAILURE_V1 $MERGE_HEAD" >&2
+    fi
     node "$SCRIPT_DIR/quality-terminal-status.js" \
       --manifest "$MANIFEST" --category github-ci --detail "$DETAIL" || true
+    # Preserve the typed monitor result for quality-run. Other nonzero results
+    # remain ordinary merge failures and cannot authorize a review carry.
+    [ "$RC" -eq 2 ] && exit 2
     exit 1
   fi
 fi

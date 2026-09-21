@@ -15,6 +15,10 @@ const NON_PRODUCT_PATH =
 // change autonomous behavior and must retain normal delivery evidence.
 const NON_PRODUCT_SCHEDULED_DECLARATION = /^scripts\/scheduled\/[^/]+\.plist$/i;
 const NON_PRODUCT_TEST_FILE = /(?:\.test|\.spec)\.[^/]+$/i;
+// Quality runtime code controls engineering proof and delivery governance. It
+// is not customer product behavior; treating it as such makes infrastructure
+// repairs require product evidence that they cannot truthfully provide.
+const NON_PRODUCT_QUALITY_RUNTIME = /^scripts\/quality-[^/]+\.(?:[cm]?js|sh)$/i;
 const NON_PRODUCT_EXACT_PATHS = new Set([
   "harness-config.json",
   "package-lock.json",
@@ -321,6 +325,7 @@ function productionCodePath(file, context) {
     !NON_PRODUCT_PATH.test(file) &&
     !NON_PRODUCT_SCHEDULED_DECLARATION.test(file) &&
     !NON_PRODUCT_TEST_FILE.test(file) &&
+    !NON_PRODUCT_QUALITY_RUNTIME.test(file) &&
     !NON_PRODUCT_ROOT_NAMES.has(rootName)
   );
 }

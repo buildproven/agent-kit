@@ -88,15 +88,39 @@ describe("quality merge gates", () => {
       command: "wait",
       name: "preserves wait transport failure",
       prepareResult: '{"dispatches":[]}',
+      failureExit: 75,
+      expectedExit: 75,
+      waiverExit: 0,
+      terminalRecorded: false,
     },
     {
       command: "ensure",
       name: "preserves ensure transport failure",
       prepareResult: '{"dispatches":[{"workflowId":1}]}',
+      failureExit: 75,
+      expectedExit: 75,
+      waiverExit: 0,
+      terminalRecorded: false,
+    },
+    {
+      command: "wait",
+      name: "preserves typed required-CI failure for the runner",
+      prepareResult: '{"dispatches":[]}',
+      failureExit: 2,
+      expectedExit: 2,
+      waiverExit: 1,
+      terminalRecorded: true,
     },
   ])(
     "$name outside billing waiver and merge authority",
-    ({ command, prepareResult }) => {
+    ({
+      command,
+      prepareResult,
+      failureExit,
+      expectedExit,
+      waiverExit,
+      terminalRecorded,
+    }) => {
       const root = makeTempDir("quality-stamp-transport-");
       const bin = path.join(root, "bin");
       mkdirSync(bin);
@@ -147,13 +171,16 @@ ${record}
 if (process.argv[2] === "prepare") console.log(${JSON.stringify(prepareResult)});
 else if (process.argv[2] === ${JSON.stringify(command)}) {
   console.error('Get "https://api.github.com": unexpected EOF');
-  process.exit(75);
+  process.exit(${failureExit});
 } else process.exit(1);
 `,
       );
       script("ci-budget-admission.js", "process.exit(0);\n");
       script("quality-run-bounded.sh", '#!/bin/bash\nshift 3\nexec "$@"\n');
-      script("quality-ci-billing-waiver.js", `${record} process.exit(0);\n`);
+      script(
+        "quality-ci-billing-waiver.js",
+        `${record} process.exit(${waiverExit});\n`,
+      );
       script("quality-terminal-status.js", `${record} process.exit(0);\n`);
       script("quality-merge-cleanup.sh", "#!/bin/bash\nexit 0\n");
       writeFileSync(
@@ -196,7 +223,7 @@ esac
           },
         },
       );
-      expect(result.status, result.stderr).toBe(75);
+      expect(result.status, result.stderr).toBe(expectedExit);
       const observed = readFileSync(calls, "utf8")
         .trim()
         .split("\n")
@@ -212,14 +239,14 @@ esac
         observed.some((call) =>
           call[0].endsWith("quality-ci-billing-waiver.js"),
         ),
-      ).toBe(false);
+      ).toBe(terminalRecorded);
       expect(
         observed.some((call) => call[0].endsWith("quality-terminal-status.js")),
-      ).toBe(false);
+      ).toBe(terminalRecorded);
       expect(
         observed.some((call) => call[0].endsWith("quality-merge-mutation.js")),
       ).toBe(false);
-      expect(observed).toHaveLength(2);
+      expect(observed).toHaveLength(terminalRecorded ? 4 : 2);
     },
   );
 
