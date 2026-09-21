@@ -22,6 +22,9 @@ const {
 } = require("./quality-approval-identity.js");
 const { discoverRequiredGates } = require("./quality-gate-discovery.js");
 const { changedFiles, unionRequiredGates } = require("./quality-gate-files.js");
+const {
+  writeArtifactInventory: writeArtifactInventoryRecord,
+} = require("./quality-artifact-inventory.js");
 
 const REVIEW_CONTRACT_VERSION = 2;
 const RUNTIME_PLAN_VERSION = 2;
@@ -3989,153 +3992,19 @@ function sha256File(file) {
     .digest("hex");
 }
 
-function providerEvidenceName(name, provider) {
-  if (provider === "policy-exempt") {
-    return ["policy-exempt.findings.txt", "policy-exempt.result.json"].includes(
-      name,
-    );
-  }
-  if (provider === "review-incomplete") {
-    return (
-      [
-        "review-incomplete.findings.txt",
-        "review-incomplete.result.json",
-      ].includes(name) ||
-      /^primary-(?:codex|gemini|claude)-.+\.result\.json$/.test(name) ||
-      /^(?:codex|gemini)-\d+\.normalized\.json$/.test(name) ||
-      (!/^(?:codex|gemini|primary)-/.test(name) &&
-        name.endsWith(".normalized.json"))
-    );
-  }
-  if (/^primary-(?:codex|gemini|claude)-/.test(name)) return true;
-  if (provider === "codex") {
-    return (
-      name === "codex.findings.txt" ||
-      /^codex-\d+(?:\.normalized)?\.json$/.test(name)
-    );
-  }
-  if (provider === "gemini") {
-    return (
-      name === "gemini.findings.txt" ||
-      /^gemini-\d+(?:\.normalized)?\.json$/.test(name)
-    );
-  }
-  if (provider === "claude") {
-    return (
-      (name.endsWith(".findings.txt") ||
-        name.endsWith(".result.json") ||
-        name.endsWith(".normalized.json")) &&
-      !/^(?:codex|gemini)(?:-|\.)/.test(name)
-    );
-  }
-  throw new Error(`unsupported review provider '${provider}'`);
-}
-
 function writeArtifactInventory(
   manifest,
   artifactDir,
   provider,
   { advisory = false, exempt = false, incomplete = false } = {},
 ) {
-  const resolved = path.resolve(artifactDir);
-  const info = reviewInfo(manifest);
-  if (resolved !== path.resolve(info.artifactDir)) {
-    throw new Error("artifact inventory directory identity mismatch");
-  }
-  const names = fs
-    .readdirSync(resolved)
-    .filter(
-      (name) =>
-        name.endsWith(".findings.txt") ||
-        name.endsWith(".result.json") ||
-        name.endsWith(".normalized.json") ||
-        /^(?:codex|gemini)-\d+(?:\.normalized)?\.json$/.test(name),
-    )
-    .filter((name) => providerEvidenceName(name, provider))
-    .sort();
-  const findings = names.filter((name) => name.endsWith(".findings.txt"));
-  if (findings.length === 0) throw new Error("provider findings are missing");
-  if (
-    provider === "claude" &&
-    !advisory &&
-    findings.length !== manifest.agents.length
-  ) {
-    throw new Error(
-      "Claude findings inventory does not cover the mandatory panel",
-    );
-  }
-  // An EMPTY report is inconclusive too. This filter previously only excluded
-  // files carrying an explicit `INCONCLUSIVE:` line, so a 0-byte or
-  // whitespace-only artifact — an agent killed mid-write, or a truncated
-  // write — counted toward the usable quorum and got stamped into signed,
-  // hash-bound inventory evidence as a completed report. providerFindings()
-  // independently treats an empty body as inconclusive; these two must agree,
-  // or this gate is not enforcing the invariant its own error message claims.
-  const inconclusiveFindings = findings.filter((name) => {
-    const text = fs.readFileSync(path.join(resolved, name), "utf8");
-    if (!text.trim()) return true;
-    return text.split(/\r?\n/).some((line) => line.startsWith("INCONCLUSIVE:"));
-  });
-  const panelSize =
-    exempt || incomplete
-      ? 0
-      : provider === "claude" && !advisory
-        ? manifest.agents.length
-        : findings.length;
-  const requiredUsableFindings = panelSize;
-  const usableFindings = findings.length - inconclusiveFindings.length;
-  if (usableFindings < requiredUsableFindings) {
-    throw new Error(
-      `inconclusive provider findings cannot be inventoried: ` +
-        `only ${usableFindings}/${panelSize} usable reports ` +
-        `(need ${requiredUsableFindings})`,
-    );
-  }
-  const inventory = {
-    schemaVersion: 1,
-    invocationId: manifest.invocationId,
-    headSha: manifest.revisions.currentHead,
+  return writeArtifactInventoryRecord(
+    manifest,
+    artifactDir,
     provider,
-    status: exempt ? "exempt" : incomplete ? "incomplete" : "success",
-    tier: manifest.risk.tier,
-    focusSha256:
-      (manifest.reviewContractVersion || 1) >= 2 &&
-      manifest.panel?.rule &&
-      !manifest.panel.rule.startsWith("legacy")
-        ? sha256File(path.join(resolved, "review-focus.txt"))
-        : null,
-    panel: manifest.panel || {
-      requiredAgents: manifest.agents.length,
-      selectedAgents: manifest.agents.length,
-      incomplete: false,
-    },
-    files: names.map((name) => {
-      // Preserved artifacts encode their authoring provider in the filename
-      // itself (e.g. primary-codex-1.result.json). manifest.provider.primary
-      // is not yet populated on a campaign's first round — recordReview()
-      // sets it after this inventory is written — so it cannot be trusted
-      // here; the filename is always correct regardless of round ordering.
-      const preservedMatch = name.match(/^primary-(codex|gemini|claude)-/);
-      const nativeMatch = name.match(/^(codex|gemini)-\d+\.normalized\.json$/);
-      const partialClaude =
-        provider === "review-incomplete" &&
-        !preservedMatch &&
-        !nativeMatch &&
-        name.endsWith(".normalized.json");
-      return {
-        name,
-        provider: preservedMatch
-          ? preservedMatch[1]
-          : nativeMatch
-            ? nativeMatch[1]
-            : partialClaude
-              ? "claude"
-              : provider,
-        sha256: sha256File(path.join(resolved, name)),
-      };
-    }),
-  };
-  atomicWrite(path.join(resolved, "artifact-inventory.json"), inventory);
+    { advisory, exempt, incomplete },
+    { reviewInfo, atomicWrite },
+  );
 }
 
 function artifactPaths(manifest, review) {
