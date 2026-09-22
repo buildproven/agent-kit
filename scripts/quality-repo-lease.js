@@ -13,6 +13,7 @@ const PROTOCOL_VERSION = 2;
 const STALE_MS = 6 * 60 * 60 * 1000;
 const RECOVERY_OVERRIDE_ENV = "BS_QUALITY_LEASE_RECOVERY_OVERRIDE";
 const DEFAULT_WAIT_MS = 30_000;
+const EMPTY_GUARD_GRACE_MS = 1_000;
 const SLEEP_BUFFER = new SharedArrayBuffer(4);
 const heldMetadataGuards = new Map();
 
@@ -516,6 +517,47 @@ function recoverDeadGuard(directory, observed) {
   }
 }
 
+// mkdir and the owner write are separate filesystem operations. Give a live
+// creator a short grace period, then recover a directory that cannot describe
+// any owner. Without this, an interrupted creator leaves every later campaign
+// waiting until its metadata timeout and failing with ENOENT.
+function recoverEmptyGuard(directory) {
+  const recoveryLock = `${directory}.recovery-lock`;
+  let descriptor;
+  try {
+    descriptor = fs.openSync(recoveryLock, "wx", 0o600);
+    fs.writeFileSync(descriptor, `${process.pid}\n`);
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (error.code === "EEXIST") return false;
+    throw error;
+  }
+  fs.closeSync(descriptor);
+  try {
+    let stat;
+    try {
+      stat = fs.lstatSync(directory);
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      throw new Error(`unsafe repository lease guard at ${directory}`);
+    try {
+      guardOwner(directory);
+      return false;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (Date.now() - stat.mtimeMs < EMPTY_GUARD_GRACE_MS) return false;
+    const released = tombstone(directory);
+    exactCleanup(released);
+    return true;
+  } finally {
+    removeRecoveryLock(recoveryLock);
+  }
+}
+
 function exactCleanup(directory, recordName = "owner.json") {
   const record = path.join(directory, recordName);
   if (fs.existsSync(record)) {
@@ -552,6 +594,8 @@ function acquireGuard(directory, timeoutMs = DEFAULT_WAIT_MS, options = {}) {
       try {
         owner = guardOwner(directory);
       } catch (ownerError) {
+        if (ownerError.code === "ENOENT" && recoverEmptyGuard(directory))
+          continue;
         if (ownerError.code === "ENOENT" && Date.now() < deadline) {
           sleep(50);
           continue;
@@ -688,7 +732,15 @@ function hasMetadataGuard(manifest) {
   const paths = pathsFor(repositoryIdentity(manifest), manifest);
   const held = heldMetadataGuards.get(paths.metadataGuard);
   if (!held) return false;
-  return sameGuardOwner(guardOwner(paths.metadataGuard), held);
+  try {
+    return sameGuardOwner(guardOwner(paths.metadataGuard), held);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    // The guard directory was released by the transaction that created this
+    // process-local entry. It no longer authorizes a nested manifest action.
+    heldMetadataGuards.delete(paths.metadataGuard);
+    return false;
+  }
 }
 
 // quality-invocation is loaded by this module and calls these functions while

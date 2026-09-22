@@ -1428,6 +1428,19 @@ printf '%s\\n' '${JSON.stringify({ state: "OPEN" })}'
     expect(fs.existsSync(directory)).toBe(false);
   });
 
+  it("recovers an old empty guard before a zero-wait acquisition", () => {
+    const directory = path.join(sandbox, "stale-empty-guard");
+    fs.mkdirSync(directory, { mode: 0o700 });
+    const old = new Date(Date.now() - 2_000);
+    fs.utimesSync(directory, old, old);
+
+    expect(() => lease._acquireGuard(directory, 0)).not.toThrow();
+    expect(fs.existsSync(path.join(directory, "owner.json"))).toBe(true);
+
+    fs.unlinkSync(path.join(directory, "owner.json"));
+    fs.rmdirSync(directory);
+  });
+
   it("retries when a contended guard disappears before its owner read", async () => {
     const directory = path.join(sandbox, "guard-release-race");
     fs.mkdirSync(directory, { mode: 0o700 });
