@@ -676,7 +676,7 @@ async function main() {
           await runGate(toolchain.root, gate.checkout, name, command, {
             sandboxProfile: gate.profile,
             sandboxHome: gate.scratch,
-            toolDir: toolchain.modules,
+            toolDir: toolchain.root,
             onStart: (pid) => {
               recordedGate.processGroup = pid;
               writeReceipt(out, receipt);
