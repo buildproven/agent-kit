@@ -110,10 +110,22 @@ function processIdentity(pid) {
   return { pid, started: match[1], command: match[2] };
 }
 
+function githubRepository(remote) {
+  const match = remote.match(
+    /(?:github\.com[:/])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
+  );
+  return match ? match[1] : null;
+}
+
 function frozenCommand(baselineDir, command) {
   const [file, ...args] = command;
-  if (file.startsWith("node_modules/")) {
-    return [path.join(baselineDir, file), ...args];
+  if (/^node_modules\/\.bin\/[A-Za-z0-9_-]+$/.test(file)) {
+    const executable = path.resolve(baselineDir, file);
+    const allowedDirectory = path.join(baselineDir, "node_modules", ".bin");
+    if (!isWithin(allowedDirectory, executable)) {
+      fail(`frozen command escapes baseline executable directory '${file}'`);
+    }
+    return [executable, ...args];
   }
   if (file === "npx" && ["vitest", "jest"].includes(args[0])) {
     return [
@@ -293,6 +305,12 @@ async function main() {
       `candidate HEAD ${candidateHead} does not equal declared ${options["candidate-head"]}`,
     );
   }
+  const candidateRepository = githubRepository(
+    git(candidateDir, ["remote", "get-url", "origin"]),
+  );
+  if (candidateRepository !== options["github-repo"]) {
+    fail("declared GitHub repository does not match candidate origin");
+  }
   let pull;
   try {
     pull = JSON.parse(
@@ -403,6 +421,7 @@ if (require.main === module) {
 
 module.exports = {
   frozenCommand,
+  githubRepository,
   receiptPath,
   parse,
   runGate,

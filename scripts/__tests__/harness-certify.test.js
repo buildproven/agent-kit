@@ -5,9 +5,13 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
-const { frozenCommand, receiptPath, runGate, selectedTestGates } = require(
-  CERTIFY,
-);
+const {
+  frozenCommand,
+  githubRepository,
+  receiptPath,
+  runGate,
+  selectedTestGates,
+} = require(CERTIFY);
 
 function git(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -33,6 +37,19 @@ describe("harness-certify", () => {
     expect(() => frozenCommand(ROOT, ["sh", "candidate-command"])).toThrow(
       "does not permit executable",
     );
+    expect(() =>
+      frozenCommand(ROOT, ["node_modules/.bin/../../../../usr/bin/curl"]),
+    ).toThrow("does not permit executable");
+  });
+
+  it("derives only a canonical GitHub repository identity from origin", () => {
+    expect(githubRepository("git@github.com:buildproven/agent-kit.git")).toBe(
+      "buildproven/agent-kit",
+    );
+    expect(
+      githubRepository("https://github.com/buildproven/agent-kit.git"),
+    ).toBe("buildproven/agent-kit");
+    expect(githubRepository("https://example.test/agent-kit.git")).toBeNull();
   });
 
   it("rejects a candidate-controlled or pre-existing receipt path", () => {
