@@ -230,21 +230,49 @@ function runGate(
   });
 }
 
-function selectedTestGates(baselineDir, candidateDir, baseSha, candidateHead) {
-  const files = git(candidateDir, [
-    "diff",
-    "--name-only",
-    `${baseSha}..${candidateHead}`,
-  ])
-    .split("\n")
-    .filter(Boolean);
-  if (files.length === 0) {
-    return { mode: "none", reason: "empty-diff", files, gates: [] };
+function existsAtRevision(directory, revision, file) {
+  try {
+    execFileSync("/usr/bin/git", ["cat-file", "-e", `${revision}:${file}`], {
+      cwd: directory,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
   }
+}
+
+function newCertificationTests(
+  baselineDir,
+  candidateDir,
+  candidateHead,
+  files,
+) {
+  const tests = new Set();
+  const allowed = new Set();
+  for (const file of files) {
+    if (existsAtRevision(baselineDir, "HEAD", file)) continue;
+    const source = file.match(
+      /^scripts\/(harness-certification-[a-z0-9-]+)\.js$/,
+    );
+    const test = file.match(
+      /^scripts\/__tests__\/(harness-certification-[a-z0-9-]+)\.test\.js$/,
+    );
+    const stem = source?.[1] || test?.[1];
+    if (!stem) continue;
+    const testFile = `scripts/__tests__/${stem}.test.js`;
+    if (!existsAtRevision(candidateDir, candidateHead, testFile)) continue;
+    allowed.add(file);
+    tests.add(testFile);
+  }
+  return { allowed, tests: [...tests].sort() };
+}
+
+function frozenTestPlan(baselineDir, selectorFiles) {
   const selector = path.join(baselineDir, "scripts", "test-impact.js");
   const result = spawnSync(
     "node",
-    [selector, "--policy-root", baselineDir, "--", ...files],
+    [selector, "--policy-root", baselineDir, "--", ...selectorFiles],
     { cwd: baselineDir, encoding: "utf8", timeout: 30_000 },
   );
   if (result.status !== 0) {
@@ -278,14 +306,56 @@ function selectedTestGates(baselineDir, candidateDir, baseSha, candidateHead) {
   if (plan.mode === "audit" && commands.length === 0) {
     fail("frozen test selector returned an empty audit plan");
   }
+  return { mode: plan.mode, reason: plan.reason || null, commands };
+}
+
+function selectedTestGates(baselineDir, candidateDir, baseSha, candidateHead) {
+  const files = git(candidateDir, [
+    "diff",
+    "--name-only",
+    `${baseSha}..${candidateHead}`,
+  ])
+    .split("\n")
+    .filter(Boolean);
+  if (files.length === 0) {
+    return { mode: "none", reason: "empty-diff", files, gates: [] };
+  }
+  const newFiles = newCertificationTests(
+    baselineDir,
+    candidateDir,
+    candidateHead,
+    files,
+  );
+  const selectorFiles = files.filter((file) => !newFiles.allowed.has(file));
+  const newFileGates =
+    newFiles.tests.length === 0
+      ? []
+      : [
+          [
+            "new-certification-tests",
+            ["npx", "vitest", "run", ...newFiles.tests],
+          ],
+        ];
+  if (selectorFiles.length === 0) {
+    return {
+      mode: "focused",
+      reason: "frozen-new-certification-test-convention",
+      files,
+      gates: newFileGates,
+    };
+  }
+  const plan = frozenTestPlan(baselineDir, selectorFiles);
   return {
     mode: plan.mode,
     reason: plan.reason || null,
     files,
-    gates: commands.map((command, index) => [
-      `test-${index + 1}`,
-      [command.executable, ...command.args],
-    ]),
+    gates: [
+      ...plan.commands.map((command, index) => [
+        `test-${index + 1}`,
+        [command.executable, ...command.args],
+      ]),
+      ...newFileGates,
+    ],
   };
 }
 
