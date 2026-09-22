@@ -9,6 +9,8 @@ const fs = require("fs");
 const path = require("path");
 const { readReceipt, stateFor } = require("./harness-certification-status.js");
 
+const TRUSTED_BASELINE = fs.realpathSync(path.join(__dirname, ".."));
+
 function fail(message) {
   throw new Error(`harness-certification-recover: ${message}`);
 }
@@ -37,6 +39,9 @@ function githubRepository(remote) {
 
 function verifiedBaseline(baseline, expectedRepository) {
   const directory = fs.realpathSync(baseline.directory);
+  if (directory !== TRUSTED_BASELINE) {
+    fail("recorded baseline directory does not match the executing checkout");
+  }
   if (git(directory, ["rev-parse", "HEAD"]) !== baseline.sha) {
     fail("recorded baseline is no longer at its certified SHA");
   }

@@ -71,7 +71,7 @@ describe("harness-certification-recover", () => {
     }
   });
 
-  it("refuses a baseline from a different repository", () => {
+  it("refuses a baseline outside the executing checkout", () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "harness-recover-"),
     );
@@ -82,7 +82,7 @@ describe("harness-certification-recover", () => {
       fs.writeFileSync(prior, JSON.stringify(value));
       expect(() =>
         recoveryInvocation(prior, path.join(directory, "new.json")),
-      ).toThrow();
+      ).toThrow("does not match the executing checkout");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
