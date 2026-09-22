@@ -24,7 +24,33 @@ function git(directory, args) {
   return execFileSync("/usr/bin/git", args, {
     cwd: directory,
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
   }).trim();
+}
+
+function githubRepository(remote) {
+  const match = remote.match(
+    /(?:github\.com[:/])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
+  );
+  return match ? match[1] : null;
+}
+
+function verifiedBaseline(baseline, expectedRepository) {
+  const directory = fs.realpathSync(baseline.directory);
+  if (git(directory, ["rev-parse", "HEAD"]) !== baseline.sha) {
+    fail("recorded baseline is no longer at its certified SHA");
+  }
+  if (
+    githubRepository(git(directory, ["remote", "get-url", "origin"])) !==
+    expectedRepository
+  ) {
+    fail("recorded baseline repository does not match candidate repository");
+  }
+  const runner = path.join(directory, "scripts", "harness-certify.js");
+  if (!fs.existsSync(runner)) {
+    fail("recorded baseline has no certification runner");
+  }
+  return { directory, runner };
 }
 
 function validIdentity(baseline, candidate) {
@@ -51,13 +77,8 @@ function recoveryInvocation(receiptPath, out) {
   if (!validIdentity(baseline, candidate)) {
     fail("prior receipt lacks a complete certification identity");
   }
-  const baselineDirectory = fs.realpathSync(baseline.directory);
-  if (git(baselineDirectory, ["rev-parse", "HEAD"]) !== baseline.sha) {
-    fail("recorded baseline is no longer at its certified SHA");
-  }
-  const runner = path.join(baselineDirectory, "scripts", "harness-certify.js");
-  if (!fs.existsSync(runner))
-    fail("recorded baseline has no certification runner");
+  const { runner } = verifiedBaseline(baseline, candidate.githubRepository);
+  const candidateDirectory = fs.realpathSync(candidate.directory);
   if (fs.existsSync(out)) fail("--out already exists; preserve prior evidence");
   return {
     runner,
@@ -66,7 +87,7 @@ function recoveryInvocation(receiptPath, out) {
       "--baseline-sha",
       baseline.sha,
       "--candidate-dir",
-      candidate.directory,
+      candidateDirectory,
       "--candidate-head",
       candidate.sha,
       "--base-sha",

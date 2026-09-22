@@ -70,4 +70,21 @@ describe("harness-certification-recover", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("refuses a baseline from a different repository", () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "harness-recover-"),
+    );
+    try {
+      const prior = path.join(directory, "prior.json");
+      const value = receipt(directory);
+      value.baseline.directory = directory;
+      fs.writeFileSync(prior, JSON.stringify(value));
+      expect(() =>
+        recoveryInvocation(prior, path.join(directory, "new.json")),
+      ).toThrow();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

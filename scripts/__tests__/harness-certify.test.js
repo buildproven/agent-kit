@@ -11,6 +11,7 @@ const {
   receiptPath,
   runGate,
   selectedTestGates,
+  writeReceipt,
 } = require(CERTIFY);
 
 function git(cwd, args) {
@@ -63,6 +64,19 @@ describe("harness-certify", () => {
       const out = path.join(root, "receipt.json");
       fs.writeFileSync(out, "prior evidence\n");
       expect(() => receiptPath(candidate, out)).toThrow("already exists");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates the initial receipt exclusively", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const out = path.join(root, "receipt.json");
+      writeReceipt(out, { state: "RUNNING" }, { create: true });
+      expect(() =>
+        writeReceipt(out, { state: "RUNNING" }, { create: true }),
+      ).toThrow();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

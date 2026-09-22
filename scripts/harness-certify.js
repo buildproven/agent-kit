@@ -70,12 +70,16 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
-function writeReceipt(out, receipt) {
+function writeReceipt(out, receipt, { create = false } = {}) {
+  const serialized = `${JSON.stringify(receipt, null, 2)}\n`;
+  if (create) {
+    fs.mkdirSync(path.dirname(out), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(out, serialized, { flag: "wx", mode: 0o600 });
+    return;
+  }
   const temporary = `${out}.tmp.${process.pid}`;
   fs.mkdirSync(path.dirname(out), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(temporary, `${JSON.stringify(receipt, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  fs.writeFileSync(temporary, serialized, { mode: 0o600 });
   fs.renameSync(temporary, out);
 }
 
@@ -97,6 +101,17 @@ function receiptPath(candidateDir, suppliedPath) {
     fail("--out already exists; preserve prior certification evidence");
   }
   return out;
+}
+
+function assertFrozenRunner(baselineDir) {
+  const committed = execFileSync(
+    "/usr/bin/git",
+    ["show", "HEAD:scripts/harness-certify.js"],
+    { cwd: baselineDir, encoding: "utf8" },
+  );
+  if (fs.readFileSync(__filename, "utf8") !== committed) {
+    fail("frozen certification runner differs from baseline HEAD");
+  }
 }
 
 function processIdentity(pid) {
@@ -305,6 +320,7 @@ async function main() {
       `baseline HEAD ${baselineHead} does not equal declared ${options["baseline-sha"]}`,
     );
   }
+  assertFrozenRunner(baselineDir);
   const candidateHead = git(candidateDir, ["rev-parse", "HEAD"]);
   if (candidateHead !== options["candidate-head"]) {
     fail(
@@ -401,7 +417,7 @@ async function main() {
     state: "RUNNING",
     gates: [],
   };
-  writeReceipt(out, receipt);
+  writeReceipt(out, receipt, { create: true });
   for (const [name, command] of [
     ...PROFILES[options.profile],
     ...testPlan.gates,
