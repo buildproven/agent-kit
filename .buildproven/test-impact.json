@@ -439,6 +439,7 @@
     },
     {
       "paths": [
+        "docs/decisions/ADR-frozen-certification-isolation.md",
         "scripts/harness-certify.js",
         "scripts/__tests__/harness-certify.test.js"
       ],

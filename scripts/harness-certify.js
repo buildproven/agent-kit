@@ -20,8 +20,19 @@ const PROFILES = Object.freeze({
   ],
 });
 
-function fail(message) {
-  throw new Error(`harness-certify: ${message}`);
+// These limits are established by the trusted launcher before candidate code
+// starts.  The sandbox then denies setrlimit(2), so a candidate cannot raise a
+// soft limit back to the operator's inherited hard limit.
+const GATE_RESOURCE_LIMITS = Object.freeze({
+  cpuSeconds: 300,
+  maxOpenFiles: 256,
+  maxFileBlocks: 524288,
+  extraProcesses: 128,
+  volumeSize: "512m",
+});
+
+function fail(message, options) {
+  throw new Error(`harness-certify: ${message}`, options);
 }
 
 function parse(argv) {
@@ -224,10 +235,81 @@ function assertNoTrackedNodeModules(candidateDir, candidateHead) {
   }
 }
 
+function mountedVolume(attachPlist) {
+  let entities;
+  try {
+    entities = JSON.parse(
+      execFileSync(
+        "/usr/bin/plutil",
+        ["-extract", "system-entities", "json", "-o", "-", attachPlist],
+        { encoding: "utf8" },
+      ),
+    );
+  } catch (error) {
+    fail(
+      `could not parse bounded candidate volume metadata: ${error.message}`,
+      {
+        cause: error,
+      },
+    );
+  }
+  if (!Array.isArray(entities)) {
+    fail("bounded candidate volume metadata is not an entity list");
+  }
+  const volume = entities.find(
+    (entity) => entity["dev-entry"] && entity["mount-point"],
+  );
+  if (!volume) fail("disk image did not report a mounted volume");
+  return { device: volume["dev-entry"], mount: volume["mount-point"] };
+}
+
+function createGateVolume(
+  root,
+  { size = GATE_RESOURCE_LIMITS.volumeSize } = {},
+) {
+  const image = path.join(root, "candidate.dmg");
+  const volumeName = `harness-certify-${process.pid}-${crypto.randomUUID()}`;
+  const created = spawnSync(
+    "/usr/bin/hdiutil",
+    ["create", "-size", size, "-fs", "APFS", "-volname", volumeName, image],
+    { encoding: "utf8" },
+  );
+  if (created.status !== 0) {
+    fail(`could not create bounded candidate volume: ${created.stderr}`);
+  }
+  const attachPlist = path.join(root, "attach.plist");
+  const attached = spawnSync(
+    "/usr/bin/hdiutil",
+    ["attach", "-nobrowse", "-noverify", "-plist", image],
+    { encoding: "utf8" },
+  );
+  if (attached.status !== 0) {
+    fail(`could not attach bounded candidate volume: ${attached.stderr}`);
+  }
+  fs.writeFileSync(attachPlist, attached.stdout, { mode: 0o600 });
+  return { image, ...mountedVolume(attachPlist) };
+}
+
+function destroyGateDirectory(gate) {
+  if (gate.volume) {
+    const detached = spawnSync(
+      "/usr/bin/hdiutil",
+      ["detach", gate.volume.device, "-quiet"],
+      { encoding: "utf8" },
+    );
+    if (detached.status !== 0) {
+      fail(`could not detach bounded candidate volume: ${detached.stderr}`);
+    }
+  }
+  fs.rmSync(gate.root, { recursive: true, force: true });
+}
+
 function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
   const root = fs.mkdtempSync("/Users/Shared/harness-certify-gate-");
+  let volume;
   try {
-    const checkout = path.join(root, "candidate");
+    volume = createGateVolume(root);
+    const checkout = path.join(volume.mount, "candidate");
     const checkoutSha = (directory, sha) =>
       spawnSync(
         "/usr/bin/git",
@@ -249,7 +331,7 @@ function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
     if (checkoutResult.status !== 0)
       fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
     assertNoTrackedNodeModules(checkout, candidateHead);
-    const scratch = path.join(root, "scratch");
+    const scratch = path.join(volume.mount, "scratch");
     fs.mkdirSync(scratch, { mode: 0o700 });
     const profile = path.join(root, "seatbelt.sb");
     fs.writeFileSync(
@@ -257,9 +339,17 @@ function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
       `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch, toolchainDir: toolchain.root })}\n`,
       { mode: 0o600 },
     );
-    return { root, checkout, scratch, profile };
+    return { root, checkout, scratch, profile, volume };
   } catch (error) {
-    fs.rmSync(root, { recursive: true, force: true });
+    try {
+      destroyGateDirectory({ root, volume });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "could not clean failed bounded candidate volume",
+        { cause: cleanupError },
+      );
+    }
     throw error;
   }
 }
@@ -314,9 +404,10 @@ function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
     // not be able to create another process group or session, or it could
     // survive the bounded gate and escape the recorded lifecycle boundary.
     // Darwin syscall numbers are stable ABI values: kill(2)=37, setpgid(2)=82,
-    // and setsid(2)=147. Seatbelt uses last-match rule precedence, so this must
-    // follow the broad runtime compatibility allowance above.
-    "(deny syscall-unix (syscall-number 37 82 147))",
+    // setsid(2)=147, and setrlimit(2)=195. Seatbelt uses last-match rule
+    // precedence, so this must follow the broad runtime compatibility allowance
+    // above.  setrlimit keeps the trusted launcher's resource limits fixed.
+    "(deny syscall-unix (syscall-number 37 82 147 195))",
     "(allow ipc-posix-shm*)",
     "(allow iokit-open)",
     "(allow file-fsctl)",
@@ -399,6 +490,44 @@ function processIdentity(pid) {
   return { pid, started: match[1], command: match[2] };
 }
 
+function gateResourceLimits() {
+  const processes = spawnSync(
+    "/bin/ps",
+    ["-U", String(process.getuid()), "-o", "pid="],
+    { encoding: "utf8" },
+  );
+  if (processes.status !== 0) {
+    fail(`could not count launcher processes: ${processes.stderr}`);
+  }
+  const currentProcesses = processes.stdout
+    .split("\n")
+    .filter((line) => line.trim()).length;
+  return {
+    cpuSeconds: GATE_RESOURCE_LIMITS.cpuSeconds,
+    maxOpenFiles: GATE_RESOURCE_LIMITS.maxOpenFiles,
+    maxFileBlocks: GATE_RESOURCE_LIMITS.maxFileBlocks,
+    maxProcesses: currentProcesses + GATE_RESOURCE_LIMITS.extraProcesses,
+    volumeSize: GATE_RESOURCE_LIMITS.volumeSize,
+  };
+}
+
+function resourceLimitedInvocation(file, args, limits) {
+  // This is a fixed shell program owned by the baseline runner. Values and the
+  // executable are positional arguments, never candidate-interpolated text.
+  return [
+    "/bin/sh",
+    "-c",
+    'ulimit -t "$1" -n "$2" -f "$3" -u "$4"; shift 4; exec "$@"',
+    "harness-certify-resource-limits",
+    String(limits.cpuSeconds),
+    String(limits.maxOpenFiles),
+    String(limits.maxFileBlocks),
+    String(limits.maxProcesses),
+    file,
+    ...args,
+  ];
+}
+
 function githubRepository(remote) {
   const match = remote.match(
     /(?:github\.com[:/])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
@@ -448,6 +577,7 @@ function runGate(
     sandboxHome,
     toolDir = baselineDir,
     captureOutput = false,
+    resourceLimits,
     onStart,
     ...timing
   } = {},
@@ -460,9 +590,18 @@ function runGate(
     let output = "";
     let timedOut = false;
     let settled = false;
-    const invocation = sandboxProfile
+    const sandboxed = sandboxProfile
       ? ["/usr/bin/sandbox-exec", "-f", sandboxProfile, file, ...args]
       : [file, ...args];
+    // The launcher must run before Seatbelt.  Seatbelt denies setrlimit(2)
+    // after exec, which freezes these inherited soft limits for candidate code.
+    const invocation = resourceLimits
+      ? resourceLimitedInvocation(
+          sandboxed[0],
+          sandboxed.slice(1),
+          resourceLimits,
+        )
+      : sandboxed;
     const child = spawn(invocation[0], invocation.slice(1), {
       cwd: candidateDir,
       detached: true,
@@ -760,6 +899,7 @@ async function main() {
         state: "RUNNING",
         processGroup: null,
         process: null,
+        resourceLimits: gateResourceLimits(),
       };
       receipt.gates.push(recordedGate);
       writeReceipt(out, receipt);
@@ -770,6 +910,7 @@ async function main() {
             sandboxProfile: gate.profile,
             sandboxHome: gate.scratch,
             toolDir: toolchain.root,
+            resourceLimits: recordedGate.resourceLimits,
             onStart: (pid) => {
               recordedGate.processGroup = pid;
               recordedGate.process = processIdentity(pid);
@@ -779,7 +920,7 @@ async function main() {
         );
         await stopGateGroup(recordedGate.processGroup);
       } finally {
-        fs.rmSync(gate.root, { recursive: true, force: true });
+        destroyGateDirectory(gate);
       }
       assertCleanCheckout(baselineDir, "baseline");
       assertCleanCheckout(candidateDir, "candidate");
@@ -813,13 +954,18 @@ if (require.main === module) {
 module.exports = {
   assertNoTrackedNodeModules,
   assertSafeLocalGitConfig,
+  createGateVolume,
   directoryDigest,
+  destroyGateDirectory,
   frozenCommand,
   githubRepository,
   isolatedGitEnvironment,
+  gateResourceLimits,
+  mountedVolume,
   receiptPath,
   parse,
   runGate,
+  resourceLimitedInvocation,
   seatbeltProfile,
   selectedTestGates,
   stopGateGroup,

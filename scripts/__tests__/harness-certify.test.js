@@ -7,11 +7,16 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
   assertNoTrackedNodeModules,
+  createGateVolume,
   directoryDigest,
+  destroyGateDirectory,
   frozenCommand,
+  gateResourceLimits,
   githubRepository,
   isolatedGitEnvironment,
+  mountedVolume,
   receiptPath,
+  resourceLimitedInvocation,
   runGate,
   seatbeltProfile,
   selectedTestGates,
@@ -281,6 +286,66 @@ describe("harness-certify", () => {
     }
   });
 
+  it("uses a fixed trusted launcher for recorded resource limits", () => {
+    const limits = {
+      cpuSeconds: 3,
+      maxOpenFiles: 12,
+      maxFileBlocks: 34,
+      maxProcesses: 56,
+    };
+    expect(
+      resourceLimitedInvocation("/trusted/tool", ["--check"], limits),
+    ).toEqual([
+      "/bin/sh",
+      "-c",
+      'ulimit -t "$1" -n "$2" -f "$3" -u "$4"; shift 4; exec "$@"',
+      "harness-certify-resource-limits",
+      "3",
+      "12",
+      "34",
+      "56",
+      "/trusted/tool",
+      "--check",
+    ]);
+    expect(gateResourceLimits()).toMatchObject({
+      cpuSeconds: 300,
+      maxOpenFiles: 256,
+      maxFileBlocks: 524288,
+      volumeSize: "512m",
+    });
+  });
+
+  it("enforces an aggregate disk ceiling in a disposable candidate volume", () => {
+    const root = fs.mkdtempSync("/Users/Shared/harness-certify-volume-");
+    let gate;
+    try {
+      const volume = createGateVolume(root, { size: "16m" });
+      gate = { root, volume };
+      expect(() =>
+        fs.writeFileSync(
+          path.join(volume.mount, "beyond-cap"),
+          Buffer.alloc(17 * 1024 * 1024),
+        ),
+      ).toThrow();
+    } finally {
+      if (gate) destroyGateDirectory(gate);
+      else fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed trusted volume metadata", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const metadata = path.join(root, "attach.plist");
+      fs.writeFileSync(metadata, "not a property list\n");
+      expect(() => mountedVolume(metadata)).toThrow(
+        "could not parse bounded candidate volume metadata",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("runs a frozen executable whose interpreter is the pinned Node runtime", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
@@ -430,6 +495,65 @@ describe("harness-certify", () => {
         },
       );
       expect(result).toMatchObject({ status: "success" });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prevents a candidate from relaxing inherited resource limits", async () => {
+    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
+    try {
+      const baseline = path.join(root, "baseline");
+      const candidate = path.join(root, "candidate");
+      const scratch = path.join(root, "scratch");
+      fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
+        recursive: true,
+      });
+      fs.mkdirSync(candidate);
+      fs.mkdirSync(scratch);
+      const source = path.join(root, "raise-limit.c");
+      const probe = path.join(candidate, "raise-limit");
+      fs.writeFileSync(
+        source,
+        "#include <sys/resource.h>\nint main(){ struct rlimit limit; if (getrlimit(RLIMIT_NOFILE, &limit)) return 2; if (limit.rlim_cur > 256) return 3; limit.rlim_cur = limit.rlim_max; return setrlimit(RLIMIT_NOFILE, &limit) == -1 ? 0 : 4; }\n",
+      );
+      execFileSync("/usr/bin/cc", [source, "-o", probe]);
+      const executable = path.join(baseline, "node_modules", ".bin", "probe");
+      fs.writeFileSync(
+        executable,
+        `#!/usr/bin/env node\nconst result = require('node:child_process').spawnSync(${JSON.stringify(probe)}); process.exit(result.status ?? 1);\n`,
+        { mode: 0o755 },
+      );
+      const profile = path.join(root, "seatbelt.sb");
+      fs.writeFileSync(
+        profile,
+        seatbeltProfile({
+          candidateDir: candidate,
+          scratchDir: scratch,
+          toolchainDir: baseline,
+        }),
+      );
+      const result = await runGate(
+        baseline,
+        candidate,
+        "resource-limits",
+        ["node_modules/.bin/probe"],
+        {
+          sandboxProfile: profile,
+          sandboxHome: scratch,
+          toolDir: baseline,
+          resourceLimits: {
+            cpuSeconds: 300,
+            maxOpenFiles: 256,
+            maxFileBlocks: 524288,
+            maxProcesses: gateResourceLimits().maxProcesses,
+          },
+          captureOutput: true,
+        },
+      );
+      expect(result, JSON.stringify(result)).toMatchObject({
+        status: "success",
+      });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
