@@ -7,6 +7,7 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
   assertNoTrackedNodeModules,
+  directoryDigest,
   frozenCommand,
   githubRepository,
   receiptPath,
@@ -73,6 +74,20 @@ describe("harness-certify", () => {
       }
     },
   );
+
+  it("binds the frozen toolchain digest to the executed file contents", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const executable = path.join(root, "node_modules", ".bin", "probe");
+      fs.mkdirSync(path.dirname(executable), { recursive: true });
+      fs.writeFileSync(executable, "baseline tool\n");
+      const baseline = directoryDigest(root);
+      fs.writeFileSync(executable, "changed tool\n");
+      expect(directoryDigest(root)).not.toBe(baseline);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("derives only a canonical GitHub repository identity from origin", () => {
     expect(githubRepository("git@github.com:buildproven/agent-kit.git")).toBe(
