@@ -47,7 +47,7 @@ describe("harness-certify", () => {
     ).toThrow("does not permit executable");
   });
 
-  it.each(["node_modules", "Node_modules"])(
+  it.each(["node_modules", "Node_modules", "node_moduleſ"])(
     "rejects a candidate that tracks its own %s toolchain",
     (toolchainDirectory) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));

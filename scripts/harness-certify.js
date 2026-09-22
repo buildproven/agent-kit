@@ -204,15 +204,16 @@ function assertNoTrackedNodeModules(candidateDir, candidateHead) {
   const tracked = git(candidateDir, [
     "ls-tree",
     "-r",
+    "-z",
     "--name-only",
     candidateHead,
   ]);
-  const hasToolchain = tracked.split("\n").some((entry) => {
+  const hasToolchain = tracked.split("\0").some((entry) => {
     return entry
       .split("/")
       .some(
         (component) =>
-          component.normalize("NFC").toLocaleLowerCase("en-US") ===
+          component.normalize("NFKC").toLocaleLowerCase("en-US") ===
           "node_modules",
       );
   });
