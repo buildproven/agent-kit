@@ -167,7 +167,7 @@ function runGate(
       detached: true,
       env: {
         ...process.env,
-        PATH: `${path.join(baselineDir, "node_modules", ".bin")}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
         npm_config_globalconfig: "/dev/null",
         npm_config_ignore_scripts: "true",
         npm_config_registry: "https://registry.npmjs.org",
