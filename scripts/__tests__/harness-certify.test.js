@@ -244,10 +244,11 @@ describe("harness-certify", () => {
       );
       expect(plan).toMatchObject({ mode: "focused" });
       expect(plan.gates[0][0]).toBe("test-1");
-      expect(plan.gates[0][1].slice(0, 3)).toEqual([
+      expect(plan.gates[0][1]).toEqual([
         "npx",
         "vitest",
-        "related",
+        "run",
+        "scripts/__tests__/harness-certify.test.js",
       ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -19,6 +19,7 @@ const ROOT = path.resolve(__dirname, "..", "..");
 describe("cross-language test impact", () => {
   it.each([
     ["scripts/quality-run-bounded.sh", "quality-provider-runtime.test.js"],
+    ["scripts/harness-certify.js", "harness-certify.test.js"],
     [
       ".github/workflows/product-admission-public-key.yml",
       "product-admission.test.js",
