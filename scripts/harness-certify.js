@@ -225,37 +225,42 @@ function assertNoTrackedNodeModules(candidateDir, candidateHead) {
 
 function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
   const root = fs.mkdtempSync("/Users/Shared/harness-certify-gate-");
-  const checkout = path.join(root, "candidate");
-  const checkoutSha = (directory, sha) =>
-    spawnSync(
+  try {
+    const checkout = path.join(root, "candidate");
+    const checkoutSha = (directory, sha) =>
+      spawnSync(
+        "/usr/bin/git",
+        ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", sha],
+        {
+          cwd: directory,
+          encoding: "utf8",
+          env: isolatedGitEnvironment(),
+        },
+      );
+    const result = spawnSync(
       "/usr/bin/git",
-      ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", sha],
-      {
-        cwd: directory,
-        encoding: "utf8",
-        env: isolatedGitEnvironment(),
-      },
+      ["clone", "--no-local", "--no-checkout", candidateDir, checkout],
+      { encoding: "utf8", env: isolatedGitEnvironment() },
     );
-  const result = spawnSync(
-    "/usr/bin/git",
-    ["clone", "--no-local", "--no-checkout", candidateDir, checkout],
-    { encoding: "utf8", env: isolatedGitEnvironment() },
-  );
-  if (result.status !== 0)
-    fail(`could not create isolated gate checkout: ${result.stderr}`);
-  const checkoutResult = checkoutSha(checkout, candidateHead);
-  if (checkoutResult.status !== 0)
-    fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
-  assertNoTrackedNodeModules(checkout, candidateHead);
-  const scratch = path.join(root, "scratch");
-  fs.mkdirSync(scratch, { mode: 0o700 });
-  const profile = path.join(root, "seatbelt.sb");
-  fs.writeFileSync(
-    profile,
-    `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch, toolchainDir: toolchain.root })}\n`,
-    { mode: 0o600 },
-  );
-  return { root, checkout, scratch, profile };
+    if (result.status !== 0)
+      fail(`could not create isolated gate checkout: ${result.stderr}`);
+    const checkoutResult = checkoutSha(checkout, candidateHead);
+    if (checkoutResult.status !== 0)
+      fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
+    assertNoTrackedNodeModules(checkout, candidateHead);
+    const scratch = path.join(root, "scratch");
+    fs.mkdirSync(scratch, { mode: 0o700 });
+    const profile = path.join(root, "seatbelt.sb");
+    fs.writeFileSync(
+      profile,
+      `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch, toolchainDir: toolchain.root })}\n`,
+      { mode: 0o600 },
+    );
+    return { root, checkout, scratch, profile };
+  } catch (error) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
@@ -307,10 +312,10 @@ function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
     // A gate is controlled as one detached process group. A candidate must
     // not be able to create another process group or session, or it could
     // survive the bounded gate and escape the recorded lifecycle boundary.
-    // Darwin syscall numbers are stable ABI values: setpgid(2)=82 and
-    // setsid(2)=147. Seatbelt uses last-match rule precedence, so this must
+    // Darwin syscall numbers are stable ABI values: kill(2)=37, setpgid(2)=82,
+    // and setsid(2)=147. Seatbelt uses last-match rule precedence, so this must
     // follow the broad runtime compatibility allowance above.
-    "(deny syscall-unix (syscall-number 82 147))",
+    "(deny syscall-unix (syscall-number 37 82 147))",
     "(allow ipc-posix-shm*)",
     "(allow iokit-open)",
     "(allow file-fsctl)",
