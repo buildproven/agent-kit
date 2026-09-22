@@ -257,6 +257,7 @@ describe("harness-certify", () => {
         "npx",
         "vitest",
         "run",
+        "scripts/__tests__/harness-container-executor.test.js",
         "scripts/__tests__/harness-certify.test.js",
       ]);
     } finally {

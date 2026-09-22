@@ -440,13 +440,21 @@
     {
       "paths": [
         "docs/decisions/ADR-frozen-certification-isolation.md",
+        "docs/decisions/ADR-container-harness-certification.md",
+        "scripts/harness-container-executor.js",
         "scripts/harness-certify.js",
+        "scripts/__tests__/harness-container-executor.test.js",
         "scripts/__tests__/harness-certify.test.js"
       ],
       "commands": [
         {
           "executable": "npx",
-          "args": ["vitest", "run", "scripts/__tests__/harness-certify.test.js"]
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/harness-container-executor.test.js",
+            "scripts/__tests__/harness-certify.test.js"
+          ]
         }
       ]
     },
