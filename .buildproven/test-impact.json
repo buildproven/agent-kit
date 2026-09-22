@@ -439,6 +439,25 @@
     },
     {
       "paths": [
+        "scripts/harness-certification-recover.js",
+        "scripts/harness-certification-status.js",
+        "scripts/__tests__/harness-certification-recover.test.js",
+        "scripts/__tests__/harness-certification-status.test.js"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/harness-certification-recover.test.js",
+            "scripts/__tests__/harness-certification-status.test.js"
+          ]
+        }
+      ]
+    },
+    {
+      "paths": [
         "scripts/steward/discover-active-repos.py",
         "scripts/__tests__/steward-discovery.test.js"
       ],

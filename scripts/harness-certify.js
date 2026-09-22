@@ -167,7 +167,7 @@ function runGate(
       detached: true,
       env: {
         ...process.env,
-        PATH: `${path.join(baselineDir, "node_modules", ".bin")}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
         npm_config_globalconfig: "/dev/null",
         npm_config_ignore_scripts: "true",
         npm_config_registry: "https://registry.npmjs.org",
@@ -230,21 +230,11 @@ function runGate(
   });
 }
 
-function selectedTestGates(baselineDir, candidateDir, baseSha, candidateHead) {
-  const files = git(candidateDir, [
-    "diff",
-    "--name-only",
-    `${baseSha}..${candidateHead}`,
-  ])
-    .split("\n")
-    .filter(Boolean);
-  if (files.length === 0) {
-    return { mode: "none", reason: "empty-diff", files, gates: [] };
-  }
+function frozenTestPlan(baselineDir, selectorFiles) {
   const selector = path.join(baselineDir, "scripts", "test-impact.js");
   const result = spawnSync(
     "node",
-    [selector, "--policy-root", baselineDir, "--", ...files],
+    [selector, "--policy-root", baselineDir, "--", ...selectorFiles],
     { cwd: baselineDir, encoding: "utf8", timeout: 30_000 },
   );
   if (result.status !== 0) {
@@ -278,14 +268,31 @@ function selectedTestGates(baselineDir, candidateDir, baseSha, candidateHead) {
   if (plan.mode === "audit" && commands.length === 0) {
     fail("frozen test selector returned an empty audit plan");
   }
+  return { mode: plan.mode, reason: plan.reason || null, commands };
+}
+
+function selectedTestGates(baselineDir, candidateDir, baseSha, candidateHead) {
+  const files = git(candidateDir, [
+    "diff",
+    "--name-only",
+    `${baseSha}..${candidateHead}`,
+  ])
+    .split("\n")
+    .filter(Boolean);
+  if (files.length === 0) {
+    return { mode: "none", reason: "empty-diff", files, gates: [] };
+  }
+  const plan = frozenTestPlan(baselineDir, files);
   return {
     mode: plan.mode,
     reason: plan.reason || null,
     files,
-    gates: commands.map((command, index) => [
-      `test-${index + 1}`,
-      [command.executable, ...command.args],
-    ]),
+    gates: [
+      ...plan.commands.map((command, index) => [
+        `test-${index + 1}`,
+        [command.executable, ...command.args],
+      ]),
+    ],
   };
 }
 

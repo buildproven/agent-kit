@@ -197,4 +197,21 @@ describe("harness-certify", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("runs a frozen executable whose interpreter is the pinned Node runtime", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const executable = path.join(root, "node_modules", ".bin", "node-proof");
+      fs.mkdirSync(path.dirname(executable), { recursive: true });
+      fs.writeFileSync(executable, "#!/usr/bin/env node\nprocess.exit(0);\n", {
+        mode: 0o755,
+      });
+      const result = await runGate(root, root, "node-proof", [
+        "node_modules/.bin/node-proof",
+      ]);
+      expect(result).toMatchObject({ name: "node-proof", status: "success" });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
