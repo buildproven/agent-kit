@@ -10,6 +10,7 @@ const {
   directoryDigest,
   frozenCommand,
   githubRepository,
+  isolatedGitEnvironment,
   receiptPath,
   runGate,
   seatbeltProfile,
@@ -87,6 +88,22 @@ describe("harness-certify", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("removes operator Git configuration before candidate checkout", () => {
+    const environment = isolatedGitEnvironment({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "filter.evil.process",
+      GIT_CONFIG_VALUE_0: "host-command",
+      SAFE_VALUE: "safe",
+    });
+    expect(environment).toMatchObject({
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+    });
+    expect(Object.keys(environment)).not.toContain("GIT_CONFIG_COUNT");
+    expect(environment).toMatchObject({ SAFE_VALUE: "safe" });
   });
 
   it("derives only a canonical GitHub repository identity from origin", () => {
@@ -321,6 +338,7 @@ describe("harness-certify", () => {
           baselineDir: baseline,
           candidateDir: candidate,
           scratchDir: scratch,
+          toolchainDir: baseline,
         }),
       );
       const result = await runGate(

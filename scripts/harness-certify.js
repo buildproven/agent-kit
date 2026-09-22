@@ -62,9 +62,22 @@ function git(cwd, args) {
     {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
+      env: isolatedGitEnvironment(),
     },
   ).trim();
+}
+
+function isolatedGitEnvironment(source = process.env) {
+  const environment = { ...source };
+  for (const key of Object.keys(environment)) {
+    if (/^GIT_CONFIG_(COUNT|KEY_|VALUE_)/.test(key)) delete environment[key];
+  }
+  return {
+    ...environment,
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
 }
 
 function sha256(value) {
@@ -167,13 +180,13 @@ function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
       {
         cwd: directory,
         encoding: "utf8",
-        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
+        env: isolatedGitEnvironment(),
       },
     );
   const result = spawnSync(
     "/usr/bin/git",
     ["clone", "--no-local", "--no-checkout", candidateDir, checkout],
-    { encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } },
+    { encoding: "utf8", env: isolatedGitEnvironment() },
   );
   if (result.status !== 0)
     fail(`could not create isolated gate checkout: ${result.stderr}`);
@@ -181,30 +194,18 @@ function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
   if (checkoutResult.status !== 0)
     fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
   assertNoTrackedNodeModules(checkout, candidateHead);
-  const copiedModules = spawnSync(
-    "/bin/cp",
-    ["-cR", toolchain.modules, path.join(checkout, "node_modules")],
-    { encoding: "utf8" },
-  );
-  if (copiedModules.status !== 0)
-    fail(`could not copy frozen toolchain snapshot: ${copiedModules.stderr}`);
-  if (
-    directoryDigest(path.join(checkout, "node_modules")) !== toolchain.sha256
-  ) {
-    fail("copied gate toolchain does not match frozen snapshot");
-  }
   const scratch = path.join(root, "scratch");
   fs.mkdirSync(scratch, { mode: 0o700 });
   const profile = path.join(root, "seatbelt.sb");
   fs.writeFileSync(
     profile,
-    `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch })}\n`,
+    `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch, toolchainDir: toolchain.root })}\n`,
     { mode: 0o600 },
   );
   return { root, checkout, scratch, profile };
 }
 
-function seatbeltProfile({ candidateDir, scratchDir }) {
+function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
   const nodeExecutable = fs.realpathSync(process.execPath);
   const npmCli = path.resolve(
     path.dirname(nodeExecutable),
@@ -213,6 +214,7 @@ function seatbeltProfile({ candidateDir, scratchDir }) {
   const npmRuntime = path.dirname(path.dirname(npmCli));
   const candidate = fs.realpathSync(candidateDir);
   const scratch = fs.realpathSync(scratchDir);
+  const toolchain = fs.realpathSync(toolchainDir);
   // sandbox-exec runs in deny-by-default mode. A broad allow plus a list of
   // protected locations is not isolation: an unlisted host path remains open.
   // Permit only macOS runtime paths and the pinned Node runtime. Candidate and
@@ -230,7 +232,13 @@ function seatbeltProfile({ candidateDir, scratchDir }) {
       (directory) => `(allow file-read* (subpath ${quoteSeatbelt(directory)}))`,
     )
     .join("\n");
-  const metadataAncestors = [candidate, scratch, nodeExecutable, npmRuntime]
+  const metadataAncestors = [
+    candidate,
+    scratch,
+    toolchain,
+    nodeExecutable,
+    npmRuntime,
+  ]
     .map(
       (directory) =>
         `(allow file-read-metadata file-test-existence (path-ancestors ${quoteSeatbelt(directory)}))`,
@@ -255,6 +263,7 @@ function seatbeltProfile({ candidateDir, scratchDir }) {
     runtimeReadOnly,
     `(allow file-read* (literal ${quoteSeatbelt(nodeExecutable)}))`,
     `(allow file-read* (subpath ${quoteSeatbelt(npmRuntime)}))`,
+    `(allow file-read* (subpath ${quoteSeatbelt(toolchain)}))`,
     '(allow file-read* (literal "/private/etc/localtime"))',
     '(allow file-read* (literal "/private/var/db/timezone"))',
     '(allow file-read* (literal "/private/var/db/DarwinDirectory/local/recordStore.data"))',
@@ -394,6 +403,7 @@ function runGate(
       detached: true,
       env: {
         PATH: `${path.join(frozenToolDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        NODE_PATH: path.join(frozenToolDir, "node_modules"),
         HOME: sandboxHome || os.homedir(),
         TMPDIR: sandboxHome || os.tmpdir(),
         XDG_CACHE_HOME: sandboxHome || os.tmpdir(),
@@ -661,10 +671,10 @@ async function main() {
       try {
         Object.assign(
           recordedGate,
-          await runGate(gate.checkout, gate.checkout, name, command, {
+          await runGate(toolchain.root, gate.checkout, name, command, {
             sandboxProfile: gate.profile,
             sandboxHome: gate.scratch,
-            toolDir: gate.checkout,
+            toolDir: toolchain.modules,
             onStart: (pid) => {
               recordedGate.processGroup = pid;
               writeReceipt(out, receipt);
@@ -676,6 +686,9 @@ async function main() {
       }
       assertCleanCheckout(baselineDir, "baseline");
       assertCleanCheckout(candidateDir, "candidate");
+      if (directoryDigest(toolchain.modules) !== toolchain.sha256) {
+        fail("frozen toolchain snapshot changed during certification");
+      }
       if (frozenInputsDigest(baselineDir) !== baselineInputs) {
         fail("baseline policy inputs changed during certification");
       }
@@ -705,6 +718,7 @@ module.exports = {
   directoryDigest,
   frozenCommand,
   githubRepository,
+  isolatedGitEnvironment,
   receiptPath,
   parse,
   runGate,
