@@ -39,6 +39,7 @@ function initRepository(directory) {
 }
 
 describe("harness-certify", () => {
+  const macosOnly = process.platform === "darwin" ? it : it.skip;
   it("resolves executable paths from the frozen baseline, never candidate node_modules", () => {
     expect(frozenCommand(ROOT, ["node_modules/.bin/eslint", "."])).toEqual([
       path.join(ROOT, "node_modules/.bin/eslint"),
@@ -123,24 +124,27 @@ describe("harness-certify", () => {
     expect(githubRepository("https://example.test/agent-kit.git")).toBeNull();
   });
 
-  it("rejects a candidate-controlled or pre-existing receipt path", () => {
-    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
-    try {
-      const candidate = path.join(root, "candidate");
-      fs.mkdirSync(candidate);
-      expect(() =>
-        receiptPath(candidate, path.join(candidate, "receipt.json")),
-      ).toThrow("outside the candidate checkout");
-      const out = path.join(root, "receipt.json");
-      fs.writeFileSync(out, "prior evidence\n");
-      expect(() => receiptPath(candidate, out)).toThrow("already exists");
-      const link = path.join(root, "receipt-link.json");
-      fs.symlinkSync(path.join(root, "missing.json"), link);
-      expect(() => receiptPath(candidate, link)).toThrow("already exists");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+  macosOnly(
+    "rejects a candidate-controlled or pre-existing receipt path",
+    () => {
+      const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
+      try {
+        const candidate = path.join(root, "candidate");
+        fs.mkdirSync(candidate);
+        expect(() =>
+          receiptPath(candidate, path.join(candidate, "receipt.json")),
+        ).toThrow("outside the candidate checkout");
+        const out = path.join(root, "receipt.json");
+        fs.writeFileSync(out, "prior evidence\n");
+        expect(() => receiptPath(candidate, out)).toThrow("already exists");
+        const link = path.join(root, "receipt-link.json");
+        fs.symlinkSync(path.join(root, "missing.json"), link);
+        expect(() => receiptPath(candidate, link)).toThrow("already exists");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("creates the initial receipt exclusively", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
@@ -315,23 +319,26 @@ describe("harness-certify", () => {
     });
   });
 
-  it("enforces an aggregate disk ceiling in a disposable candidate volume", () => {
-    const root = fs.mkdtempSync("/Users/Shared/harness-certify-volume-");
-    let gate;
-    try {
-      const volume = createGateVolume(root, { size: "16m" });
-      gate = { root, volume };
-      expect(() =>
-        fs.writeFileSync(
-          path.join(volume.mount, "beyond-cap"),
-          Buffer.alloc(17 * 1024 * 1024),
-        ),
-      ).toThrow();
-    } finally {
-      if (gate) destroyGateDirectory(gate);
-      else fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+  macosOnly(
+    "enforces an aggregate disk ceiling in a disposable candidate volume",
+    () => {
+      const root = fs.mkdtempSync("/Users/Shared/harness-certify-volume-");
+      let gate;
+      try {
+        const volume = createGateVolume(root, { size: "16m" });
+        gate = { root, volume };
+        expect(() =>
+          fs.writeFileSync(
+            path.join(volume.mount, "beyond-cap"),
+            Buffer.alloc(17 * 1024 * 1024),
+          ),
+        ).toThrow();
+      } finally {
+        if (gate) destroyGateDirectory(gate);
+        else fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects malformed trusted volume metadata", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
@@ -363,7 +370,7 @@ describe("harness-certify", () => {
     }
   });
 
-  it("denies a candidate gate access to a host sentinel", async () => {
+  macosOnly("denies a candidate gate access to a host sentinel", async () => {
     const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
     const homeHost = fs.mkdtempSync(
       path.join(os.homedir(), "harness-certify-host-"),
@@ -449,113 +456,119 @@ describe("harness-certify", () => {
     }
   });
 
-  it("denies a candidate process the ability to escape its recorded process group", async () => {
-    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
-    try {
-      const baseline = path.join(root, "baseline");
-      const candidate = path.join(root, "candidate");
-      const scratch = path.join(root, "scratch");
-      fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
-        recursive: true,
-      });
-      fs.mkdirSync(candidate);
-      fs.mkdirSync(scratch);
-      const source = path.join(root, "escape.c");
-      const escape = path.join(candidate, "escape");
-      fs.writeFileSync(
-        source,
-        "#include <unistd.h>\nint main(){ return (setsid() == -1 && setpgid(0, 0) == -1) ? 0 : 1; }\n",
-      );
-      execFileSync("/usr/bin/cc", [source, "-o", escape]);
-      const executable = path.join(baseline, "node_modules", ".bin", "probe");
-      fs.writeFileSync(
-        executable,
-        `#!/usr/bin/env node\nconst result = require('node:child_process').spawnSync(${JSON.stringify(escape)}); process.exit(result.status ?? 1);\n`,
-        { mode: 0o755 },
-      );
-      const profile = path.join(root, "seatbelt.sb");
-      fs.writeFileSync(
-        profile,
-        seatbeltProfile({
-          candidateDir: candidate,
-          scratchDir: scratch,
-          toolchainDir: baseline,
-        }),
-      );
-      const result = await runGate(
-        baseline,
-        candidate,
-        "escape",
-        ["node_modules/.bin/probe"],
-        {
-          sandboxProfile: profile,
-          sandboxHome: scratch,
-          toolDir: baseline,
-          captureOutput: true,
-        },
-      );
-      expect(result).toMatchObject({ status: "success" });
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("prevents a candidate from relaxing inherited resource limits", async () => {
-    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
-    try {
-      const baseline = path.join(root, "baseline");
-      const candidate = path.join(root, "candidate");
-      const scratch = path.join(root, "scratch");
-      fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
-        recursive: true,
-      });
-      fs.mkdirSync(candidate);
-      fs.mkdirSync(scratch);
-      const source = path.join(root, "raise-limit.c");
-      const probe = path.join(candidate, "raise-limit");
-      fs.writeFileSync(
-        source,
-        "#include <sys/resource.h>\nint main(){ struct rlimit limit; if (getrlimit(RLIMIT_NOFILE, &limit)) return 2; if (limit.rlim_cur > 256) return 3; limit.rlim_cur = limit.rlim_max; return setrlimit(RLIMIT_NOFILE, &limit) == -1 ? 0 : 4; }\n",
-      );
-      execFileSync("/usr/bin/cc", [source, "-o", probe]);
-      const executable = path.join(baseline, "node_modules", ".bin", "probe");
-      fs.writeFileSync(
-        executable,
-        `#!/usr/bin/env node\nconst result = require('node:child_process').spawnSync(${JSON.stringify(probe)}); process.exit(result.status ?? 1);\n`,
-        { mode: 0o755 },
-      );
-      const profile = path.join(root, "seatbelt.sb");
-      fs.writeFileSync(
-        profile,
-        seatbeltProfile({
-          candidateDir: candidate,
-          scratchDir: scratch,
-          toolchainDir: baseline,
-        }),
-      );
-      const result = await runGate(
-        baseline,
-        candidate,
-        "resource-limits",
-        ["node_modules/.bin/probe"],
-        {
-          sandboxProfile: profile,
-          sandboxHome: scratch,
-          toolDir: baseline,
-          resourceLimits: {
-            cpuSeconds: 300,
-            maxOpenFiles: 256,
-            maxFileBlocks: 524288,
-            maxProcesses: gateResourceLimits().maxProcesses,
+  macosOnly(
+    "denies a candidate process the ability to escape its recorded process group",
+    async () => {
+      const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
+      try {
+        const baseline = path.join(root, "baseline");
+        const candidate = path.join(root, "candidate");
+        const scratch = path.join(root, "scratch");
+        fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
+          recursive: true,
+        });
+        fs.mkdirSync(candidate);
+        fs.mkdirSync(scratch);
+        const source = path.join(root, "escape.c");
+        const escape = path.join(candidate, "escape");
+        fs.writeFileSync(
+          source,
+          "#include <unistd.h>\nint main(){ return (setsid() == -1 && setpgid(0, 0) == -1) ? 0 : 1; }\n",
+        );
+        execFileSync("/usr/bin/cc", [source, "-o", escape]);
+        const executable = path.join(baseline, "node_modules", ".bin", "probe");
+        fs.writeFileSync(
+          executable,
+          `#!/usr/bin/env node\nconst result = require('node:child_process').spawnSync(${JSON.stringify(escape)}); process.exit(result.status ?? 1);\n`,
+          { mode: 0o755 },
+        );
+        const profile = path.join(root, "seatbelt.sb");
+        fs.writeFileSync(
+          profile,
+          seatbeltProfile({
+            candidateDir: candidate,
+            scratchDir: scratch,
+            toolchainDir: baseline,
+          }),
+        );
+        const result = await runGate(
+          baseline,
+          candidate,
+          "escape",
+          ["node_modules/.bin/probe"],
+          {
+            sandboxProfile: profile,
+            sandboxHome: scratch,
+            toolDir: baseline,
+            captureOutput: true,
           },
-          captureOutput: true,
-        },
-      );
-      expect(result, JSON.stringify(result)).toMatchObject({
-        status: "success",
-      });
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+        );
+        expect(result).toMatchObject({ status: "success" });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  macosOnly(
+    "prevents a candidate from relaxing inherited resource limits",
+    async () => {
+      const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
+      try {
+        const baseline = path.join(root, "baseline");
+        const candidate = path.join(root, "candidate");
+        const scratch = path.join(root, "scratch");
+        fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
+          recursive: true,
+        });
+        fs.mkdirSync(candidate);
+        fs.mkdirSync(scratch);
+        const source = path.join(root, "raise-limit.c");
+        const probe = path.join(candidate, "raise-limit");
+        fs.writeFileSync(
+          source,
+          "#include <sys/resource.h>\nint main(){ struct rlimit limit; if (getrlimit(RLIMIT_NOFILE, &limit)) return 2; if (limit.rlim_cur > 256) return 3; limit.rlim_cur = limit.rlim_max; return setrlimit(RLIMIT_NOFILE, &limit) == -1 ? 0 : 4; }\n",
+        );
+        execFileSync("/usr/bin/cc", [source, "-o", probe]);
+        const executable = path.join(baseline, "node_modules", ".bin", "probe");
+        fs.writeFileSync(
+          executable,
+          `#!/usr/bin/env node\nconst result = require('node:child_process').spawnSync(${JSON.stringify(probe)}); process.exit(result.status ?? 1);\n`,
+          { mode: 0o755 },
+        );
+        const profile = path.join(root, "seatbelt.sb");
+        fs.writeFileSync(
+          profile,
+          seatbeltProfile({
+            candidateDir: candidate,
+            scratchDir: scratch,
+            toolchainDir: baseline,
+          }),
+        );
+        const result = await runGate(
+          baseline,
+          candidate,
+          "resource-limits",
+          ["node_modules/.bin/probe"],
+          {
+            sandboxProfile: profile,
+            sandboxHome: scratch,
+            toolDir: baseline,
+            resourceLimits: {
+              cpuSeconds: 300,
+              maxOpenFiles: 256,
+              maxFileBlocks: 524288,
+              maxProcesses: gateResourceLimits().maxProcesses,
+            },
+            captureOutput: true,
+          },
+        );
+        expect(result, JSON.stringify(result)).toMatchObject({
+          status: "success",
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
