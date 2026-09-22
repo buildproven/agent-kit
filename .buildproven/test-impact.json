@@ -439,6 +439,8 @@
     },
     {
       "paths": [
+        ".github/workflows/harness-certification-protected.yml",
+        ".github/workflows/harness-certification-source.yml",
         "docs/decisions/ADR-frozen-certification-isolation.md",
         "docs/decisions/ADR-container-harness-certification.md",
         "scripts/harness-container-executor.js",

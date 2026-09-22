@@ -21,6 +21,10 @@ function receipt(directory, state = "RUNNING") {
       command: "dead",
     },
     baseline: { directory: ROOT, sha: git(ROOT, ["rev-parse", "HEAD"]) },
+    executor: {
+      kind: "docker-container",
+      image: `example.test/harness@sha256:${"a".repeat(64)}`,
+    },
     candidate: {
       directory,
       sha: "a".repeat(40),
@@ -53,6 +57,10 @@ describe("harness-certification-recover", () => {
       expect(invocation.args).toContain("a".repeat(40));
       expect(invocation.args).toContain("--pr");
       expect(invocation.args).toContain("624");
+      expect(invocation.args).toContain("--container-image");
+      expect(invocation.args).toContain(
+        `example.test/harness@sha256:${"a".repeat(64)}`,
+      );
       expect(() =>
         recoveryInvocation(prior, path.join(candidate, "new.json")),
       ).toThrow("outside the baseline and candidate checkouts");
@@ -88,6 +96,23 @@ describe("harness-certification-recover", () => {
       expect(() =>
         recoveryInvocation(prior, path.join(directory, "new.json")),
       ).toThrow("does not match the executing checkout");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses recovery when the pinned container identity is absent", () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "harness-recover-"),
+    );
+    try {
+      const prior = path.join(directory, "prior.json");
+      const value = receipt(directory);
+      delete value.executor;
+      fs.writeFileSync(prior, JSON.stringify(value));
+      expect(() =>
+        recoveryInvocation(prior, path.join(directory, "new.json")),
+      ).toThrow("complete certification identity");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

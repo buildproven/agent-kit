@@ -1,0 +1,15 @@
+name: Harness Certification Source
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  request-protected-certification:
+    # This untrusted trigger runs no repository code and has no credentials.
+    # The protected workflow reads GitHub's immutable run/PR identity itself.
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"

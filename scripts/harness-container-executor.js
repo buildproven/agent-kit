@@ -7,7 +7,7 @@
 const LIMITS = Object.freeze({ cpus: "2", memory: "3g", pids: "128" });
 const WORKSPACE_LIMIT = "1g";
 const TMP_LIMIT = "64m";
-const ENTRYPOINT = 'cp -a /source/. /candidate/; cd /candidate; exec "$@"';
+const ENTRYPOINT = 'cp -R /source/. /candidate/; cd /candidate; exec "$@"';
 
 function fail(message) {
   throw new Error(`harness-container-executor: ${message}`);

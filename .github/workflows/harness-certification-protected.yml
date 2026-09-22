@@ -1,0 +1,76 @@
+name: Harness Certification Protected
+
+on:
+  workflow_run:
+    workflows: ["Harness Certification Source"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  certify:
+    # workflow_run loads this file from protected main. It never checks out or
+    # executes candidate workflow/configuration, and the candidate gets no
+    # token, network, host home, or writable host mount inside Docker.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.18.0"
+      - name: Install frozen baseline toolchain
+        run: npm ci --ignore-scripts
+      - name: Validate source run and fetch candidate as data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          test "$(jq -r '.name' source-run.json)" = 'Harness Certification Source'
+          test "$(jq -r '.path' source-run.json)" = '.github/workflows/harness-certification-source.yml'
+          test "$(jq -r '.event' source-run.json)" = 'pull_request'
+          test "$(jq '.pull_requests | length' source-run.json)" = 1
+          pr="$(jq -r '.pull_requests[0].number' source-run.json)"
+          gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json state,headRefOid,baseRefOid > pull.json
+          test "$(jq -r '.state' pull.json)" = OPEN
+          head="$(jq -r '.headRefOid' pull.json)"
+          base="$(jq -r '.baseRefOid' pull.json)"
+          test "$head" = "$(jq -r '.head_sha' source-run.json)"
+          git init -q "$RUNNER_TEMP/candidate"
+          git -C "$RUNNER_TEMP/candidate" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$RUNNER_TEMP/candidate" fetch --depth=1 origin "$head"
+          git -C "$RUNNER_TEMP/candidate" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/candidate" rev-parse HEAD)" = "$head"
+          printf '%s\n' "$pr" > "$RUNNER_TEMP/pr"
+          printf '%s\n' "$head" > "$RUNNER_TEMP/head"
+          printf '%s\n' "$base" > "$RUNNER_TEMP/base"
+      - name: Run fixed container gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HARNESS_CERTIFICATION_IMAGE: docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+        run: |
+          node scripts/harness-certify.js \
+            --baseline-sha "$(git rev-parse HEAD)" \
+            --candidate-dir "$RUNNER_TEMP/candidate" \
+            --candidate-head "$(cat "$RUNNER_TEMP/head")" \
+            --base-sha "$(cat "$RUNNER_TEMP/base")" \
+            --profile agent-kit \
+            --claim engineering \
+            --github-repo "$GITHUB_REPOSITORY" \
+            --pr "$(cat "$RUNNER_TEMP/pr")" \
+            --container-image "$HARNESS_CERTIFICATION_IMAGE" \
+            --out "$RUNNER_TEMP/harness-certification-receipt.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harness-certification-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/harness-certification-receipt.json
+          if-no-files-found: error
+          retention-days: 7

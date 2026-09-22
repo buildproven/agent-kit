@@ -81,7 +81,7 @@ function verifiedBaseline(baseline, expectedRepository) {
   return { directory, runner };
 }
 
-function validIdentity(baseline, candidate) {
+function validIdentity(baseline, candidate, executor) {
   return Boolean(
     typeof baseline?.directory === "string" &&
     typeof baseline.sha === "string" &&
@@ -91,7 +91,10 @@ function validIdentity(baseline, candidate) {
     typeof candidate.profile === "string" &&
     typeof candidate.claim === "string" &&
     typeof candidate.githubRepository === "string" &&
-    Number.isInteger(candidate.pullRequest),
+    Number.isInteger(candidate.pullRequest) &&
+    executor?.kind === "docker-container" &&
+    typeof executor.image === "string" &&
+    /^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$/.test(executor.image),
   );
 }
 
@@ -103,7 +106,7 @@ function recoveryInvocation(receiptPath, out) {
   }
   const baseline = receipt.baseline;
   const candidate = receipt.candidate;
-  if (!validIdentity(baseline, candidate)) {
+  if (!validIdentity(baseline, candidate, receipt.executor)) {
     fail("prior receipt lacks a complete certification identity");
   }
   const { runner } = verifiedBaseline(baseline, candidate.githubRepository);
@@ -134,6 +137,8 @@ function recoveryInvocation(receiptPath, out) {
       candidate.githubRepository,
       "--pr",
       String(candidate.pullRequest),
+      "--container-image",
+      receipt.executor.image,
       "--out",
       receiptOut,
     ],

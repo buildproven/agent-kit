@@ -3,14 +3,18 @@
 
 // Certifies a harness candidate from an already-merged agent-kit checkout.
 // It deliberately does not import candidate JavaScript, package scripts, or
-// quality runtime code. Candidate code is only the subject of fixed native
-// commands defined below.
+// quality runtime code. Candidate code is only the subject of fixed commands
+// executed in a baseline-owned Linux container.
 
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync, spawn, spawnSync } = require("child_process");
+const {
+  LIMITS: CONTAINER_LIMITS,
+  invocation: containerInvocation,
+} = require("./harness-container-executor.js");
 
 const PROFILES = Object.freeze({
   "agent-kit": [
@@ -100,18 +104,17 @@ function assertSafeLocalGitConfig(directory) {
     ? marker
     : path.resolve(
         directory,
-        fs
-          .readFileSync(marker, "utf8")
+        readVerifiedRegularFile(marker)
           .trim()
           .replace(/^gitdir:\s*/i, ""),
       );
   const commonDirMarker = path.join(gitDir, "commondir");
   const configDir = fs.existsSync(commonDirMarker)
-    ? path.resolve(gitDir, fs.readFileSync(commonDirMarker, "utf8").trim())
+    ? path.resolve(gitDir, readVerifiedRegularFile(commonDirMarker).trim())
     : gitDir;
   const config = path.join(configDir, "config");
   if (!fs.existsSync(config)) return;
-  const text = fs.readFileSync(config, "utf8");
+  const text = readVerifiedRegularFile(config);
   if (
     /^\s*\[\s*(?:include|includeif|filter\b)/im.test(text) ||
     /^\s*(?:fsmonitor|fsmonitorhookpath|hookspath|attributesfile|external)\s*=/im.test(
@@ -121,6 +124,20 @@ function assertSafeLocalGitConfig(directory) {
     fail(
       "candidate local Git config contains an executable or included configuration",
     );
+  }
+}
+
+function readVerifiedRegularFile(file) {
+  const descriptor = fs.openSync(
+    file,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile()) fail(`expected a regular file at '${file}'`);
+    return fs.readFileSync(descriptor, "utf8");
+  } finally {
+    fs.closeSync(descriptor);
   }
 }
 
@@ -151,6 +168,7 @@ function assertCleanCheckout(directory, role) {
 function frozenInputsDigest(baselineDir) {
   const inputs = [
     "scripts/harness-certify.js",
+    "scripts/harness-container-executor.js",
     "scripts/test-impact.js",
     ".buildproven/test-impact.json",
     "package-lock.json",
@@ -182,7 +200,10 @@ function directoryDigest(directory) {
       } else if (stat.isSymbolicLink()) {
         digest.update("symlink\0").update(fs.readlinkSync(child)).update("\0");
       } else if (stat.isFile()) {
-        digest.update("file\0").update(fs.readFileSync(child)).update("\0");
+        digest
+          .update("file\0")
+          .update(readVerifiedRegularFile(child))
+          .update("\0");
       } else {
         fail(`frozen toolchain has unsupported entry '${childRelative}'`);
       }
@@ -302,56 +323,6 @@ function destroyGateDirectory(gate) {
     }
   }
   fs.rmSync(gate.root, { recursive: true, force: true });
-}
-
-function isolatedGateDirectory(candidateDir, candidateHead, toolchain) {
-  const root = fs.mkdtempSync("/Users/Shared/harness-certify-gate-");
-  let volume;
-  try {
-    volume = createGateVolume(root);
-    const checkout = path.join(volume.mount, "candidate");
-    const checkoutSha = (directory, sha) =>
-      spawnSync(
-        "/usr/bin/git",
-        ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", sha],
-        {
-          cwd: directory,
-          encoding: "utf8",
-          env: isolatedGitEnvironment(),
-        },
-      );
-    const result = spawnSync(
-      "/usr/bin/git",
-      ["clone", "--no-local", "--no-checkout", candidateDir, checkout],
-      { encoding: "utf8", env: isolatedGitEnvironment() },
-    );
-    if (result.status !== 0)
-      fail(`could not create isolated gate checkout: ${result.stderr}`);
-    const checkoutResult = checkoutSha(checkout, candidateHead);
-    if (checkoutResult.status !== 0)
-      fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
-    assertNoTrackedNodeModules(checkout, candidateHead);
-    const scratch = path.join(volume.mount, "scratch");
-    fs.mkdirSync(scratch, { mode: 0o700 });
-    const profile = path.join(root, "seatbelt.sb");
-    fs.writeFileSync(
-      profile,
-      `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch, toolchainDir: toolchain.root })}\n`,
-      { mode: 0o600 },
-    );
-    return { root, checkout, scratch, profile, volume };
-  } catch (error) {
-    try {
-      destroyGateDirectory({ root, volume });
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        "could not clean failed bounded candidate volume",
-        { cause: cleanupError },
-      );
-    }
-    throw error;
-  }
 }
 
 function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
@@ -565,6 +536,114 @@ function frozenCommand(baselineDir, command) {
     return [process.execPath, npmCli, ...args];
   }
   fail(`frozen policy does not permit executable '${file}'`);
+}
+
+function containerCommand(toolchainDir, command) {
+  const [file, ...args] = frozenCommand(toolchainDir, command);
+  const relative = path.relative(toolchainDir, file);
+  if (
+    relative !== "" &&
+    !relative.startsWith(`..${path.sep}`) &&
+    relative !== ".."
+  ) {
+    return [
+      path.posix.join("/toolchain", ...relative.split(path.sep)),
+      ...args,
+    ];
+  }
+  // The pinned container image supplies the Node/npm runtime. The baseline
+  // still owns the permitted npm subcommand through frozenCommand above.
+  if (file === process.execPath && /npm-cli\.js$/.test(args[0] || "")) {
+    return ["npm", ...args.slice(1)];
+  }
+  fail("frozen command cannot be mapped into the container toolchain");
+}
+
+function assertContainerRuntime() {
+  if (process.platform !== "linux") {
+    fail("container certification requires a Linux runner");
+  }
+  const result = spawnSync(
+    "docker",
+    ["version", "--format", "{{.Server.Version}}"],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  if (result.status !== 0 || !result.stdout.trim()) {
+    fail("container certification requires an available Docker daemon");
+  }
+}
+
+function runContainerGate(
+  { toolchainDir, candidateDir, image, name, command },
+  { captureOutput = false, onStart, timeoutMs = 15 * 60 * 1000 } = {},
+) {
+  const containerCommandArgv = containerCommand(toolchainDir, command);
+  const argv = containerInvocation({
+    image,
+    candidate: candidateDir,
+    toolchain: toolchainDir,
+    command: containerCommandArgv,
+  });
+  const startedAt = new Date().toISOString();
+  return new Promise((resolve) => {
+    let output = "";
+    let timedOut = false;
+    let settled = false;
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd: candidateDir,
+      env: { PATH: process.env.PATH },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (child.pid && onStart) onStart(child.pid);
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    child.on("error", (error) => {
+      output += error.message;
+      finish({
+        name,
+        command: containerCommandArgv,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        exitCode: null,
+        signal: null,
+        timedOut,
+        outputSha256: sha256(output),
+        status: "failed",
+        ...(captureOutput ? { diagnostic: output } : {}),
+      });
+    });
+    child.on("close", (exitCode, signal) => {
+      finish({
+        name,
+        command: containerCommandArgv,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        exitCode,
+        signal,
+        timedOut,
+        outputSha256: sha256(output),
+        status: exitCode === 0 && !signal && !timedOut ? "success" : "failed",
+        ...(captureOutput ? { diagnostic: output } : {}),
+      });
+    });
+  });
 }
 
 function runGate(
@@ -854,6 +933,10 @@ async function main() {
     candidateHead,
   );
   const out = receiptPath(candidateDir, options.out);
+  if (!options["container-image"]) {
+    fail("--container-image is required for container certification");
+  }
+  assertContainerRuntime();
   const toolchain = createFrozenToolchain(baselineDir);
   const receipt = {
     schemaVersion: 1,
@@ -880,6 +963,11 @@ async function main() {
       files: testPlan.files,
     },
     owner: processIdentity(process.pid),
+    executor: {
+      kind: "docker-container",
+      image: options["container-image"],
+      limits: CONTAINER_LIMITS,
+    },
     state: "RUNNING",
     gates: [],
   };
@@ -889,39 +977,36 @@ async function main() {
       ...PROFILES[options.profile],
       ...testPlan.gates,
     ]) {
-      const gate = isolatedGateDirectory(
-        candidateDir,
-        candidateHead,
-        toolchain,
-      );
       const recordedGate = {
         name,
         state: "RUNNING",
         processGroup: null,
         process: null,
-        resourceLimits: gateResourceLimits(),
+        resourceLimits: CONTAINER_LIMITS,
       };
       receipt.gates.push(recordedGate);
       writeReceipt(out, receipt);
-      try {
-        Object.assign(
-          recordedGate,
-          await runGate(toolchain.root, gate.checkout, name, command, {
-            sandboxProfile: gate.profile,
-            sandboxHome: gate.scratch,
-            toolDir: toolchain.root,
-            resourceLimits: recordedGate.resourceLimits,
+      Object.assign(
+        recordedGate,
+        await runContainerGate(
+          {
+            toolchainDir: toolchain.root,
+            candidateDir,
+            image: options["container-image"],
+            name,
+            command,
+          },
+          {
             onStart: (pid) => {
-              recordedGate.processGroup = pid;
+              // Docker owns the process namespace. The recorded PID is only
+              // the trusted host launcher for crash recovery, not a candidate
+              // process group that must be reclaimed on the host.
               recordedGate.process = processIdentity(pid);
               writeReceipt(out, receipt);
             },
-          }),
-        );
-        await stopGateGroup(recordedGate.processGroup);
-      } finally {
-        destroyGateDirectory(gate);
-      }
+          },
+        ),
+      );
       assertCleanCheckout(baselineDir, "baseline");
       assertCleanCheckout(candidateDir, "candidate");
       if (directoryDigest(toolchain.modules) !== toolchain.sha256) {
@@ -954,6 +1039,8 @@ if (require.main === module) {
 module.exports = {
   assertNoTrackedNodeModules,
   assertSafeLocalGitConfig,
+  assertContainerRuntime,
+  containerCommand,
   createGateVolume,
   directoryDigest,
   destroyGateDirectory,
@@ -965,6 +1052,7 @@ module.exports = {
   receiptPath,
   parse,
   runGate,
+  runContainerGate,
   resourceLimitedInvocation,
   seatbeltProfile,
   selectedTestGates,

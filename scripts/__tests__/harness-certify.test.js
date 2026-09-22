@@ -7,6 +7,7 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
   assertNoTrackedNodeModules,
+  containerCommand,
   createGateVolume,
   directoryDigest,
   destroyGateDirectory,
@@ -51,6 +52,18 @@ describe("harness-certify", () => {
     expect(() =>
       frozenCommand(ROOT, ["node_modules/.bin/../../../../usr/bin/curl"]),
     ).toThrow("does not permit executable");
+  });
+
+  it("maps only frozen executables into the container toolchain", () => {
+    expect(
+      containerCommand("/trusted", ["node_modules/.bin/eslint", "."]),
+    ).toEqual(["/toolchain/node_modules/.bin/eslint", "."]);
+    expect(
+      containerCommand("/trusted", ["npx", "vitest", "run", "x.test.js"]),
+    ).toEqual(["/toolchain/node_modules/.bin/vitest", "run", "x.test.js"]);
+    expect(() => containerCommand("/trusted", ["sh", "-c", "id"])).toThrow(
+      "does not permit",
+    );
   });
 
   it.each(["node_modules", "Node_modules", "node_moduleſ"])(
