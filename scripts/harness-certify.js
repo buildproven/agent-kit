@@ -255,16 +255,16 @@ function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
     "(version 1)",
     "(deny default)",
     "(allow process*)",
+    "(allow mach-lookup)",
+    "(allow mach-register)",
+    "(allow syscall*)",
     // A gate is controlled as one detached process group. A candidate must
     // not be able to create another process group or session, or it could
     // survive the bounded gate and escape the recorded lifecycle boundary.
     // Darwin syscall numbers are stable ABI values: setpgid(2)=82 and
-    // setsid(2)=147. Keep the broad runtime compatibility allowance above,
-    // then explicitly remove these two escape operations.
+    // setsid(2)=147. Seatbelt uses last-match rule precedence, so this must
+    // follow the broad runtime compatibility allowance above.
     "(deny syscall-unix (syscall-number 82 147))",
-    "(allow mach-lookup)",
-    "(allow mach-register)",
-    "(allow syscall*)",
     "(allow ipc-posix-shm*)",
     "(allow signal)",
     "(allow iokit-open)",
