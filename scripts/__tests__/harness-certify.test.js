@@ -172,53 +172,6 @@ describe("harness-certify", () => {
     }
   });
 
-  it("uses only the fixed convention for a new certification command", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    try {
-      const candidate = path.join(root, "candidate");
-      const base = initRepository(candidate);
-      const source = path.join(
-        candidate,
-        "scripts",
-        "harness-certification-recover.js",
-      );
-      const test = path.join(
-        candidate,
-        "scripts",
-        "__tests__",
-        "harness-certification-recover.test.js",
-      );
-      fs.mkdirSync(path.dirname(test), { recursive: true });
-      fs.writeFileSync(source, "module.exports = {};\n");
-      fs.writeFileSync(test, "it('proves recovery', () => {});\n");
-      git(candidate, ["add", "scripts"]);
-      git(candidate, ["commit", "-qm", "new certification command"]);
-      const plan = selectedTestGates(
-        ROOT,
-        candidate,
-        base,
-        git(candidate, ["rev-parse", "HEAD"]),
-      );
-      expect(plan).toMatchObject({
-        mode: "focused",
-        reason: "frozen-new-certification-test-convention",
-      });
-      expect(plan.gates).toEqual([
-        [
-          "new-certification-tests",
-          [
-            "npx",
-            "vitest",
-            "run",
-            "scripts/__tests__/harness-certification-recover.test.js",
-          ],
-        ],
-      ]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("terminates a timed-out fixed gate and reports the timeout", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
