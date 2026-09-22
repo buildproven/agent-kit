@@ -70,7 +70,7 @@ function git(cwd, args) {
 function isolatedGitEnvironment(source = process.env) {
   const environment = { ...source };
   for (const key of Object.keys(environment)) {
-    if (/^GIT_CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS$)/.test(key)) {
+    if (key.startsWith("GIT_")) {
       delete environment[key];
     }
   }
@@ -162,8 +162,13 @@ function assertNoTrackedNodeModules(candidateDir, candidateHead) {
     candidateHead,
   ]);
   const hasToolchain = tracked.split("\n").some((entry) => {
-    const root = entry.split("/", 1)[0];
-    return root.normalize("NFC").toLocaleLowerCase("en-US") === "node_modules";
+    return entry
+      .split("/")
+      .some(
+        (component) =>
+          component.normalize("NFC").toLocaleLowerCase("en-US") ===
+          "node_modules",
+      );
   });
   if (hasToolchain) {
     fail(
@@ -474,6 +479,30 @@ function runGate(
   });
 }
 
+async function stopGateGroup(processGroup, killGraceMs = 5_000) {
+  if (!Number.isInteger(processGroup)) return;
+  try {
+    process.kill(-processGroup, 0);
+  } catch {
+    return;
+  }
+  process.kill(-processGroup, "SIGTERM");
+  const deadline = Date.now() + killGraceMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    try {
+      process.kill(-processGroup, 0);
+    } catch {
+      return;
+    }
+  }
+  try {
+    process.kill(-processGroup, "SIGKILL");
+  } catch {
+    return;
+  }
+}
+
 function frozenTestPlan(baselineDir, selectorFiles) {
   const selector = path.join(baselineDir, "scripts", "test-impact.js");
   const result = spawnSync(
@@ -683,6 +712,7 @@ async function main() {
             },
           }),
         );
+        await stopGateGroup(recordedGate.processGroup);
       } finally {
         fs.rmSync(gate.root, { recursive: true, force: true });
       }
@@ -726,5 +756,6 @@ module.exports = {
   runGate,
   seatbeltProfile,
   selectedTestGates,
+  stopGateGroup,
   writeReceipt,
 };
