@@ -70,7 +70,9 @@ function git(cwd, args) {
 function isolatedGitEnvironment(source = process.env) {
   const environment = { ...source };
   for (const key of Object.keys(environment)) {
-    if (/^GIT_CONFIG_(COUNT|KEY_|VALUE_)/.test(key)) delete environment[key];
+    if (/^GIT_CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS$)/.test(key)) {
+      delete environment[key];
+    }
   }
   return {
     ...environment,

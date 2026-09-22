@@ -95,6 +95,7 @@ describe("harness-certify", () => {
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "filter.evil.process",
       GIT_CONFIG_VALUE_0: "host-command",
+      GIT_CONFIG_PARAMETERS: "filter.evil.process=host-command",
       SAFE_VALUE: "safe",
     });
     expect(environment).toMatchObject({
@@ -103,6 +104,7 @@ describe("harness-certify", () => {
       GIT_CONFIG_NOSYSTEM: "1",
     });
     expect(Object.keys(environment)).not.toContain("GIT_CONFIG_COUNT");
+    expect(Object.keys(environment)).not.toContain("GIT_CONFIG_PARAMETERS");
     expect(environment).toMatchObject({ SAFE_VALUE: "safe" });
   });
 
