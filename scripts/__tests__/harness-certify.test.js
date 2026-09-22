@@ -6,6 +6,7 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
+  assertNoTrackedNodeModules,
   frozenCommand,
   githubRepository,
   receiptPath,
@@ -42,6 +43,27 @@ describe("harness-certify", () => {
     expect(() =>
       frozenCommand(ROOT, ["node_modules/.bin/../../../../usr/bin/curl"]),
     ).toThrow("does not permit executable");
+  });
+
+  it("rejects a candidate that tracks its own node_modules toolchain", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const candidate = path.join(root, "candidate");
+      initRepository(candidate);
+      const tracked = path.join(candidate, "node_modules", ".bin", "probe");
+      fs.mkdirSync(path.dirname(tracked), { recursive: true });
+      fs.writeFileSync(tracked, "candidate tool\n");
+      git(candidate, ["add", "node_modules/.bin/probe"]);
+      git(candidate, ["commit", "-qm", "track candidate tool"]);
+      expect(() =>
+        assertNoTrackedNodeModules(
+          candidate,
+          git(candidate, ["rev-parse", "HEAD"]),
+        ),
+      ).toThrow("refuses candidate-controlled toolchains");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("derives only a canonical GitHub repository identity from origin", () => {
@@ -235,24 +257,29 @@ describe("harness-certify", () => {
 
   it("denies a candidate gate access to a host sentinel", async () => {
     const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
-    const host = fs.mkdtempSync(
+    const homeHost = fs.mkdtempSync(
       path.join(os.homedir(), "harness-certify-host-"),
+    );
+    const temporaryHost = fs.mkdtempSync(
+      path.join(os.tmpdir(), "harness-certify-host-"),
     );
     try {
       const baseline = path.join(root, "baseline");
       const candidate = path.join(root, "candidate");
       const scratch = path.join(root, "scratch");
-      const sentinel = path.join(host, "host-secret");
+      const homeSentinel = path.join(homeHost, "host-secret");
+      const temporarySentinel = path.join(temporaryHost, "host-secret");
       fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
         recursive: true,
       });
       fs.mkdirSync(candidate);
       fs.mkdirSync(scratch);
-      fs.writeFileSync(sentinel, "secret\n");
+      fs.writeFileSync(homeSentinel, "secret\n");
+      fs.writeFileSync(temporarySentinel, "secret\n");
       const executable = path.join(baseline, "node_modules", ".bin", "probe");
       fs.writeFileSync(
         executable,
-        `#!/usr/bin/env node\nrequire('node:fs').readFileSync(${JSON.stringify(sentinel)});\n`,
+        `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.readFileSync(${JSON.stringify(homeSentinel)});\nfs.readFileSync(${JSON.stringify(temporarySentinel)});\n`,
         { mode: 0o755 },
       );
       const candidateExecutable = path.join(
@@ -308,7 +335,8 @@ describe("harness-certify", () => {
       expect(safe.status, JSON.stringify(safe)).toBe("success");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(host, { recursive: true, force: true });
+      fs.rmSync(homeHost, { recursive: true, force: true });
+      fs.rmSync(temporaryHost, { recursive: true, force: true });
     }
   });
 });

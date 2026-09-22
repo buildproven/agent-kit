@@ -97,6 +97,22 @@ function quoteSeatbelt(value) {
   return JSON.stringify(value);
 }
 
+function assertNoTrackedNodeModules(candidateDir, candidateHead) {
+  const tracked = git(candidateDir, [
+    "ls-tree",
+    "-r",
+    "--name-only",
+    candidateHead,
+    "--",
+    "node_modules",
+  ]);
+  if (tracked) {
+    fail(
+      "candidate tracks node_modules; frozen certification refuses candidate-controlled toolchains",
+    );
+  }
+}
+
 function isolatedGateDirectory(candidateDir, candidateHead, baselineDir) {
   const root = fs.mkdtempSync("/Users/Shared/harness-certify-gate-");
   const baseline = path.join(root, "baseline");
@@ -138,6 +154,7 @@ function isolatedGateDirectory(candidateDir, candidateHead, baselineDir) {
   const checkoutResult = checkoutSha(checkout, candidateHead);
   if (checkoutResult.status !== 0)
     fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
+  assertNoTrackedNodeModules(checkout, candidateHead);
   const copiedModules = spawnSync(
     "/bin/cp",
     [
@@ -154,18 +171,21 @@ function isolatedGateDirectory(candidateDir, candidateHead, baselineDir) {
   const profile = path.join(root, "seatbelt.sb");
   fs.writeFileSync(
     profile,
-    `${seatbeltProfile({ baselineDir: baseline, candidateDir: checkout, scratchDir: scratch })}\n`,
+    `${seatbeltProfile({ candidateDir: checkout, scratchDir: scratch })}\n`,
     { mode: 0o600 },
   );
   return { root, baseline, checkout, scratch, profile };
 }
 
-function seatbeltProfile({ baselineDir, candidateDir, scratchDir }) {
+function seatbeltProfile({ candidateDir, scratchDir }) {
   const nodeRuntime = path.resolve(path.dirname(process.execPath), "..");
-  const baseline = fs.realpathSync(baselineDir);
   const candidate = fs.realpathSync(candidateDir);
   const scratch = fs.realpathSync(scratchDir);
-  const readOnly = [
+  // sandbox-exec runs in deny-by-default mode. A broad allow plus a list of
+  // protected locations is not isolation: an unlisted host path remains open.
+  // Permit only macOS runtime paths and the pinned Node runtime. Candidate and
+  // scratch are the only writable directories.
+  const runtimeReadOnly = [
     "/usr",
     "/bin",
     "/sbin",
@@ -173,20 +193,38 @@ function seatbeltProfile({ baselineDir, candidateDir, scratchDir }) {
     "/Library",
     "/etc",
     "/private/var/db",
+    "/private/var/run",
     nodeRuntime,
-    baseline,
   ]
     .map(
       (directory) => `(allow file-read* (subpath ${quoteSeatbelt(directory)}))`,
     )
     .join("\n");
+  const metadataAncestors = [candidate, scratch, nodeRuntime]
+    .map(
+      (directory) =>
+        `(allow file-read-metadata file-test-existence (path-ancestors ${quoteSeatbelt(directory)}))`,
+    )
+    .join("\n");
   return [
     "(version 1)",
-    "(allow default)",
-    readOnly,
-    `(deny file-read* file-write* (subpath ${quoteSeatbelt(baseline)}))`,
-    `(deny file-read* file-write* (subpath ${quoteSeatbelt(os.homedir())}))`,
-    `(deny file-read* file-write* (subpath "/private/var/folders"))`,
+    "(deny default)",
+    "(allow process*)",
+    "(allow mach-lookup)",
+    "(allow mach-register)",
+    "(allow syscall*)",
+    "(allow ipc-posix-shm*)",
+    "(allow signal)",
+    "(allow iokit-open)",
+    "(allow file-fsctl)",
+    "(allow file-ioctl)",
+    "(allow system-socket)",
+    "(allow user-preference*)",
+    "(allow sysctl*)",
+    "(allow distributed-notification-post)",
+    runtimeReadOnly,
+    metadataAncestors,
+    '(allow file-read* file-test-existence (literal "/") (literal "/tmp") (literal "/var") (literal "/etc"))',
     `(allow file-read* file-write* (subpath ${quoteSeatbelt(candidate)}))`,
     `(allow file-read* file-write* (subpath ${quoteSeatbelt(scratch)}))`,
     "(deny network*)",
@@ -622,6 +660,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertNoTrackedNodeModules,
   frozenCommand,
   githubRepository,
   receiptPath,
