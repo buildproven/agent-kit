@@ -58,13 +58,59 @@ function parse(argv) {
 function git(cwd, args) {
   return execFileSync(
     "/usr/bin/git",
-    ["-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat", ...args],
+    [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "core.pager=cat",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.fsmonitorHookPath=",
+      "-c",
+      "core.attributesfile=/dev/null",
+      "-c",
+      "diff.external=",
+      "--no-optional-locks",
+      ...args,
+    ],
     {
       cwd,
       encoding: "utf8",
       env: isolatedGitEnvironment(),
     },
   ).trim();
+}
+
+function assertSafeLocalGitConfig(directory) {
+  const marker = path.join(directory, ".git");
+  const stat = fs.lstatSync(marker);
+  const gitDir = stat.isDirectory()
+    ? marker
+    : path.resolve(
+        directory,
+        fs
+          .readFileSync(marker, "utf8")
+          .trim()
+          .replace(/^gitdir:\s*/i, ""),
+      );
+  const commonDirMarker = path.join(gitDir, "commondir");
+  const configDir = fs.existsSync(commonDirMarker)
+    ? path.resolve(gitDir, fs.readFileSync(commonDirMarker, "utf8").trim())
+    : gitDir;
+  const config = path.join(configDir, "config");
+  if (!fs.existsSync(config)) return;
+  const text = fs.readFileSync(config, "utf8");
+  if (
+    /^\s*\[\s*(?:include|includeif|filter\b)/im.test(text) ||
+    /^\s*(?:fsmonitor|fsmonitorhookpath|hookspath|attributesfile|external)\s*=/im.test(
+      text,
+    )
+  ) {
+    fail(
+      "candidate local Git config contains an executable or included configuration",
+    );
+  }
 }
 
 function isolatedGitEnvironment(source = process.env) {
@@ -580,6 +626,7 @@ async function main() {
   const options = parse(process.argv.slice(2));
   const baselineDir = fs.realpathSync(process.cwd());
   const candidateDir = fs.realpathSync(options["candidate-dir"]);
+  assertSafeLocalGitConfig(candidateDir);
   const baselineHead = git(baselineDir, ["rev-parse", "HEAD"]);
   if (baselineHead !== options["baseline-sha"]) {
     fail(
@@ -760,6 +807,7 @@ if (require.main === module) {
 
 module.exports = {
   assertNoTrackedNodeModules,
+  assertSafeLocalGitConfig,
   directoryDigest,
   frozenCommand,
   githubRepository,
