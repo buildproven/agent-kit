@@ -383,4 +383,55 @@ describe("harness-certify", () => {
       fs.rmSync(temporaryHost, { recursive: true, force: true });
     }
   });
+
+  it("denies a candidate process the ability to escape its recorded process group", async () => {
+    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
+    try {
+      const baseline = path.join(root, "baseline");
+      const candidate = path.join(root, "candidate");
+      const scratch = path.join(root, "scratch");
+      fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
+        recursive: true,
+      });
+      fs.mkdirSync(candidate);
+      fs.mkdirSync(scratch);
+      const source = path.join(root, "escape.c");
+      const escape = path.join(candidate, "escape");
+      fs.writeFileSync(
+        source,
+        "#include <unistd.h>\nint main(){ return (setsid() == -1 && setpgid(0, 0) == -1) ? 0 : 1; }\n",
+      );
+      execFileSync("/usr/bin/cc", [source, "-o", escape]);
+      const executable = path.join(baseline, "node_modules", ".bin", "probe");
+      fs.writeFileSync(
+        executable,
+        `#!/usr/bin/env node\nconst result = require('node:child_process').spawnSync(${JSON.stringify(escape)}); process.exit(result.status ?? 1);\n`,
+        { mode: 0o755 },
+      );
+      const profile = path.join(root, "seatbelt.sb");
+      fs.writeFileSync(
+        profile,
+        seatbeltProfile({
+          candidateDir: candidate,
+          scratchDir: scratch,
+          toolchainDir: baseline,
+        }),
+      );
+      const result = await runGate(
+        baseline,
+        candidate,
+        "escape",
+        ["node_modules/.bin/probe"],
+        {
+          sandboxProfile: profile,
+          sandboxHome: scratch,
+          toolDir: baseline,
+          captureOutput: true,
+        },
+      );
+      expect(result).toMatchObject({ status: "success" });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -60,4 +60,42 @@ describe("harness-certification-status", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ state: "RECOVERABLE" });
   });
+
+  it("does not trust a reused gate process group without its original identity", () => {
+    const result = status({
+      ...receipt,
+      state: "RUNNING",
+      owner: { pid: 999999 },
+      gates: [{ processGroup: process.pid }],
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ state: "RECOVERABLE" });
+  });
+
+  it("keeps a recorded live gate leader running only when its identity matches", () => {
+    const observed = spawnSync(
+      "/bin/ps",
+      ["-p", String(process.pid), "-o", "lstart=", "-o", "command="],
+      { encoding: "utf8" },
+    )
+      .stdout.trim()
+      .match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$/);
+    const result = status({
+      ...receipt,
+      state: "RUNNING",
+      owner: { pid: 999999 },
+      gates: [
+        {
+          processGroup: process.pid,
+          process: {
+            pid: process.pid,
+            started: observed[1],
+            command: observed[2],
+          },
+        },
+      ],
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ state: "RUNNING" });
+  });
 });

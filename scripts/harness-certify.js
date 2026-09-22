@@ -255,6 +255,13 @@ function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
     "(version 1)",
     "(deny default)",
     "(allow process*)",
+    // A gate is controlled as one detached process group. A candidate must
+    // not be able to create another process group or session, or it could
+    // survive the bounded gate and escape the recorded lifecycle boundary.
+    // Darwin syscall numbers are stable ABI values: setpgid(2)=82 and
+    // setsid(2)=147. Keep the broad runtime compatibility allowance above,
+    // then explicitly remove these two escape operations.
+    "(deny syscall-unix (syscall-number 82 147))",
     "(allow mach-lookup)",
     "(allow mach-register)",
     "(allow syscall*)",
@@ -696,7 +703,12 @@ async function main() {
         candidateHead,
         toolchain,
       );
-      const recordedGate = { name, state: "RUNNING", processGroup: null };
+      const recordedGate = {
+        name,
+        state: "RUNNING",
+        processGroup: null,
+        process: null,
+      };
       receipt.gates.push(recordedGate);
       writeReceipt(out, receipt);
       try {
@@ -708,6 +720,7 @@ async function main() {
             toolDir: toolchain.root,
             onStart: (pid) => {
               recordedGate.processGroup = pid;
+              recordedGate.process = processIdentity(pid);
               writeReceipt(out, receipt);
             },
           }),
