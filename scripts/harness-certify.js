@@ -103,10 +103,12 @@ function assertNoTrackedNodeModules(candidateDir, candidateHead) {
     "-r",
     "--name-only",
     candidateHead,
-    "--",
-    "node_modules",
   ]);
-  if (tracked) {
+  const hasToolchain = tracked.split("\n").some((entry) => {
+    const root = entry.split("/", 1)[0];
+    return root.normalize("NFC").toLocaleLowerCase("en-US") === "node_modules";
+  });
+  if (hasToolchain) {
     fail(
       "candidate tracks node_modules; frozen certification refuses candidate-controlled toolchains",
     );

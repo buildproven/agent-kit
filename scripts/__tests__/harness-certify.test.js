@@ -45,26 +45,34 @@ describe("harness-certify", () => {
     ).toThrow("does not permit executable");
   });
 
-  it("rejects a candidate that tracks its own node_modules toolchain", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    try {
-      const candidate = path.join(root, "candidate");
-      initRepository(candidate);
-      const tracked = path.join(candidate, "node_modules", ".bin", "probe");
-      fs.mkdirSync(path.dirname(tracked), { recursive: true });
-      fs.writeFileSync(tracked, "candidate tool\n");
-      git(candidate, ["add", "node_modules/.bin/probe"]);
-      git(candidate, ["commit", "-qm", "track candidate tool"]);
-      expect(() =>
-        assertNoTrackedNodeModules(
+  it.each(["node_modules", "Node_modules"])(
+    "rejects a candidate that tracks its own %s toolchain",
+    (toolchainDirectory) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const candidate = path.join(root, "candidate");
+        initRepository(candidate);
+        const tracked = path.join(
           candidate,
-          git(candidate, ["rev-parse", "HEAD"]),
-        ),
-      ).toThrow("refuses candidate-controlled toolchains");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+          toolchainDirectory,
+          ".bin",
+          "probe",
+        );
+        fs.mkdirSync(path.dirname(tracked), { recursive: true });
+        fs.writeFileSync(tracked, "candidate tool\n");
+        git(candidate, ["add", `${toolchainDirectory}/.bin/probe`]);
+        git(candidate, ["commit", "-qm", "track candidate tool"]);
+        expect(() =>
+          assertNoTrackedNodeModules(
+            candidate,
+            git(candidate, ["rev-parse", "HEAD"]),
+          ),
+        ).toThrow("refuses candidate-controlled toolchains");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("derives only a canonical GitHub repository identity from origin", () => {
     expect(githubRepository("git@github.com:buildproven/agent-kit.git")).toBe(
