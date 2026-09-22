@@ -17,6 +17,10 @@ writable-disk limits. The trusted workflow must record the image digest,
 baseline SHA, PR/base/head identity, fixed gate commands, limit values, and
 container exit evidence in the certification receipt.
 
+Registry-backed dependency audit is deliberately not a container certification
+gate. The normal untrusted PR quality workflow performs that audit with its
+required registry access; the certification container remains network-free.
+
 ## Rationale
 
 The macOS Seatbelt executor cannot prevent `POSIX_SPAWN_SETSID` while allowing

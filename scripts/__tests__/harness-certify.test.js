@@ -61,6 +61,9 @@ describe("harness-certify", () => {
     expect(
       containerCommand("/trusted", ["npx", "vitest", "run", "x.test.js"]),
     ).toEqual(["/toolchain/node_modules/.bin/vitest", "run", "x.test.js"]);
+    expect(() =>
+      frozenCommand("/trusted", ["npm", "audit", "--audit-level", "high"]),
+    ).toThrow("does not permit");
     expect(() => containerCommand("/trusted", ["sh", "-c", "id"])).toThrow(
       "does not permit",
     );

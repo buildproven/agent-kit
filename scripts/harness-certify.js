@@ -20,7 +20,6 @@ const PROFILES = Object.freeze({
   "agent-kit": [
     ["format", ["node_modules/.bin/prettier", "--check", "."]],
     ["lint", ["node_modules/.bin/eslint", "."]],
-    ["security", ["npm", "audit", "--audit-level", "high"]],
   ],
 });
 
@@ -522,19 +521,6 @@ function frozenCommand(baselineDir, command) {
       ...args.slice(1),
     ];
   }
-  if (
-    file === "npm" &&
-    JSON.stringify(args) === JSON.stringify(["audit", "--audit-level", "high"])
-  ) {
-    const npmCli = path.resolve(
-      path.dirname(process.execPath),
-      "../lib/node_modules/npm/bin/npm-cli.js",
-    );
-    if (!fs.existsSync(npmCli)) {
-      fail("frozen Node runtime does not provide npm-cli.js");
-    }
-    return [process.execPath, npmCli, ...args];
-  }
   fail(`frozen policy does not permit executable '${file}'`);
 }
 
@@ -550,11 +536,6 @@ function containerCommand(toolchainDir, command) {
       path.posix.join("/toolchain", ...relative.split(path.sep)),
       ...args,
     ];
-  }
-  // The pinned container image supplies the Node/npm runtime. The baseline
-  // still owns the permitted npm subcommand through frozenCommand above.
-  if (file === process.execPath && /npm-cli\.js$/.test(args[0] || "")) {
-    return ["npm", ...args.slice(1)];
   }
   fail("frozen command cannot be mapped into the container toolchain");
 }
