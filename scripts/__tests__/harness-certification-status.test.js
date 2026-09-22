@@ -72,7 +72,7 @@ describe("harness-certification-status", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ state: "RECOVERABLE" });
   });
 
-  it("keeps a recorded live gate leader running only when its identity matches", () => {
+  it("keeps a recorded live gate leader running when its stable identity matches", () => {
     const observed = spawnSync(
       "/bin/ps",
       ["-p", String(process.pid), "-o", "lstart=", "-o", "command="],
@@ -90,7 +90,7 @@ describe("harness-certification-status", () => {
           process: {
             pid: process.pid,
             started: observed[1],
-            command: observed[2],
+            command: "pre-exec wrapper",
           },
         },
       ],

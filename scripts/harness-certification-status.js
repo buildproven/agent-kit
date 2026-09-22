@@ -47,8 +47,10 @@ function stateFor(receipt) {
       const observedGate = processIdentity(gate.processGroup);
       return Boolean(
         observedGate &&
-        observedGate.started === gate.process.started &&
-        observedGate.command === gate.process.command,
+        // sandbox-exec replaces its command with the gate program. PID start
+        // time is stable across that exec and prevents a recycled PID from
+        // being mistaken for the original gate.
+        observedGate.started === gate.process.started,
       );
     });
     const observed = Number.isInteger(receipt.owner?.pid)
