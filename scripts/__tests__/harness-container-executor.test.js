@@ -6,12 +6,15 @@ describe("harness container executor", () => {
       image: `example.test/harness@sha256:${"a".repeat(64)}`,
       candidate: "/candidate",
       toolchain: "/toolchain",
+      containerName: "harness-certification-deadbeef",
       command: ["node", "x.js"],
     });
     expect(argv).toEqual(
       expect.arrayContaining([
         "--network",
         "none",
+        "--name",
+        "harness-certification-deadbeef",
         "--cpus",
         "2",
         "--memory",
@@ -45,6 +48,7 @@ describe("harness container executor", () => {
         image: "node:latest",
         candidate: "/c",
         toolchain: "/t",
+        containerName: "harness-certification-deadbeef",
         command: ["true"],
       }),
     ).toThrow("pinned");
@@ -53,6 +57,7 @@ describe("harness container executor", () => {
         image: `sha256:${"a".repeat(64)}`,
         candidate: "/c",
         toolchain: "/t",
+        containerName: "harness-certification-deadbeef",
         command: ["true"],
       }),
     ).toThrow("pinned image reference");
@@ -61,6 +66,7 @@ describe("harness container executor", () => {
         image: `example.test/harness@sha256:${"a".repeat(64)}`,
         candidate: "c",
         toolchain: "/t",
+        containerName: "harness-certification-deadbeef",
         command: ["true"],
       }),
     ).toThrow("absolute");

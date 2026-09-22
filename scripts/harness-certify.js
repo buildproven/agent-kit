@@ -33,6 +33,8 @@ const GATE_RESOURCE_LIMITS = Object.freeze({
   extraProcesses: 128,
   volumeSize: "512m",
 });
+const MAX_CONTAINER_OUTPUT_BYTES = 1024 * 1024;
+const CONTAINER_DIAGNOSTIC_TAIL_BYTES = 16 * 1024;
 
 function fail(message, options) {
   throw new Error(`harness-certify: ${message}`, options);
@@ -222,6 +224,7 @@ function createFrozenToolchain(baselineDir) {
       recursive: true,
       dereference: false,
     });
+    fs.chmodSync(root, 0o755);
   } catch (error) {
     fs.rmSync(root, { recursive: true, force: true });
     fail(`could not snapshot frozen baseline toolchain: ${error.message}`, {
@@ -229,6 +232,31 @@ function createFrozenToolchain(baselineDir) {
     });
   }
   return { root, modules, sha256: directoryDigest(modules) };
+}
+
+function boundedOutput() {
+  const digest = crypto.createHash("sha256");
+  let bytes = 0;
+  let tail = Buffer.alloc(0);
+  let digestValue = null;
+  return {
+    append(value) {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+      digest.update(chunk);
+      bytes += chunk.length;
+      tail = Buffer.concat([tail, chunk]).subarray(
+        -CONTAINER_DIAGNOSTIC_TAIL_BYTES,
+      );
+      return bytes > MAX_CONTAINER_OUTPUT_BYTES;
+    },
+    diagnostic() {
+      return tail.toString("utf8");
+    },
+    sha256() {
+      if (digestValue === null) digestValue = digest.digest("hex");
+      return digestValue;
+    },
+  };
 }
 
 function quoteSeatbelt(value) {
@@ -566,16 +594,20 @@ function runContainerGate(
   { captureOutput = false, onStart, timeoutMs = 15 * 60 * 1000 } = {},
 ) {
   const containerCommandArgv = containerCommand(toolchainDir, command);
+  const containerName = `harness-certification-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   const argv = containerInvocation({
     image,
     candidate: candidateDir,
     toolchain: toolchainDir,
+    containerName,
     command: containerCommandArgv,
   });
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
-    let output = "";
+    const output = boundedOutput();
     let timedOut = false;
+    let outputExceeded = false;
+    let terminating = false;
     let settled = false;
     const child = spawn(argv[0], argv.slice(1), {
       cwd: candidateDir,
@@ -583,15 +615,28 @@ function runContainerGate(
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (child.pid && onStart) onStart(child.pid);
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      output += chunk;
-    });
+    const terminateContainer = () => {
+      if (terminating) return;
+      terminating = true;
+      child.kill("SIGTERM");
+      for (const args of [
+        ["kill", containerName],
+        ["rm", "-f", containerName],
+      ]) {
+        spawnSync("docker", args, { stdio: "ignore", timeout: 5_000 });
+      }
+    };
+    const recordOutput = (chunk) => {
+      if (output.append(chunk)) {
+        outputExceeded = true;
+        terminateContainer();
+      }
+    };
+    child.stdout.on("data", recordOutput);
+    child.stderr.on("data", recordOutput);
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      terminateContainer();
     }, timeoutMs);
     const finish = (result) => {
       if (settled) return;
@@ -600,7 +645,7 @@ function runContainerGate(
       resolve(result);
     };
     child.on("error", (error) => {
-      output += error.message;
+      output.append(error.message);
       finish({
         name,
         command: containerCommandArgv,
@@ -609,9 +654,9 @@ function runContainerGate(
         exitCode: null,
         signal: null,
         timedOut,
-        outputSha256: sha256(output),
+        outputSha256: output.sha256(),
         status: "failed",
-        ...(captureOutput ? { diagnostic: output } : {}),
+        ...(captureOutput ? { diagnostic: output.diagnostic() } : {}),
       });
     });
     child.on("close", (exitCode, signal) => {
@@ -623,9 +668,12 @@ function runContainerGate(
         exitCode,
         signal,
         timedOut,
-        outputSha256: sha256(output),
-        status: exitCode === 0 && !signal && !timedOut ? "success" : "failed",
-        ...(captureOutput ? { diagnostic: output } : {}),
+        outputSha256: output.sha256(),
+        status:
+          exitCode === 0 && !signal && !timedOut && !outputExceeded
+            ? "success"
+            : "failed",
+        ...(captureOutput ? { diagnostic: output.diagnostic() } : {}),
       });
     });
   });
@@ -1026,6 +1074,7 @@ module.exports = {
   assertNoTrackedNodeModules,
   assertSafeLocalGitConfig,
   assertContainerRuntime,
+  boundedOutput,
   containerCommand,
   createFrozenToolchain,
   createGateVolume,

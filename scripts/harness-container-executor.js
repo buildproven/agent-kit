@@ -19,7 +19,7 @@ function absolute(directory, name) {
   return directory;
 }
 
-function invocation({ image, candidate, toolchain, command }) {
+function invocation({ image, candidate, toolchain, containerName, command }) {
   if (
     typeof image !== "string" ||
     !/^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$/.test(image)
@@ -31,10 +31,14 @@ function invocation({ image, candidate, toolchain, command }) {
     command.some((v) => typeof v !== "string")
   )
     fail("command must be a non-empty argv array");
+  if (!/^harness-certification-[a-f0-9-]+$/.test(containerName || ""))
+    fail("containerName must be a trusted harness certification name");
   return [
     "docker",
     "run",
     "--rm",
+    "--name",
+    containerName,
     "--network",
     "none",
     "--cpus",

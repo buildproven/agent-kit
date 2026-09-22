@@ -7,6 +7,7 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
   assertNoTrackedNodeModules,
+  boundedOutput,
   containerCommand,
   createFrozenToolchain,
   createGateVolume,
@@ -124,6 +125,7 @@ describe("harness-certify", () => {
       const snapshot = createFrozenToolchain(baseline);
       try {
         expect(snapshot.root.startsWith(os.tmpdir())).toBe(true);
+        expect(fs.statSync(snapshot.root).mode & 0o111).toBe(0o111);
         expect(
           fs.readFileSync(path.join(snapshot.modules, ".bin", "probe"), "utf8"),
         ).toBe("baseline tool\n");
@@ -133,6 +135,16 @@ describe("harness-certify", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("bounds host-side container diagnostics while preserving their digest", () => {
+    const output = boundedOutput();
+    expect(output.append(Buffer.alloc(1024 * 1024, "a"))).toBe(false);
+    expect(output.append("overflow")).toBe(true);
+    expect(Buffer.byteLength(output.diagnostic())).toBeLessThanOrEqual(
+      16 * 1024,
+    );
+    expect(output.sha256()).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("removes operator Git configuration before candidate checkout", () => {

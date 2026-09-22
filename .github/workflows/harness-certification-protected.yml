@@ -7,6 +7,7 @@ on:
 
 permissions:
   actions: read
+  checks: write
   contents: read
   pull-requests: read
 
@@ -44,15 +45,17 @@ jobs:
           head="$(jq -r '.headRefOid' pull.json)"
           base="$(jq -r '.baseRefOid' pull.json)"
           test "$head" = "$(jq -r '.head_sha' source-run.json)"
+          printf '%s\n' "$head" > "$RUNNER_TEMP/head"
           git init -q "$RUNNER_TEMP/candidate"
           git -C "$RUNNER_TEMP/candidate" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
           git -C "$RUNNER_TEMP/candidate" fetch --depth=1 origin "$head"
           git -C "$RUNNER_TEMP/candidate" checkout --detach -q FETCH_HEAD
           test "$(git -C "$RUNNER_TEMP/candidate" rev-parse HEAD)" = "$head"
           printf '%s\n' "$pr" > "$RUNNER_TEMP/pr"
-          printf '%s\n' "$head" > "$RUNNER_TEMP/head"
           printf '%s\n' "$base" > "$RUNNER_TEMP/base"
       - name: Run fixed container gates
+        id: certify
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           HARNESS_CERTIFICATION_IMAGE: docker.io/library/node@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
@@ -68,6 +71,30 @@ jobs:
             --pr "$(cat "$RUNNER_TEMP/pr")" \
             --container-image "$HARNESS_CERTIFICATION_IMAGE" \
             --out "$RUNNER_TEMP/harness-certification-receipt.json"
+      - name: Publish exact candidate-head certification check
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CERTIFY_OUTCOME: ${{ steps.certify.outcome }}
+        run: |
+          test -f "$RUNNER_TEMP/head"
+          head="$(cat "$RUNNER_TEMP/head")"
+          if [ "$CERTIFY_OUTCOME" = success ]; then
+            conclusion=success
+            summary='Protected container certification passed.'
+          else
+            conclusion=failure
+            summary='Protected container certification failed; inspect this workflow run.'
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" \
+            -f name='Harness Certification Protected' \
+            -f head_sha="$head" \
+            -f status=completed \
+            -f conclusion="$conclusion" \
+            -f details_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            -f output[title]='Protected harness certification' \
+            -f output[summary]="$summary"
+          test "$CERTIFY_OUTCOME" = success
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harness-certification-${{ github.event.workflow_run.id }}
