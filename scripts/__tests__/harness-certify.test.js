@@ -8,6 +8,7 @@ const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
   assertNoTrackedNodeModules,
   containerCommand,
+  createFrozenToolchain,
   createGateVolume,
   directoryDigest,
   destroyGateDirectory,
@@ -107,6 +108,28 @@ describe("harness-certify", () => {
       const baseline = directoryDigest(root);
       fs.writeFileSync(executable, "changed tool\n");
       expect(directoryDigest(root)).not.toBe(baseline);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("snapshots the baseline toolchain in a portable temporary directory", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const baseline = path.join(root, "baseline");
+      const executable = path.join(baseline, "node_modules", ".bin", "probe");
+      fs.mkdirSync(path.dirname(executable), { recursive: true });
+      fs.writeFileSync(executable, "baseline tool\n", { mode: 0o755 });
+
+      const snapshot = createFrozenToolchain(baseline);
+      try {
+        expect(snapshot.root.startsWith(os.tmpdir())).toBe(true);
+        expect(
+          fs.readFileSync(path.join(snapshot.modules, ".bin", "probe"), "utf8"),
+        ).toBe("baseline tool\n");
+      } finally {
+        fs.rmSync(snapshot.root, { recursive: true, force: true });
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

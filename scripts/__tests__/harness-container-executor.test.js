@@ -23,6 +23,8 @@ describe("harness container executor", () => {
         "ALL",
         "--security-opt",
         "no-new-privileges",
+        "--user",
+        "65534:65534",
       ]),
     );
     expect(argv.join(" ")).toContain("dst=/source,readonly");

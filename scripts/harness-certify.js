@@ -213,16 +213,20 @@ function directoryDigest(directory) {
 }
 
 function createFrozenToolchain(baselineDir) {
-  const root = fs.mkdtempSync("/Users/Shared/harness-certify-toolchain-");
-  const modules = path.join(root, "node_modules");
-  const copied = spawnSync(
-    "/bin/cp",
-    ["-cR", path.join(baselineDir, "node_modules"), modules],
-    { encoding: "utf8" },
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "harness-certify-toolchain-"),
   );
-  if (copied.status !== 0) {
+  const modules = path.join(root, "node_modules");
+  try {
+    fs.cpSync(path.join(baselineDir, "node_modules"), modules, {
+      recursive: true,
+      dereference: false,
+    });
+  } catch (error) {
     fs.rmSync(root, { recursive: true, force: true });
-    fail(`could not snapshot frozen baseline toolchain: ${copied.stderr}`);
+    fail(`could not snapshot frozen baseline toolchain: ${error.message}`, {
+      cause: error,
+    });
   }
   return { root, modules, sha256: directoryDigest(modules) };
 }
@@ -907,6 +911,7 @@ async function main() {
     );
   }
 
+  assertNoTrackedNodeModules(candidateDir, candidateHead);
   const testPlan = selectedTestGates(
     baselineDir,
     candidateDir,
@@ -1022,6 +1027,7 @@ module.exports = {
   assertSafeLocalGitConfig,
   assertContainerRuntime,
   containerCommand,
+  createFrozenToolchain,
   createGateVolume,
   directoryDigest,
   destroyGateDirectory,

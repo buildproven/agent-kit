@@ -48,6 +48,8 @@ function invocation({ image, candidate, toolchain, command }) {
     "ALL",
     "--security-opt",
     "no-new-privileges",
+    "--user",
+    "65534:65534",
     "--tmpfs",
     `/candidate:rw,exec,nosuid,nodev,size=${WORKSPACE_LIMIT}`,
     "--tmpfs",
