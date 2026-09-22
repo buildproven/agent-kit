@@ -312,7 +312,6 @@ function seatbeltProfile({ candidateDir, scratchDir, toolchainDir }) {
     // follow the broad runtime compatibility allowance above.
     "(deny syscall-unix (syscall-number 82 147))",
     "(allow ipc-posix-shm*)",
-    "(allow signal)",
     "(allow iokit-open)",
     "(allow file-fsctl)",
     "(allow file-ioctl)",
