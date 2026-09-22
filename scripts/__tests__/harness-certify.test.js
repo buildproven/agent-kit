@@ -64,6 +64,9 @@ describe("harness-certify", () => {
       const out = path.join(root, "receipt.json");
       fs.writeFileSync(out, "prior evidence\n");
       expect(() => receiptPath(candidate, out)).toThrow("already exists");
+      const link = path.join(root, "receipt-link.json");
+      fs.symlinkSync(path.join(root, "missing.json"), link);
+      expect(() => receiptPath(candidate, link)).toThrow("already exists");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -19,7 +19,22 @@ function parse(argv) {
   if (argv.length !== 4 || argv[0] !== "--receipt" || argv[2] !== "--out") {
     fail("usage: --receipt <prior-receipt> --out <new-receipt>");
   }
-  return { receipt: path.resolve(argv[1]), out: path.resolve(argv[3]) };
+  return { receipt: path.resolve(argv[1]), out: newReceiptPath(argv[3]) };
+}
+
+function newReceiptPath(suppliedPath) {
+  const supplied = path.resolve(suppliedPath);
+  const out = path.join(
+    fs.realpathSync(path.dirname(supplied)),
+    path.basename(supplied),
+  );
+  try {
+    fs.lstatSync(out);
+    fail("--out already exists; preserve prior evidence");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return out;
 }
 
 function git(directory, args) {
@@ -84,7 +99,6 @@ function recoveryInvocation(receiptPath, out) {
   }
   const { runner } = verifiedBaseline(baseline, candidate.githubRepository);
   const candidateDirectory = fs.realpathSync(candidate.directory);
-  if (fs.existsSync(out)) fail("--out already exists; preserve prior evidence");
   return {
     runner,
     args: [

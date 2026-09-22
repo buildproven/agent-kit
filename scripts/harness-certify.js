@@ -92,13 +92,17 @@ function isWithin(directory, target) {
 }
 
 function receiptPath(candidateDir, suppliedPath) {
-  const out = path.resolve(suppliedPath);
-  const parent = fs.realpathSync(path.dirname(out));
+  const supplied = path.resolve(suppliedPath);
+  const parent = fs.realpathSync(path.dirname(supplied));
+  const out = path.join(parent, path.basename(supplied));
   if (isWithin(fs.realpathSync(candidateDir), parent)) {
     fail("--out must be outside the candidate checkout");
   }
-  if (fs.existsSync(out)) {
+  try {
+    fs.lstatSync(out);
     fail("--out already exists; preserve prior certification evidence");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
   return out;
 }
