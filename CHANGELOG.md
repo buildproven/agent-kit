@@ -21,6 +21,20 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.13.0](https://github.com/buildproven/agent-kit/compare/v4.12.3...v4.13.0) (2026-09-22)
+
+
+### Features
+
+* certify harness changes from frozen baseline ([#624](https://github.com/buildproven/agent-kit/issues/624)) ([b02b6dc](https://github.com/buildproven/agent-kit/commit/b02b6dc63fce276f35e857ef117f588fbef1d317))
+* recover certification from dead owner ([#626](https://github.com/buildproven/agent-kit/issues/626)) ([29f196a](https://github.com/buildproven/agent-kit/commit/29f196a15a6a3f8380321993851ee97acb10afe3))
+
+
+### Bug Fixes
+
+* isolate frozen npm audit config ([#628](https://github.com/buildproven/agent-kit/issues/628)) ([dde8ebc](https://github.com/buildproven/agent-kit/commit/dde8ebc4aad394b4dae459038649b8eefc6d9d36))
+* keep unknown certification files fail closed ([#627](https://github.com/buildproven/agent-kit/issues/627)) ([cde3724](https://github.com/buildproven/agent-kit/commit/cde3724298f341014e6d00dea4b6ce557899b7a3))
+
 ## [4.12.3](https://github.com/buildproven/agent-kit/compare/v4.12.2...v4.12.3) (2026-09-21)
 
 
