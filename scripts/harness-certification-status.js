@@ -20,6 +20,28 @@ function processIdentity(pid) {
   return match ? { pid, started: match[1], command: match[2] } : null;
 }
 
+function processGroupIsLive(processGroup, expectedLeader) {
+  let lines;
+  try {
+    const { execFileSync } = require("child_process");
+    lines = execFileSync("/bin/ps", ["-axo", "pid=,pgid="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).split("\n");
+  } catch {
+    // Recovery must not reclaim a certificate when the host cannot inspect the
+    // recorded process group.
+    return true;
+  }
+  const members = lines
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter(([pid, pgid]) => Number.isInteger(pid) && pgid === processGroup);
+  if (members.length === 0) return false;
+  const observedLeader = processIdentity(processGroup);
+  if (!observedLeader) return true;
+  return observedLeader.started === expectedLeader.started;
+}
+
 function fail(message) {
   throw new Error(`harness-certification-status: ${message}`);
 }
@@ -44,14 +66,7 @@ function stateFor(receipt) {
   if (receipt.state === "RUNNING") {
     const liveGates = (receipt.gates || []).filter((gate) => {
       if (!Number.isInteger(gate.processGroup) || !gate.process) return false;
-      const observedGate = processIdentity(gate.processGroup);
-      return Boolean(
-        observedGate &&
-        // sandbox-exec replaces its command with the gate program. PID start
-        // time is stable across that exec and prevents a recycled PID from
-        // being mistaken for the original gate.
-        observedGate.started === gate.process.started,
-      );
+      return processGroupIsLive(gate.processGroup, gate.process);
     });
     const observed = Number.isInteger(receipt.owner?.pid)
       ? processIdentity(receipt.owner.pid)
@@ -106,4 +121,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { main, readReceipt, stateFor };
+module.exports = { main, processGroupIsLive, readReceipt, stateFor };

@@ -1,4 +1,4 @@
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -73,29 +73,77 @@ describe("harness-certification-status", () => {
   });
 
   it("keeps a recorded live gate leader running when its stable identity matches", () => {
+    const gate = spawn("/bin/sleep", ["30"], {
+      detached: true,
+      stdio: "ignore",
+    });
     const observed = spawnSync(
       "/bin/ps",
-      ["-p", String(process.pid), "-o", "lstart=", "-o", "command="],
+      ["-p", String(gate.pid), "-o", "lstart=", "-o", "command="],
       { encoding: "utf8" },
     )
       .stdout.trim()
       .match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$/);
-    const result = status({
-      ...receipt,
-      state: "RUNNING",
-      owner: { pid: 999999 },
-      gates: [
-        {
-          processGroup: process.pid,
-          process: {
-            pid: process.pid,
-            started: observed[1],
-            command: "pre-exec wrapper",
+    try {
+      const result = status({
+        ...receipt,
+        state: "RUNNING",
+        owner: { pid: 999999 },
+        gates: [
+          {
+            processGroup: gate.pid,
+            process: {
+              pid: gate.pid,
+              started: observed[1],
+              command: "pre-exec wrapper",
+            },
           },
-        },
-      ],
+        ],
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ state: "RUNNING" });
+    } finally {
+      process.kill(-gate.pid, "SIGKILL");
+    }
+  });
+
+  it("keeps a gate running when its leader exits but a group member survives", async () => {
+    const gate = spawn("/bin/sh", ["-c", "sleep 30 & exit 0"], {
+      detached: true,
+      stdio: "ignore",
     });
-    expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ state: "RUNNING" });
+    try {
+      const observed = spawnSync(
+        "/bin/ps",
+        ["-p", String(gate.pid), "-o", "lstart=", "-o", "command="],
+        { encoding: "utf8" },
+      )
+        .stdout.trim()
+        .match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$/);
+      await new Promise((resolve) => gate.once("exit", resolve));
+      const result = status({
+        ...receipt,
+        state: "RUNNING",
+        owner: { pid: 999999 },
+        gates: [
+          {
+            processGroup: gate.pid,
+            process: {
+              pid: gate.pid,
+              started: observed[1],
+              command: observed[2],
+            },
+          },
+        ],
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ state: "RUNNING" });
+    } finally {
+      try {
+        process.kill(-gate.pid, "SIGKILL");
+      } catch {
+        // The test's group has already exited.
+      }
+    }
   });
 });
