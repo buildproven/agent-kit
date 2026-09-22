@@ -8,6 +8,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 
@@ -68,6 +69,128 @@ function git(cwd, args) {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function assertCleanCheckout(directory, role) {
+  const status = git(directory, ["status", "--porcelain=v1"]);
+  if (status) fail(`${role} checkout is dirty`);
+}
+
+function frozenInputsDigest(baselineDir) {
+  const inputs = [
+    "scripts/harness-certify.js",
+    "scripts/test-impact.js",
+    ".buildproven/test-impact.json",
+    "package-lock.json",
+  ];
+  const digest = crypto.createHash("sha256");
+  for (const input of inputs) {
+    const file = path.join(baselineDir, input);
+    digest.update(input).update("\0");
+    digest.update(fs.existsSync(file) ? fs.readFileSync(file) : "<absent>");
+    digest.update("\0");
+  }
+  return digest.digest("hex");
+}
+
+function quoteSeatbelt(value) {
+  return JSON.stringify(value);
+}
+
+function isolatedGateDirectory(candidateDir, candidateHead, baselineDir) {
+  const root = fs.mkdtempSync("/Users/Shared/harness-certify-gate-");
+  const baseline = path.join(root, "baseline");
+  const checkout = path.join(root, "candidate");
+  const baselineHead = git(baselineDir, ["rev-parse", "HEAD"]);
+  const clone = (source, destination) =>
+    spawnSync(
+      "/usr/bin/git",
+      ["clone", "--no-local", "--no-checkout", source, destination],
+      { encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } },
+    );
+  const checkoutSha = (directory, sha) =>
+    spawnSync(
+      "/usr/bin/git",
+      ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", sha],
+      {
+        cwd: directory,
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
+      },
+    );
+  const baselineClone = clone(baselineDir, baseline);
+  if (baselineClone.status !== 0)
+    fail(
+      `could not create isolated baseline checkout: ${baselineClone.stderr}`,
+    );
+  const baselineCheckout = checkoutSha(baseline, baselineHead);
+  if (baselineCheckout.status !== 0)
+    fail(
+      `could not checkout isolated baseline SHA: ${baselineCheckout.stderr}`,
+    );
+  const result = spawnSync(
+    "/usr/bin/git",
+    ["clone", "--no-local", "--no-checkout", candidateDir, checkout],
+    { encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } },
+  );
+  if (result.status !== 0)
+    fail(`could not create isolated gate checkout: ${result.stderr}`);
+  const checkoutResult = checkoutSha(checkout, candidateHead);
+  if (checkoutResult.status !== 0)
+    fail(`could not checkout isolated gate SHA: ${checkoutResult.stderr}`);
+  const copiedModules = spawnSync(
+    "/bin/cp",
+    [
+      "-cR",
+      path.join(baselineDir, "node_modules"),
+      path.join(checkout, "node_modules"),
+    ],
+    { encoding: "utf8" },
+  );
+  if (copiedModules.status !== 0)
+    fail(`could not copy frozen baseline toolchain: ${copiedModules.stderr}`);
+  const scratch = path.join(root, "scratch");
+  fs.mkdirSync(scratch, { mode: 0o700 });
+  const profile = path.join(root, "seatbelt.sb");
+  fs.writeFileSync(
+    profile,
+    `${seatbeltProfile({ baselineDir: baseline, candidateDir: checkout, scratchDir: scratch })}\n`,
+    { mode: 0o600 },
+  );
+  return { root, baseline, checkout, scratch, profile };
+}
+
+function seatbeltProfile({ baselineDir, candidateDir, scratchDir }) {
+  const nodeRuntime = path.resolve(path.dirname(process.execPath), "..");
+  const baseline = fs.realpathSync(baselineDir);
+  const candidate = fs.realpathSync(candidateDir);
+  const scratch = fs.realpathSync(scratchDir);
+  const readOnly = [
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/System",
+    "/Library",
+    "/etc",
+    "/private/var/db",
+    nodeRuntime,
+    baseline,
+  ]
+    .map(
+      (directory) => `(allow file-read* (subpath ${quoteSeatbelt(directory)}))`,
+    )
+    .join("\n");
+  return [
+    "(version 1)",
+    "(allow default)",
+    readOnly,
+    `(deny file-read* file-write* (subpath ${quoteSeatbelt(baseline)}))`,
+    `(deny file-read* file-write* (subpath ${quoteSeatbelt(os.homedir())}))`,
+    `(deny file-read* file-write* (subpath "/private/var/folders"))`,
+    `(allow file-read* file-write* (subpath ${quoteSeatbelt(candidate)}))`,
+    `(allow file-read* file-write* (subpath ${quoteSeatbelt(scratch)}))`,
+    "(deny network*)",
+  ].join("\n");
 }
 
 function writeReceipt(out, receipt, { create = false } = {}) {
@@ -173,26 +296,42 @@ function runGate(
   candidateDir,
   name,
   command,
-  { timeoutMs = 15 * 60 * 1000, killGraceMs = 5_000 } = {},
+  {
+    sandboxProfile,
+    sandboxHome,
+    toolDir = baselineDir,
+    captureOutput = false,
+    onStart,
+    ...timing
+  } = {},
 ) {
-  const [file, ...args] = frozenCommand(baselineDir, command);
+  const { timeoutMs = 15 * 60 * 1000, killGraceMs = 5_000 } = timing;
+  const frozenToolDir = fs.realpathSync(toolDir);
+  const [file, ...args] = frozenCommand(frozenToolDir, command);
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
     let output = "";
     let timedOut = false;
     let settled = false;
-    const child = spawn(file, args, {
+    const invocation = sandboxProfile
+      ? ["/usr/bin/sandbox-exec", "-f", sandboxProfile, file, ...args]
+      : [file, ...args];
+    const child = spawn(invocation[0], invocation.slice(1), {
       cwd: candidateDir,
       detached: true,
       env: {
-        ...process.env,
-        PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        PATH: `${path.join(frozenToolDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        HOME: sandboxHome || os.homedir(),
+        TMPDIR: sandboxHome || os.tmpdir(),
+        XDG_CACHE_HOME: sandboxHome || os.tmpdir(),
+        XDG_CONFIG_HOME: sandboxHome || os.tmpdir(),
         npm_config_ignore_scripts: "true",
         npm_config_registry: "https://registry.npmjs.org",
         npm_config_userconfig: "/dev/null",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (child.pid && onStart) onStart(child.pid);
     child.stdout.on("data", (chunk) => {
       output += chunk;
     });
@@ -230,6 +369,7 @@ function runGate(
         timedOut,
         outputSha256: sha256(output),
         status: "failed",
+        ...(captureOutput ? { diagnostic: output } : {}),
       });
     });
     child.on("close", (exitCode, signal) => {
@@ -243,6 +383,7 @@ function runGate(
         timedOut,
         outputSha256: sha256(output),
         status: exitCode === 0 && !signal && !timedOut ? "success" : "failed",
+        ...(captureOutput ? { diagnostic: output } : {}),
       });
     });
   });
@@ -324,13 +465,16 @@ async function main() {
       `baseline HEAD ${baselineHead} does not equal declared ${options["baseline-sha"]}`,
     );
   }
+  assertCleanCheckout(baselineDir, "baseline");
   assertFrozenRunner(baselineDir);
+  const baselineInputs = frozenInputsDigest(baselineDir);
   const candidateHead = git(candidateDir, ["rev-parse", "HEAD"]);
   if (candidateHead !== options["candidate-head"]) {
     fail(
       `candidate HEAD ${candidateHead} does not equal declared ${options["candidate-head"]}`,
     );
   }
+  assertCleanCheckout(candidateDir, "candidate");
   const candidateRepository = githubRepository(
     git(candidateDir, ["remote", "get-url", "origin"]),
   );
@@ -402,7 +546,11 @@ async function main() {
     schemaVersion: 1,
     kind: "frozen-harness-certification",
     recordedAt: new Date().toISOString(),
-    baseline: { directory: baselineDir, sha: baselineHead },
+    baseline: {
+      directory: baselineDir,
+      sha: baselineHead,
+      inputsSha256: baselineInputs,
+    },
     candidate: {
       directory: candidateDir,
       sha: candidateHead,
@@ -426,7 +574,35 @@ async function main() {
     ...PROFILES[options.profile],
     ...testPlan.gates,
   ]) {
-    receipt.gates.push(await runGate(baselineDir, candidateDir, name, command));
+    const gate = isolatedGateDirectory(
+      candidateDir,
+      candidateHead,
+      baselineDir,
+    );
+    const recordedGate = { name, state: "RUNNING", processGroup: null };
+    receipt.gates.push(recordedGate);
+    writeReceipt(out, receipt);
+    try {
+      Object.assign(
+        recordedGate,
+        await runGate(gate.baseline, gate.checkout, name, command, {
+          sandboxProfile: gate.profile,
+          sandboxHome: gate.scratch,
+          toolDir: gate.checkout,
+          onStart: (pid) => {
+            recordedGate.processGroup = pid;
+            writeReceipt(out, receipt);
+          },
+        }),
+      );
+    } finally {
+      fs.rmSync(gate.root, { recursive: true, force: true });
+    }
+    assertCleanCheckout(baselineDir, "baseline");
+    assertCleanCheckout(candidateDir, "candidate");
+    if (frozenInputsDigest(baselineDir) !== baselineInputs) {
+      fail("baseline policy or toolchain inputs changed during certification");
+    }
     writeReceipt(out, receipt);
   }
   receipt.state = receipt.gates.every((gate) => gate.status === "success")
@@ -451,6 +627,7 @@ module.exports = {
   receiptPath,
   parse,
   runGate,
+  seatbeltProfile,
   selectedTestGates,
   writeReceipt,
 };

@@ -10,6 +10,7 @@ const {
   githubRepository,
   receiptPath,
   runGate,
+  seatbeltProfile,
   selectedTestGates,
   writeReceipt,
 } = require(CERTIFY);
@@ -54,7 +55,7 @@ describe("harness-certify", () => {
   });
 
   it("rejects a candidate-controlled or pre-existing receipt path", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
     try {
       const candidate = path.join(root, "candidate");
       fs.mkdirSync(candidate);
@@ -220,7 +221,7 @@ describe("harness-certify", () => {
     try {
       const executable = path.join(root, "node_modules", ".bin", "node-proof");
       fs.mkdirSync(path.dirname(executable), { recursive: true });
-      fs.writeFileSync(executable, "#!/usr/bin/env node\nprocess.exit(0);\n", {
+      fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", {
         mode: 0o755,
       });
       const result = await runGate(root, root, "node-proof", [
@@ -229,6 +230,85 @@ describe("harness-certify", () => {
       expect(result).toMatchObject({ name: "node-proof", status: "success" });
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("denies a candidate gate access to a host sentinel", async () => {
+    const root = fs.mkdtempSync("/Users/Shared/harness-certify-");
+    const host = fs.mkdtempSync(
+      path.join(os.homedir(), "harness-certify-host-"),
+    );
+    try {
+      const baseline = path.join(root, "baseline");
+      const candidate = path.join(root, "candidate");
+      const scratch = path.join(root, "scratch");
+      const sentinel = path.join(host, "host-secret");
+      fs.mkdirSync(path.join(baseline, "node_modules", ".bin"), {
+        recursive: true,
+      });
+      fs.mkdirSync(candidate);
+      fs.mkdirSync(scratch);
+      fs.writeFileSync(sentinel, "secret\n");
+      const executable = path.join(baseline, "node_modules", ".bin", "probe");
+      fs.writeFileSync(
+        executable,
+        `#!/usr/bin/env node\nrequire('node:fs').readFileSync(${JSON.stringify(sentinel)});\n`,
+        { mode: 0o755 },
+      );
+      const candidateExecutable = path.join(
+        candidate,
+        "node_modules",
+        ".bin",
+        "probe",
+      );
+      fs.mkdirSync(path.dirname(candidateExecutable), { recursive: true });
+      fs.copyFileSync(executable, candidateExecutable);
+      fs.chmodSync(candidateExecutable, 0o755);
+      const profile = path.join(root, "seatbelt.sb");
+      fs.writeFileSync(
+        profile,
+        seatbeltProfile({
+          baselineDir: baseline,
+          candidateDir: candidate,
+          scratchDir: scratch,
+        }),
+      );
+      const result = await runGate(
+        baseline,
+        candidate,
+        "probe",
+        ["node_modules/.bin/probe"],
+        {
+          sandboxProfile: profile,
+          sandboxHome: scratch,
+          toolDir: candidate,
+          captureOutput: true,
+        },
+      );
+      expect(result.status).toBe("failed");
+      fs.writeFileSync(
+        candidateExecutable,
+        "#!/usr/bin/env node\nprocess.exit(0);\n",
+        {
+          mode: 0o755,
+        },
+      );
+      const safe = await runGate(
+        baseline,
+        candidate,
+        "safe",
+        ["node_modules/.bin/probe"],
+        {
+          sandboxProfile: profile,
+          sandboxHome: scratch,
+          toolDir: candidate,
+          captureOutput: true,
+        },
+      );
+      expect(safe.status, JSON.stringify(safe)).toBe("success");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(host, { recursive: true, force: true });
     }
   });
 });

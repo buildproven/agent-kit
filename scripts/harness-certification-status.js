@@ -42,6 +42,15 @@ function readReceipt(receiptPath) {
 
 function stateFor(receipt) {
   if (receipt.state === "RUNNING") {
+    const liveGateGroups = (receipt.gates || []).filter((gate) => {
+      if (!Number.isInteger(gate.processGroup)) return false;
+      try {
+        process.kill(-gate.processGroup, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
     const observed = Number.isInteger(receipt.owner?.pid)
       ? processIdentity(receipt.owner.pid)
       : null;
@@ -50,7 +59,7 @@ function stateFor(receipt) {
       observed.started === receipt.owner?.started &&
       observed.command === receipt.owner?.command,
     );
-    return live
+    return live || liveGateGroups.length > 0
       ? { state: "RUNNING", nextAction: "wait for the recorded owner" }
       : {
           state: "RECOVERABLE",
