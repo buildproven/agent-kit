@@ -40,9 +40,11 @@ describe("harness-certification-recover", () => {
       path.join(os.tmpdir(), "harness-recover-"),
     );
     try {
+      const candidate = path.join(directory, "candidate");
+      fs.mkdirSync(candidate);
       const prior = path.join(directory, "prior.json");
       const out = path.join(directory, "new.json");
-      fs.writeFileSync(prior, JSON.stringify(receipt(directory)));
+      fs.writeFileSync(prior, JSON.stringify(receipt(candidate)));
       const invocation = recoveryInvocation(prior, out);
       expect(invocation.runner).toBe(
         path.join(ROOT, "scripts", "harness-certify.js"),
@@ -51,6 +53,9 @@ describe("harness-certification-recover", () => {
       expect(invocation.args).toContain("a".repeat(40));
       expect(invocation.args).toContain("--pr");
       expect(invocation.args).toContain("624");
+      expect(() =>
+        recoveryInvocation(prior, path.join(candidate, "new.json")),
+      ).toThrow("outside the baseline and candidate checkouts");
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

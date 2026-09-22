@@ -19,7 +19,7 @@ function parse(argv) {
   if (argv.length !== 4 || argv[0] !== "--receipt" || argv[2] !== "--out") {
     fail("usage: --receipt <prior-receipt> --out <new-receipt>");
   }
-  return { receipt: path.resolve(argv[1]), out: newReceiptPath(argv[3]) };
+  return { receipt: path.resolve(argv[1]), out: path.resolve(argv[3]) };
 }
 
 function newReceiptPath(suppliedPath) {
@@ -50,6 +50,14 @@ function githubRepository(remote) {
     /(?:github\.com[:/])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
   );
   return match ? match[1] : null;
+}
+
+function isWithin(directory, target) {
+  const relative = path.relative(directory, target);
+  return (
+    relative === "" ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== "..")
+  );
 }
 
 function verifiedBaseline(baseline, expectedRepository) {
@@ -88,6 +96,7 @@ function validIdentity(baseline, candidate) {
 }
 
 function recoveryInvocation(receiptPath, out) {
+  const receiptOut = newReceiptPath(out);
   const receipt = readReceipt(receiptPath);
   if (stateFor(receipt).state !== "RECOVERABLE") {
     fail("prior certification is not safely recoverable");
@@ -99,6 +108,12 @@ function recoveryInvocation(receiptPath, out) {
   }
   const { runner } = verifiedBaseline(baseline, candidate.githubRepository);
   const candidateDirectory = fs.realpathSync(candidate.directory);
+  if (
+    isWithin(TRUSTED_BASELINE, receiptOut) ||
+    isWithin(candidateDirectory, receiptOut)
+  ) {
+    fail("--out must be outside the baseline and candidate checkouts");
+  }
   return {
     runner,
     args: [
@@ -120,7 +135,7 @@ function recoveryInvocation(receiptPath, out) {
       "--pr",
       String(candidate.pullRequest),
       "--out",
-      out,
+      receiptOut,
     ],
   };
 }
