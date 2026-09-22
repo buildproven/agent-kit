@@ -643,7 +643,18 @@ function withMetadataGuard(manifest, operation, timeoutMs) {
 function withGuardAt(paths, guardPath, identity, operation, timeoutMs) {
   const held = heldMetadataGuards.get(guardPath);
   if (held) {
-    if (!sameGuardOwner(guardOwner(guardPath), held))
+    let current;
+    try {
+      current = guardOwner(guardPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      // A nested transaction can observe cleanup of its previous local guard
+      // entry. Do not treat absent on-disk ownership as held: drop only the
+      // stale in-memory marker and acquire the normal exclusive guard again.
+      heldMetadataGuards.delete(guardPath);
+      return withGuardAt(paths, guardPath, identity, operation, timeoutMs);
+    }
+    if (!sameGuardOwner(current, held))
       throw new Error("metadata guard owner changed during nested transaction");
     return operation(paths, identity);
   }
