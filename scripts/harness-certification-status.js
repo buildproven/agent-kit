@@ -11,7 +11,7 @@ function processIdentity(pid) {
     line = execFileSync(
       "/bin/ps",
       ["-p", String(pid), "-o", "lstart=", "-o", "command="],
-      { encoding: "utf8" },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
   } catch {
     return null;
@@ -95,4 +95,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { main, stateFor };
+module.exports = { main, readReceipt, stateFor };
