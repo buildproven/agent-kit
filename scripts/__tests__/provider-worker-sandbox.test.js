@@ -30,7 +30,7 @@ function fixture({ permissiveCanary = false } = {}) {
   expect(spawnSync("git", ["init", "-q", target]).status).toBe(0);
   executable(
     runtime,
-    `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\nif [ "\${1:-}" = "/bin/cat" ]; then ${permissiveCanary ? 'exec "$@"' : "exit 1"}; fi\ncp "$settings" "$PWD/captured-policy.json"\nexec "$@"`,
+    `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\nif [ "\${1:-}" = "/bin/cat" ]; then ${permissiveCanary ? 'exec "$@"' : "exit 1"}; fi\ncp "$settings" "$PWD/captured-policy.json"\n[ "\${1:-}" != "--" ] || shift\nexec "$@"`,
   );
   executable(
     worker,
@@ -126,6 +126,34 @@ describe("provider worker sandbox", () => {
       "denied-read canary unexpectedly succeeded",
     );
     expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(false);
+  });
+
+  it("passes runtime-looking wrapped arguments to the child unchanged", () => {
+    const fx = fixture();
+    const result = spawnSync(
+      "bash",
+      [
+        WRAPPER,
+        "--target-dir",
+        fx.target,
+        "--output-dir",
+        fx.output,
+        "--provider",
+        "codex",
+        "--",
+        "/bin/sh",
+        "-c",
+        'test "$1" = "--settings" && test "$2" = "-c"',
+        "_",
+        "--settings",
+        "-c",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, BS_PROVIDER_SANDBOX_BIN: fx.runtime },
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("writes policy that denies credential paths and the per-launch sentinel", () => {

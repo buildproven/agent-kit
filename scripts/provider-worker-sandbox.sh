@@ -112,5 +112,5 @@ fi
     "PATH=$PATH" \
     "HOME=$ACCOUNT_HOME" \
     "TERM=${TERM:-dumb}" \
-    "$SRT_BIN" --settings "$SETTINGS" "$@"
+    "$SRT_BIN" --settings "$SETTINGS" -- "$@"
 )
