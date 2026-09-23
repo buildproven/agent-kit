@@ -117,4 +117,35 @@ describe("harness-certification-recover", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("removes only the persisted orphaned container before recovery", () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "harness-recover-container-"),
+    );
+    const originalPath = process.env.PATH;
+    try {
+      const candidate = path.join(directory, "candidate");
+      const bin = path.join(directory, "bin");
+      const calls = path.join(directory, "docker-calls");
+      fs.mkdirSync(candidate);
+      fs.mkdirSync(bin);
+      fs.writeFileSync(
+        path.join(bin, "docker"),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\nif [ "$1" = inspect ]; then printf 'harness-certification-deadbeef\\n'; fi\n`,
+        { mode: 0o755 },
+      );
+      const prior = path.join(directory, "prior.json");
+      const value = receipt(candidate);
+      value.gates = [{ containerName: "harness-certification-deadbeef" }];
+      fs.writeFileSync(prior, JSON.stringify(value));
+      process.env.PATH = `${bin}:${originalPath}`;
+      recoveryInvocation(prior, path.join(directory, "new.json"));
+      expect(fs.readFileSync(calls, "utf8")).toContain(
+        "rm -f harness-certification-deadbeef",
+      );
+    } finally {
+      process.env.PATH = originalPath;
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

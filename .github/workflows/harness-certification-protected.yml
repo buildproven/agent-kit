@@ -34,17 +34,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ github.event.workflow_run.id }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
-          test "$(jq -r '.name' source-run.json)" = 'Harness Certification Source'
-          test "$(jq -r '.path' source-run.json)" = '.github/workflows/harness-certification-source.yml'
-          test "$(jq -r '.event' source-run.json)" = 'pull_request'
-          test "$(jq '.pull_requests | length' source-run.json)" = 1
-          pr="$(jq -r '.pull_requests[0].number' source-run.json)"
-          gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json state,headRefOid,baseRefOid > pull.json
-          test "$(jq -r '.state' pull.json)" = OPEN
-          head="$(jq -r '.headRefOid' pull.json)"
-          base="$(jq -r '.baseRefOid' pull.json)"
-          test "$head" = "$(jq -r '.head_sha' source-run.json)"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
+          test "$(jq -r '.name' "$RUNNER_TEMP/source-run.json")" = 'Harness Certification Source'
+          test "$(jq -r '.path' "$RUNNER_TEMP/source-run.json")" = '.github/workflows/harness-certification-source.yml'
+          test "$(jq -r '.event' "$RUNNER_TEMP/source-run.json")" = 'pull_request'
+          test "$(jq '.pull_requests | length' "$RUNNER_TEMP/source-run.json")" = 1
+          pr="$(jq -r '.pull_requests[0].number' "$RUNNER_TEMP/source-run.json")"
+          gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json state,headRefOid,baseRefOid > "$RUNNER_TEMP/pull.json"
+          test "$(jq -r '.state' "$RUNNER_TEMP/pull.json")" = OPEN
+          head="$(jq -r '.headRefOid' "$RUNNER_TEMP/pull.json")"
+          base="$(jq -r '.baseRefOid' "$RUNNER_TEMP/pull.json")"
+          test "$head" = "$(jq -r '.head_sha' "$RUNNER_TEMP/source-run.json")"
           printf '%s\n' "$head" > "$RUNNER_TEMP/head"
           git init -q "$RUNNER_TEMP/candidate"
           git -C "$RUNNER_TEMP/candidate" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
@@ -71,15 +71,26 @@ jobs:
             --pr "$(cat "$RUNNER_TEMP/pr")" \
             --container-image "$HARNESS_CERTIFICATION_IMAGE" \
             --out "$RUNNER_TEMP/harness-certification-receipt.json"
+      - name: Preserve certification receipt
+        id: receipt
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harness-certification-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/harness-certification-receipt.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Publish exact candidate-head certification check
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           CERTIFY_OUTCOME: ${{ steps.certify.outcome }}
+          RECEIPT_OUTCOME: ${{ steps.receipt.outcome }}
         run: |
           test -f "$RUNNER_TEMP/head"
           head="$(cat "$RUNNER_TEMP/head")"
-          if [ "$CERTIFY_OUTCOME" = success ]; then
+          if [ "$CERTIFY_OUTCOME" = success ] && [ "$RECEIPT_OUTCOME" = success ]; then
             conclusion=success
             summary='Protected container certification passed.'
           else
@@ -95,9 +106,4 @@ jobs:
             -f output[title]='Protected harness certification' \
             -f output[summary]="$summary"
           test "$CERTIFY_OUTCOME" = success
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: harness-certification-${{ github.event.workflow_run.id }}
-          path: ${{ runner.temp }}/harness-certification-receipt.json
-          if-no-files-found: error
-          retention-days: 7
+          test "$RECEIPT_OUTCOME" = success

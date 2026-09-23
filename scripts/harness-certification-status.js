@@ -4,6 +4,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const CONTAINER_NAME = /^harness-certification-[a-f0-9-]+$/;
+
 function processIdentity(pid) {
   const { execFileSync } = require("child_process");
   let line;
@@ -42,6 +44,18 @@ function processGroupIsLive(processGroup, expectedLeader) {
   return observedLeader.started === expectedLeader.started;
 }
 
+function containerIsLive(containerName) {
+  if (typeof containerName !== "string" || !CONTAINER_NAME.test(containerName))
+    return false;
+  const { spawnSync } = require("child_process");
+  const result = spawnSync(
+    "docker",
+    ["inspect", "--format", "{{.State.Running}}", containerName],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000 },
+  );
+  return result.status === 0 && result.stdout.trim() === "true";
+}
+
 function fail(message) {
   throw new Error(`harness-certification-status: ${message}`);
 }
@@ -68,6 +82,9 @@ function stateFor(receipt) {
       if (!Number.isInteger(gate.processGroup) || !gate.process) return false;
       return processGroupIsLive(gate.processGroup, gate.process);
     });
+    const liveContainers = (receipt.gates || []).filter((gate) =>
+      containerIsLive(gate.containerName),
+    );
     const observed = Number.isInteger(receipt.owner?.pid)
       ? processIdentity(receipt.owner.pid)
       : null;
@@ -81,7 +98,9 @@ function stateFor(receipt) {
       : {
           state: "RECOVERABLE",
           nextAction:
-            "restart certification with the same baseline, PR, base, and head",
+            liveContainers.length > 0
+              ? "remove the recorded orphaned containers, then restart certification with the same baseline, PR, base, and head"
+              : "restart certification with the same baseline, PR, base, and head",
         };
   }
   if (receipt.state === "passed") {
@@ -121,4 +140,10 @@ if (require.main === module) {
   }
 }
 
-module.exports = { main, processGroupIsLive, readReceipt, stateFor };
+module.exports = {
+  containerIsLive,
+  main,
+  processGroupIsLive,
+  readReceipt,
+  stateFor,
+};

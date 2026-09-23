@@ -7,7 +7,11 @@
 const LIMITS = Object.freeze({ cpus: "2", memory: "3g", pids: "128" });
 const WORKSPACE_LIMIT = "1g";
 const TMP_LIMIT = "64m";
-const ENTRYPOINT = 'cp -R /source/. /candidate/; cd /candidate; exec "$@"';
+// Candidate configuration resolves modules from its own directory.  Link that
+// lookup point to the immutable baseline toolchain after the source-only copy;
+// candidate code never receives a writable dependency tree.
+const ENTRYPOINT =
+  'cp -R /source/. /candidate/; ln -s /toolchain/node_modules /candidate/node_modules; cd /candidate; exec "$@"';
 
 function fail(message) {
   throw new Error(`harness-container-executor: ${message}`);
@@ -39,6 +43,8 @@ function invocation({ image, candidate, toolchain, containerName, command }) {
     "--rm",
     "--name",
     containerName,
+    "--label",
+    `buildproven.harness-certification=${containerName}`,
     "--network",
     "none",
     "--cpus",

@@ -590,11 +590,10 @@ function assertContainerRuntime() {
 }
 
 function runContainerGate(
-  { toolchainDir, candidateDir, image, name, command },
+  { toolchainDir, candidateDir, image, name, containerName, command },
   { captureOutput = false, onStart, timeoutMs = 15 * 60 * 1000 } = {},
 ) {
   const containerCommandArgv = containerCommand(toolchainDir, command);
-  const containerName = `harness-certification-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   const argv = containerInvocation({
     image,
     candidate: candidateDir,
@@ -1016,6 +1015,7 @@ async function main() {
         state: "RUNNING",
         processGroup: null,
         process: null,
+        containerName: `harness-certification-${process.pid}-${crypto.randomBytes(16).toString("hex")}`,
         resourceLimits: CONTAINER_LIMITS,
       };
       receipt.gates.push(recordedGate);
@@ -1028,6 +1028,7 @@ async function main() {
             candidateDir,
             image: options["container-image"],
             name,
+            containerName: recordedGate.containerName,
             command,
           },
           {

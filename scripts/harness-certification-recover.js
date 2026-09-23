@@ -4,7 +4,7 @@
 // Restarts a dead frozen-baseline certification without importing candidate code.
 // The recorded baseline, candidate, and GitHub identity are the only inputs.
 
-const { execFileSync } = require("child_process");
+const { execFileSync, spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { readReceipt, stateFor } = require("./harness-certification-status.js");
@@ -98,6 +98,48 @@ function validIdentity(baseline, candidate, executor) {
   );
 }
 
+function removeOrphanedContainers(receipt) {
+  const names = [
+    ...new Set((receipt.gates || []).map((gate) => gate.containerName)),
+  ];
+  for (const name of names) {
+    if (name === undefined) continue;
+    if (
+      typeof name !== "string" ||
+      !/^harness-certification-[a-f0-9-]+$/.test(name)
+    )
+      fail("prior receipt has an unsafe container identity");
+    const inspected = spawnSync(
+      "docker",
+      [
+        "inspect",
+        "--format",
+        '{{ index .Config.Labels "buildproven.harness-certification" }}',
+        name,
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5_000,
+      },
+    );
+    if (inspected.status !== 0) {
+      if (inspected.stderr.includes("No such object")) continue;
+      fail(`could not inspect recorded orphaned container '${name}'`);
+    }
+    if (inspected.stdout.trim() !== name) {
+      fail(`recorded orphaned container '${name}' lacks its identity label`);
+    }
+    const removed = spawnSync("docker", ["rm", "-f", name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
+    });
+    if (removed.status !== 0)
+      fail(`could not remove recorded orphaned container '${name}'`);
+  }
+}
+
 function recoveryInvocation(receiptPath, out) {
   const receiptOut = newReceiptPath(out);
   const receipt = readReceipt(receiptPath);
@@ -109,6 +151,9 @@ function recoveryInvocation(receiptPath, out) {
   if (!validIdentity(baseline, candidate, receipt.executor)) {
     fail("prior receipt lacks a complete certification identity");
   }
+  // The owner is dead.  Before a new attempt, inspect and remove only the
+  // unpredictable identities persisted by the prior attempt.
+  removeOrphanedContainers(receipt);
   const { runner } = verifiedBaseline(baseline, candidate.githubRepository);
   const candidateDirectory = fs.realpathSync(candidate.directory);
   if (
@@ -164,4 +209,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parse, recoveryInvocation };
+module.exports = { parse, recoveryInvocation, removeOrphanedContainers };

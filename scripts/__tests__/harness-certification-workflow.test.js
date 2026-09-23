@@ -18,5 +18,11 @@ describe("protected harness certification workflow", () => {
     expect(workflow).toContain('head_sha="$head"');
     expect(workflow).toContain('conclusion="$conclusion"');
     expect(workflow).toContain('test "$CERTIFY_OUTCOME" = success');
+    expect(workflow).toContain('test "$RECEIPT_OUTCOME" = success');
+    expect(workflow).toContain('> "$RUNNER_TEMP/source-run.json"');
+    expect(workflow).toContain('> "$RUNNER_TEMP/pull.json"');
+    expect(workflow.indexOf("Preserve certification receipt")).toBeLessThan(
+      workflow.indexOf("Publish exact candidate-head certification check"),
+    );
   });
 });

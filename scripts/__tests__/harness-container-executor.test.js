@@ -15,6 +15,8 @@ describe("harness container executor", () => {
         "none",
         "--name",
         "harness-certification-deadbeef",
+        "--label",
+        "buildproven.harness-certification=harness-certification-deadbeef",
         "--cpus",
         "2",
         "--memory",
@@ -32,6 +34,9 @@ describe("harness container executor", () => {
     );
     expect(argv.join(" ")).toContain("dst=/source,readonly");
     expect(argv.join(" ")).toContain("dst=/toolchain,readonly");
+    expect(ENTRYPOINT).toContain(
+      "ln -s /toolchain/node_modules /candidate/node_modules",
+    );
     expect(argv).toEqual(
       expect.arrayContaining([
         "--tmpfs",
