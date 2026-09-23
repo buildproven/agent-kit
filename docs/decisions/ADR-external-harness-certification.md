@@ -1,74 +1,59 @@
-# ADR: Certify harness changes from a frozen baseline
+# ADR: Retire experimental harness certification
 
 ## Status
 
-Accepted for the agent-kit bootstrap. Agent-setup certification is a later
-dependent change: it must run from a frozen agent-setup baseline after that
-baseline pins the certified agent-kit release.
+Supersedes the frozen-baseline certification decision from #624.
+Accepted direction after independent Claude Opus 5.5 architecture review,
+2026-09-23. Implementation and merge verification remain separate obligations.
+
+## Context
+
+The certifier recorded baseline and candidate commit identities but executed
+mutable candidate configuration and tests with host authority. Pinning tools did
+not isolate candidate execution, protect its evidence, or prove that the tested
+content still matched the recorded revisions. Extending the runner into a generic
+certification platform added a second delivery path without meeting those claims.
+
+A source trace of agent-kit and agent-setup found no production admission or merge
+consumer of these receipts. References are the experimental runner, its recovery
+and status commands, tests and selector mappings. Manual callers may still exist,
+so retain explicit compatibility refusals instead of silently removing commands.
 
 ## Decision
 
-Harness changes in `agent-kit` and dependent `agent-setup` must be built,
-tested, reviewed, and merged by a certification runtime pinned to an already
-merged baseline. Candidate harness source can be executed as the subject of
-tests, but it must not provide the orchestration, policy, lease recovery, or
-merge code that certifies that same candidate.
+Retire execution and recovery. Both old command names exit 78 with a reason and
+the supported alternative, without reading candidate inputs, running Git or
+providers, creating receipts, or changing historical evidence.
 
-The agent-kit bootstrap interface is one explicit request:
+Keep the status command read-only. For valid historical receipts it returns
+`state: RETIRED`, the original `recordedState`, and
+`authority: historical-only`. It must not imply that an old passing receipt
+authorizes merge or that a missing parent PID makes descendants safe to restart.
+No automatic migration or deletion of existing receipts occurs.
 
-```text
-certify --baseline <immutable-kit-sha> --candidate <kit-pr,head> --claim engineering
-```
+Use direct repository checks and independent review from a stable control
+checkout, with required hooks, CI and existing merge protection. Candidate
+runtime code remains a test subject, not its own policy or merge authority.
+Retiring this command does not establish host isolation of ordinary repository
+gates or finish provider-worker sandbox integration.
 
-It records the baseline digest, candidate/base/head identities, fixed native
-gate commands, independent-review artifacts, GitHub required-check state, and
-the exact merge read-back. It returns one terminal state: `MERGED`,
-`NEEDS_FIX`, `WAITING_GITHUB`, `RECOVERABLE`, or `BLOCKED_EXTERNAL`.
+## Alternatives
 
-## Invariants
+Repair baseline selection only: rejected because it does not solve mutable
+content, authority or evidence integrity.
 
-1. Candidate source never supplies the certification runner or merge logic.
-2. A candidate can change only after a new exact-head certification request.
-3. Native gate commands and their timeouts come from the frozen baseline,
-   never from the candidate branch.
-4. Review artifacts bind the baseline digest and candidate base/head/diff.
-5. A non-running terminal campaign is recoverable only after PID/process-group,
-   PR, head, and merge-outcome checks prove there is no live or ambiguous owner.
-6. `engineering` is explicit by default for harness work. It proves engineering
-   delivery only; it never claims product admission.
-7. The receipt path is outside the candidate checkout and is new. Candidate code
-   cannot replace, redirect, or reuse certification evidence.
-8. Agent-setup updates its `core` pin only after the certified agent-kit release
-   is merged and tagged. Its own certification runs from a frozen setup baseline.
+Build stronger generic certification: rejected as unnecessary scope for a
+command with no required production consumer.
 
-## Alternatives considered
+Remove all three command files: rejected because unknown manual callers need
+an actionable refusal and historical receipts must remain inspectable.
 
-Use the candidate harness for its own merge. Rejected: a broken recovery,
-status, policy, or merge implementation can self-certify.
+## Verification and rollback
 
-Use only GitHub CI. Rejected: CI can run candidate-controlled workflow and
-does not provide independent local recovery or reviewer provenance.
+Public CLI tests prove refusal, no new receipt, preservation of old receipts,
+historical-only status and rejection of malformed historical states. Required
+independent review and CI apply to the final revision.
 
-Build a second permanent harness. Rejected: duplicated policy would recreate
-the current divergence and maintenance cost.
-
-## Rollback
-
-The baseline runtime is read-only with respect to candidate policy. If a
-certification defect is found, preserve its receipt, stop before merge, and
-pin the preceding merged baseline for the replacement run. Candidate branches
-and evidence remain intact.
-
-## Verification
-
-- Red-capable test: candidate attempts to select a different gate or merge
-  command; certification rejects it.
-- Red-capable test: a dead old owner can transfer only after all liveness and
-  exact-identity checks pass.
-- Red-capable test: a live process, changed PR head, or ambiguous merge blocks
-  recovery.
-- Test: omitted claim becomes `engineering`; product admission remains absent.
-- Test: status always returns a terminal state and next action.
-- Independent review uses artifacts generated from the frozen baseline.
-- A controlled agent-kit change passes without invoking candidate certification
-  code as policy or orchestration.
+Git history preserves the retired implementation. Restoring execution requires
+a separately reviewed supported design and verified boundary; do not revive it
+as an automatic fallback. Existing protected delivery remains unchanged.
