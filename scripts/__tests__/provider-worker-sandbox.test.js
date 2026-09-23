@@ -29,7 +29,7 @@ function fixture({ permissiveCanary = false } = {}) {
   spawnSync("mkdir", ["-p", target, output, bin], { encoding: "utf8" });
   executable(
     runtime,
-    `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\nif [ "\${1:-}" = "/bin/cat" ]; then ${permissiveCanary ? 'exec "$@"' : "exit 1"}; fi\ncp "$settings" "$(dirname "$settings")/captured-policy.json"\nexec "$@"`,
+    `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\nif [ "\${1:-}" = "/bin/cat" ]; then ${permissiveCanary ? 'exec "$@"' : "exit 1"}; fi\ncp "$settings" "$PWD/captured-policy.json"\nexec "$@"`,
   );
   executable(
     worker,
@@ -132,7 +132,7 @@ describe("provider worker sandbox", () => {
     const result = launch(fx);
     expect(result.status).toBe(0);
     const policy = JSON.parse(
-      readFileSync(path.join(fx.output, "captured-policy.json"), "utf8"),
+      readFileSync(path.join(fx.target, "captured-policy.json"), "utf8"),
     );
     expect(policy.filesystem.denyRead).toContain(`${process.env.HOME}/.ssh`);
     expect(policy.filesystem.denyRead).toContain(
@@ -157,9 +157,7 @@ describe("provider worker sandbox", () => {
     );
     expect(policy.filesystem.denyWrite).toContain("/tmp/claude");
     expect(
-      policy.filesystem.denyRead.some((value) =>
-        value.includes(".provider-sandbox-sentinel."),
-      ),
+      policy.filesystem.denyRead.some((value) => value.endsWith("/sentinel")),
     ).toBe(true);
   });
 
@@ -169,7 +167,7 @@ describe("provider worker sandbox", () => {
     const result = launch(fx, { HOME: spoofedHome });
     expect(result.status).toBe(0);
     const policy = JSON.parse(
-      readFileSync(path.join(fx.output, "captured-policy.json"), "utf8"),
+      readFileSync(path.join(fx.target, "captured-policy.json"), "utf8"),
     );
     const actualHome = process.env.HOME;
     expect(policy.filesystem.denyRead).toContain(actualHome);

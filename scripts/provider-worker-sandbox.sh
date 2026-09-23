@@ -71,9 +71,10 @@ SRT_BIN="${BS_PROVIDER_SANDBOX_BIN:-$SCRIPT_DIR/../node_modules/.bin/srt}"
 [ -x "$SRT_BIN" ] || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 
 RUNTIME_DIR=$(cd "$SCRIPT_DIR/../node_modules" && pwd)
-SETTINGS=$(mktemp "$OUTPUT_DIR/.provider-sandbox-settings.XXXXXX") || exit 2
-SENTINEL=$(mktemp "$OUTPUT_DIR/.provider-sandbox-sentinel.XXXXXX") || { rm -f "$SETTINGS"; exit 2; }
-cleanup() { rm -f "$SETTINGS" "$SENTINEL"; }
+CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-sandbox.XXXXXX") || exit 2
+SETTINGS="$CONTROL_DIR/settings.json"
+SENTINEL="$CONTROL_DIR/sentinel"
+cleanup() { rm -f "$SETTINGS" "$SENTINEL"; rmdir "$CONTROL_DIR" 2>/dev/null || true; }
 trap cleanup EXIT
 printf '%s\n' 'sandbox canary' > "$SENTINEL"
 
@@ -88,10 +89,11 @@ jq -n \
   --arg output "$OUTPUT_DIR" \
   --arg scripts "$SCRIPT_DIR" \
   --arg runtime "$RUNTIME_DIR" \
+  --arg control "$CONTROL_DIR" \
   --arg sentinel "$SENTINEL" \
   --arg providerHome "$PROVIDER_HOME" \
   --argjson domains "$NETWORK_DOMAINS" \
-  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$providerHome,$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:["/tmp/claude",$home+"/.claude/debug"]},network:{allowedDomains:$domains,deniedDomains:[]}}' \
+  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$providerHome,$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug"]},network:{allowedDomains:$domains,deniedDomains:[]}}' \
   > "$SETTINGS"
 
 # A passed canary is proof that the configured runtime is enforcing its most
@@ -101,8 +103,11 @@ if "$SRT_BIN" --settings "$SETTINGS" /bin/cat "$SENTINEL" >/dev/null 2>&1; then
   exit 78
 fi
 
-env -i \
-  "PATH=$PATH" \
-  "HOME=$ACCOUNT_HOME" \
-  "TERM=${TERM:-dumb}" \
-  "$SRT_BIN" --settings "$SETTINGS" "$@"
+(
+  cd "$TARGET_DIR"
+  env -i \
+    "PATH=$PATH" \
+    "HOME=$ACCOUNT_HOME" \
+    "TERM=${TERM:-dumb}" \
+    "$SRT_BIN" --settings "$SETTINGS" "$@"
+)
