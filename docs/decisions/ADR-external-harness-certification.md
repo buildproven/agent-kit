@@ -45,6 +45,8 @@ the exact merge read-back. It returns one terminal state: `MERGED`,
 10. Gate sandboxes deny writes by default. Each gate receives one private,
     harness-owned scratch directory; it cannot modify snapshots, checkouts,
     receipts, or any other host path.
+    They also deny network access and host reads outside the pinned runtime,
+    system paths, and frozen snapshots.
 11. Snapshot dependency installation uses a separate harness-owned environment.
     Candidate npm configuration cannot redirect caches, logs, home, or temp writes.
 

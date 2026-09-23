@@ -282,17 +282,34 @@ function sandboxPath(value) {
 function snapshotSandboxProfile(baselineDir, candidateDir, scratchDirectory) {
   if (!scratchDirectory)
     fail("gate sandbox requires a private scratch directory");
-  fs.realpathSync(baselineDir);
-  fs.realpathSync(candidateDir);
+  const readRoots = [
+    ...new Set(
+      [
+        baselineDir,
+        candidateDir,
+        path.resolve(path.dirname(process.execPath), ".."),
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/System",
+        "/Library",
+        "/dev",
+        "/private/etc",
+        "/private/var",
+      ].map((dir) => fs.realpathSync(dir)),
+    ),
+  ];
   const scratch = fs.realpathSync(scratchDirectory);
   return [
     "(version 1)",
     "(deny default)",
+    '(import "system.sb")',
     "(allow process*)",
     "(allow sysctl-read)",
-    "(allow network-outbound)",
     '(allow file-read-metadata (subpath "/"))',
-    '(allow file-read* (subpath "/"))',
+    ...readRoots.map(
+      (root) => `(allow file-read* (subpath "${sandboxPath(root)}"))`,
+    ),
     `(allow file-read* file-write* (subpath "${sandboxPath(scratch)}"))`,
   ].join(" ");
 }

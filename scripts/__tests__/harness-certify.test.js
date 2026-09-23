@@ -305,6 +305,9 @@ describe("harness-certify", () => {
         expect(snapshotSandboxProfile(root, root, scratch)).toContain(
           "(deny default)",
         );
+        expect(snapshotSandboxProfile(root, root, scratch)).not.toContain(
+          "network-outbound",
+        );
         const result = await runGate(root, root, "mutation", [
           "node_modules/.bin/mutate",
         ]);
@@ -312,6 +315,34 @@ describe("harness-certify", () => {
         expect(fs.existsSync(path.join(root, "marker"))).toBe(false);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "denies a gate read of a host-only sentinel",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      const host = fs.mkdtempSync(
+        path.join(os.homedir(), "harness-certify-sentinel-"),
+      );
+      try {
+        const sentinel = path.join(host, "secret");
+        const executable = path.join(root, "node_modules", ".bin", "read-host");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(sentinel, "secret\n", { mode: 0o600 });
+        fs.writeFileSync(
+          executable,
+          `#!/bin/sh\nif cat '${sentinel}' >/dev/null 2>&1; then exit 1; fi\n`,
+          { mode: 0o755 },
+        );
+        const result = await runGate(root, root, "read-host", [
+          "node_modules/.bin/read-host",
+        ]);
+        expect(result.status).toBe("success");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(host, { recursive: true, force: true });
       }
     },
   );
