@@ -497,11 +497,8 @@ describe("provider worker sandbox", () => {
           "--provider",
           "codex",
           "--",
-          "/bin/sh",
-          "-c",
-          'touch "$1/worker-ran"',
-          "_",
-          realpathSync(fx.output),
+          "/usr/bin/touch",
+          path.join(realpathSync(fx.output), "worker-ran"),
         ],
         {
           encoding: "utf8",
