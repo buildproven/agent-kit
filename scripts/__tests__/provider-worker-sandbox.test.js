@@ -411,6 +411,8 @@ describe("provider worker sandbox", () => {
 
   it("rejects an output directory inside a credential root", () => {
     const fx = fixture();
+    const credentialOutput = path.join(process.env.HOME, ".codex");
+    mkdirSync(credentialOutput, { recursive: true });
     const result = spawnSync(
       "bash",
       [
@@ -418,7 +420,7 @@ describe("provider worker sandbox", () => {
         "--target-dir",
         fx.target,
         "--output-dir",
-        path.join(process.env.HOME, ".codex"),
+        credentialOutput,
         "--provider",
         "codex",
         "--",
