@@ -4,22 +4,6 @@
 const fs = require("fs");
 const path = require("path");
 
-function processIdentity(pid) {
-  const { execFileSync } = require("child_process");
-  let line;
-  try {
-    line = execFileSync(
-      "/bin/ps",
-      ["-p", String(pid), "-o", "lstart=", "-o", "command="],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-  } catch {
-    return null;
-  }
-  const match = line.match(/^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$/);
-  return match ? { pid, started: match[1], command: match[2] } : null;
-}
-
 function fail(message) {
   throw new Error(`harness-certification-status: ${message}`);
 }
@@ -41,37 +25,17 @@ function readReceipt(receiptPath) {
 }
 
 function stateFor(receipt) {
-  if (receipt.state === "RUNNING") {
-    const observed = Number.isInteger(receipt.owner?.pid)
-      ? processIdentity(receipt.owner.pid)
-      : null;
-    const live = Boolean(
-      observed &&
-      observed.started === receipt.owner?.started &&
-      observed.command === receipt.owner?.command,
-    );
-    return live
-      ? { state: "RUNNING", nextAction: "wait for the recorded owner" }
-      : {
-          state: "RECOVERABLE",
-          nextAction:
-            "restart certification with the same baseline, PR, base, and head",
-        };
+  if (!["RUNNING", "passed", "failed"].includes(receipt.state)) {
+    fail(`unknown receipt state '${receipt.state}'`);
   }
-  if (receipt.state === "passed") {
-    return {
-      state: "WAITING_REVIEW",
-      nextAction: "attach independent review and protected-check evidence",
-    };
-  }
-  if (receipt.state === "failed") {
-    return {
-      state: "NEEDS_FIX",
-      nextAction:
-        "repair the first failed fixed gate, then restart certification",
-    };
-  }
-  fail(`unknown receipt state '${receipt.state}'`);
+  return {
+    state: "RETIRED",
+    recordedState: receipt.state,
+    authority: "historical-only",
+    nextAction:
+      "Preserve this historical receipt. Do not restart certification or infer process liveness from it. " +
+      "Use direct repository checks, independent review, and protected CI for current delivery.",
+  };
 }
 
 function main(argv = process.argv.slice(2)) {
@@ -80,9 +44,8 @@ function main(argv = process.argv.slice(2)) {
   }
   const receiptPath = path.resolve(argv[1]);
   const receipt = readReceipt(receiptPath);
-  const { state, nextAction } = stateFor(receipt);
   process.stdout.write(
-    `${JSON.stringify({ state, nextAction, receipt: receiptPath, candidate: receipt.candidate, gates: receipt.gates }, null, 2)}\n`,
+    `${JSON.stringify({ ...stateFor(receipt), receipt: receiptPath, candidate: receipt.candidate, gates: receipt.gates }, null, 2)}\n`,
   );
 }
 

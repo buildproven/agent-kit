@@ -27,14 +27,18 @@ const receipt = {
 };
 
 describe("harness-certification-status", () => {
-  it("makes a dead owner recoverable instead of reporting it as active", () => {
+  it("does not offer restart when a historical owner is dead", () => {
     const result = status({
       ...receipt,
       state: "RUNNING",
       owner: { pid: 999999 },
     });
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ state: "RECOVERABLE" });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      state: "RETIRED",
+      recordedState: "RUNNING",
+      authority: "historical-only",
+    });
   });
 
   it("makes a failed fixed gate actionable", () => {
@@ -44,7 +48,11 @@ describe("harness-certification-status", () => {
       owner: { pid: process.pid },
     });
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ state: "NEEDS_FIX" });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      state: "RETIRED",
+      recordedState: "failed",
+      authority: "historical-only",
+    });
   });
 
   it("does not trust a reused PID with a different process identity", () => {
@@ -58,6 +66,25 @@ describe("harness-certification-status", () => {
       },
     });
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ state: "RECOVERABLE" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ state: "RETIRED" });
+  });
+
+  it("does not turn an old passing receipt into current merge authority", () => {
+    const result = status({ ...receipt, state: "passed" });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      state: "RETIRED",
+      recordedState: "passed",
+      authority: "historical-only",
+    });
+    expect(JSON.parse(result.stdout).nextAction).toContain(
+      "independent review",
+    );
+  });
+
+  it("rejects malformed historical states", () => {
+    const result = status({ ...receipt, state: "invented-success" });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("unknown receipt state");
   });
 });
