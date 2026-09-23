@@ -161,6 +161,43 @@ describe("harness-certify", () => {
     }
   });
 
+  it("refuses to use a candidate checkout as its own certification baseline", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const candidateHead = git(ROOT, ["rev-parse", "HEAD"]);
+      const result = spawnSync(
+        "node",
+        [
+          CERTIFY,
+          "--baseline-sha",
+          candidateHead,
+          "--candidate-dir",
+          ROOT,
+          "--candidate-head",
+          candidateHead,
+          "--base-sha",
+          candidateHead,
+          "--profile",
+          "agent-kit",
+          "--claim",
+          "engineering",
+          "--github-repo",
+          "buildproven/agent-kit",
+          "--pr",
+          "1",
+          "--out",
+          path.join(root, "receipt.json"),
+        ],
+        { cwd: ROOT, encoding: "utf8" },
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("must be distinct");
+      expect(fs.existsSync(path.join(root, "receipt.json"))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("selects tests from the frozen baseline policy, not candidate commands", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {

@@ -318,11 +318,21 @@ async function main() {
   const options = parse(process.argv.slice(2));
   const baselineDir = fs.realpathSync(process.cwd());
   const candidateDir = fs.realpathSync(options["candidate-dir"]);
+  if (baselineDir === candidateDir) {
+    fail("baseline and candidate checkouts must be distinct");
+  }
   const baselineHead = git(baselineDir, ["rev-parse", "HEAD"]);
   if (baselineHead !== options["baseline-sha"]) {
     fail(
       `baseline HEAD ${baselineHead} does not equal declared ${options["baseline-sha"]}`,
     );
+  }
+  const trustedMain = git(baselineDir, [
+    "rev-parse",
+    "refs/remotes/origin/main",
+  ]);
+  if (trustedMain !== baselineHead) {
+    fail("baseline checkout must be pinned to canonical origin/main");
   }
   assertFrozenRunner(baselineDir);
   const candidateHead = git(candidateDir, ["rev-parse", "HEAD"]);
