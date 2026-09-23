@@ -33,6 +33,7 @@
     "check:commands": "bash scripts/check-command-readme.sh"
   },
   "devDependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.77",
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "^10.0.1",

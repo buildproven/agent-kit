@@ -4,6 +4,23 @@
   "mappings": [
     {
       "paths": [
+        "scripts/provider-worker-sandbox.sh",
+        "scripts/__tests__/provider-worker-sandbox.test.js",
+        "docs/decisions/ADR-provider-worker-sandbox.md"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/provider-worker-sandbox.test.js"
+          ]
+        }
+      ]
+    },
+    {
+      "paths": [
         "scripts/product-completion.js",
         "scripts/product-evidence.js",
         "scripts/product-admission.js",
