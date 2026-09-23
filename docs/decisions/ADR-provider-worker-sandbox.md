@@ -81,7 +81,51 @@ AppleEvents, controller Git hooks/configuration, real provider authentication,
 linked-worktree Git metadata, nested-repository rejection, and a provider
 worker canary before this wrapper is wired into normal provider execution.
 
-## Rollback
+## Executable-path follow-up (BUI-954, measured decision)
+
+The installed clients fail before startup because their launchers resolve into
+denied user directories. A native probe in an already allowed target also fails
+when invoked through `/var` rather than its canonical `/private/var` path.
+
+A proposed receipt extension for extra executable reads received a bounded
+Claude Opus design review. Its intended red regression then passed on unchanged
+code. Actual native Claude and Codex `--version` also pass without extra grants.
+Therefore do not implement that extension. Process execution and file reading
+are separate sandbox operations; an executable does not always need a read grant.
+The Claude shell launcher failed while searching a denied versions directory;
+the Codex npm launcher failed, but its native executable did not. A future
+controller integration must resolve native binaries before confinement and use
+canonical paths. Do not grant package trees to compensate for launcher behavior.
+No production wrapper or receipt schema change is needed for these version probes.
+This finding does not establish authenticated execution or ordinary tool use.
+
+Before integration, repeat filesystem/environment and native Keychain probes
+under the exact final policy. Any policy change invalidates prior results.
+The ordinary native `SecItemCopyMatching` canary is readable outside confinement
+with the same scrubbed environment and returns no item inside. The synthetic
+item is removed in a finally path. Data-protection item creation returns -34018
+outside confinement: this case is unverified, not a sandbox pass. The installed
+Claude and Codex entitlements contain no Keychain access groups; do not assume
+this establishes support or isolation for future signed clients. Authentication
+integration must resolve that gap or explicitly reject an unsupported client.
+No test reads real account credentials.
+
+Alternatives: broad home/package grants are rejected because they expose
+unrelated state. Loading a JS launcher is unnecessary for the installed native
+clients and adds interpreter/package-path obligations. Future script-only
+installations require a separate bounded launch contract, not silent fallback.
+
+Verification: exact installed native `--version` for both clients; canonical
+native execution while the same file remains unreadable; unchanged file/Git
+write/ambient-environment denial; and native credential probes. Run the optional
+host credential tests with `BS_SANDBOX_CREDENTIAL_PROBE=1 npx vitest run
+scripts/__tests__/provider-worker-sandbox.test.js`. They create uniquely named
+synthetic items only, clean them up in finally paths, and explicitly skip an
+unsupported data-protection baseline instead of claiming it passed. The default
+suite does not require access to an operator's Keychain. A selected isolation
+mode must never fall back to unrestricted execution.
+
+## Integration rollback
 
 The wrapper is an unused, fail-closed launch utility until a later provider-run
 integration. Removing that integration returns workers to the existing launch

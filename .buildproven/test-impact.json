@@ -6,6 +6,7 @@
       "paths": [
         "scripts/provider-worker-sandbox.sh",
         "scripts/__tests__/provider-worker-sandbox.test.js",
+        "scripts/__tests__/fixtures/credential-boundary.c",
         "docs/decisions/ADR-provider-worker-sandbox.md"
       ],
       "commands": [

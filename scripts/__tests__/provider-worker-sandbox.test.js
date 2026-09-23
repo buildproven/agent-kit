@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { makeTempDir } from "./helpers/tmp.js";
 
@@ -502,6 +503,165 @@ describe("provider worker sandbox", () => {
     expect(result.status).toBe(78);
     expect(result.stderr).toContain("must have detached HEAD");
   });
+
+  it.skipIf(process.platform !== "darwin" || !existsSync(REAL_RUNTIME))(
+    "executes a canonical native binary without granting its directory read access",
+    () => {
+      const fx = fixture();
+      const binary = path.join(realpathSync(fx.root), "native-worker");
+      copyFileSync("/usr/bin/true", binary);
+      chmodSync(binary, 0o755);
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          WRAPPER,
+          "--target-dir",
+          fx.target,
+          "--output-dir",
+          fx.output,
+          "--provider",
+          "codex",
+          "--",
+          binary,
+        ],
+        {
+          encoding: "utf8",
+          timeout: 15000,
+          env: { ...process.env, BS_GOVERNED_PROVIDER_SNAPSHOT: "1" },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const deniedRead = spawnSync(
+        "/bin/bash",
+        [
+          WRAPPER,
+          "--target-dir",
+          fx.target,
+          "--output-dir",
+          fx.output,
+          "--provider",
+          "codex",
+          "--",
+          "/bin/cat",
+          binary,
+        ],
+        {
+          encoding: "utf8",
+          timeout: 15000,
+          env: { ...process.env, BS_GOVERNED_PROVIDER_SNAPSHOT: "1" },
+        },
+      );
+      expect(deniedRead.status).not.toBe(0);
+      expect(deniedRead.stderr).toContain("Operation not permitted");
+    },
+  );
+
+  for (const mode of ["ordinary", "data-protection"]) {
+    it.skipIf(
+      process.platform !== "darwin" ||
+        !existsSync(REAL_RUNTIME) ||
+        process.env.BS_SANDBOX_CREDENTIAL_PROBE !== "1",
+    )(
+      `denies native ${mode} credential access under the real wrapper policy`,
+      (context) => {
+        const fx = fixture();
+        const binary = path.join(realpathSync(fx.target), "credential-probe");
+        const invoke = (args) =>
+          spawnSync(binary, args, {
+            encoding: "utf8",
+            timeout: 15000,
+            env: {
+              PATH: "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+              HOME: process.env.HOME,
+              TERM: "dumb",
+            },
+          });
+        const compile = spawnSync(
+          "/usr/bin/xcrun",
+          [
+            "clang",
+            "-framework",
+            "Security",
+            "-framework",
+            "CoreFoundation",
+            path.join(import.meta.dirname, "fixtures", "credential-boundary.c"),
+            "-o",
+            binary,
+          ],
+          { encoding: "utf8", timeout: 15000 },
+        );
+        expect(compile.status, compile.stderr).toBe(0);
+        for (const args of [
+          ["add", "credential-probe"],
+          ["commit", "-qm", "native probe fixture"],
+        ]) {
+          const git = spawnSync("git", ["-C", fx.target, ...args], {
+            encoding: "utf8",
+          });
+          expect(git.status, git.stderr).toBe(0);
+        }
+        const head = spawnSync("git", ["-C", fx.target, "rev-parse", "HEAD"], {
+          encoding: "utf8",
+        });
+        const receipt = JSON.parse(readFileSync(fx.receipt, "utf8"));
+        writeFileSync(
+          fx.receipt,
+          JSON.stringify({ ...receipt, targetHead: head.stdout.trim() }),
+        );
+        const service = `buildproven-sandbox-canary-${randomUUID()}`;
+        const created = invoke(["create", service, mode]);
+        if (
+          mode === "data-protection" &&
+          created.status === 1 &&
+          JSON.parse(created.stdout).status === -34018
+        ) {
+          context.skip(
+            "UNVERIFIED: host native baseline lacks data-protection entitlement",
+          );
+          return;
+        }
+        expect(created.status, created.stderr).toBe(0);
+        try {
+          const baseline = invoke(["read", service, mode]);
+          expect(baseline.status, baseline.stderr).toBe(0);
+          expect(JSON.parse(baseline.stdout).returnedData).toBe(true);
+          const sandbox = spawnSync(
+            "/bin/bash",
+            [
+              WRAPPER,
+              "--target-dir",
+              fx.target,
+              "--output-dir",
+              fx.output,
+              "--provider",
+              "claude",
+              "--",
+              binary,
+              "read",
+              service,
+              mode,
+            ],
+            {
+              encoding: "utf8",
+              timeout: 15000,
+              env: { ...process.env, BS_GOVERNED_PROVIDER_SNAPSHOT: "1" },
+            },
+          );
+          expect(sandbox.status, sandbox.stderr).toBe(1);
+          expect(JSON.parse(sandbox.stdout)).toEqual({
+            status: -25300,
+            returnedData: false,
+          });
+        } finally {
+          const cleanup = invoke(["delete", service, mode]);
+          expect(
+            cleanup.status,
+            `could not remove synthetic item ${service}`,
+          ).toBe(0);
+        }
+      },
+    );
+  }
 
   it.skipIf(process.platform !== "darwin" || !existsSync(REAL_RUNTIME))(
     "requires the installed runtime to enforce the canary before a real worker runs",
