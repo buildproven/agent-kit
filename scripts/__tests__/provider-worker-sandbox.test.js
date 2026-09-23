@@ -88,8 +88,9 @@ function fixture({ permissiveCanary = false, runtimeAvailable = true } = {}) {
     writeFileSync(
       runtime,
       `#!/usr/bin/env node
-const { copyFileSync, readFileSync } = require("node:fs");
+const { copyFileSync, readFileSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
+const path = require("node:path");
 let args = process.argv.slice(2);
 let settings = "";
 if (args[0] === "--settings") { settings = args[1]; args = args.slice(2); }
@@ -101,6 +102,11 @@ if (args[0] === "/bin/cat") {
   process.exit(${permissiveCanary ? "0" : 'args[1].endsWith("sentinel") ? 1 : 0'});
 }
 if (args[0] === "/usr/bin/touch" && args[1].endsWith("write-sentinel")) {
+  const policy = JSON.parse(readFileSync(settings, "utf8"));
+  writeFileSync(
+    path.join(policy.filesystem.allowWrite[0], "write-probe-observed"),
+    "yes\\n",
+  );
   process.stderr.write("Operation not permitted\\n");
   process.exit(1);
 }
@@ -236,6 +242,7 @@ describe("provider worker sandbox", () => {
     const result = launch(fx);
     expect(result.status).toBe(0);
     expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(true);
+    expect(existsSync(path.join(fx.target, "write-probe-observed"))).toBe(true);
     const names = readFileSync(path.join(fx.output, "env-names"), "utf8");
     for (const name of [
       "GH_TOKEN",
