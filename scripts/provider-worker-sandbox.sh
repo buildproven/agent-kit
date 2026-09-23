@@ -83,6 +83,8 @@ case "$PROVIDER" in
   codex) NETWORK_DOMAINS='["api.openai.com","*.openai.com"]'; PROVIDER_HOME="$ACCOUNT_HOME/.codex" ;;
 esac
 
+GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | python3 -c 'import json, sys; print(json.dumps([item.decode() for item in sys.stdin.buffer.read().split(b"\0") if item]))')
+
 jq -n \
   --arg home "$ACCOUNT_HOME" \
   --arg target "$TARGET_DIR" \
@@ -92,8 +94,9 @@ jq -n \
   --arg control "$CONTROL_DIR" \
   --arg sentinel "$SENTINEL" \
   --arg providerHome "$PROVIDER_HOME" \
+  --argjson gitDeny "$GIT_DENY" \
   --argjson domains "$NETWORK_DOMAINS" \
-  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$providerHome,$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug"]},network:{allowedDomains:$domains,deniedDomains:[]}}' \
+  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$providerHome,$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:(["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug"] + $gitDeny)},network:{allowedDomains:$domains,deniedDomains:[]}}' \
   > "$SETTINGS"
 
 # A passed canary is proof that the configured runtime is enforcing its most
