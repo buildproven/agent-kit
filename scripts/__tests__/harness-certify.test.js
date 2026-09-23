@@ -83,8 +83,11 @@ describe("harness-certify", () => {
         "fixture\n",
       );
       expect(git(snapshot, ["rev-parse", "HEAD"])).toBe(head);
+      const executable = path.join(snapshot, "executable");
+      fs.writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 });
       sealSnapshot(snapshot);
       expect(fs.statSync(path.join(snapshot, "README")).mode & 0o222).toBe(0);
+      expect(fs.statSync(executable).mode & 0o111).toBe(0o111);
       unsealSnapshot(snapshot);
       execFileSync("git", ["worktree", "remove", "--force", snapshot], {
         cwd: root,

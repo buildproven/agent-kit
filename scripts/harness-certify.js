@@ -112,10 +112,10 @@ function sealSnapshot(directory) {
     if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
       for (const child of fs.readdirSync(entry)) seal(path.join(entry, child));
-      fs.chmodSync(entry, 0o555);
+      fs.chmodSync(entry, stat.mode & ~0o222);
       return;
     }
-    if (stat.isFile()) fs.chmodSync(entry, 0o444);
+    if (stat.isFile()) fs.chmodSync(entry, stat.mode & ~0o222);
   };
   seal(directory);
 }
@@ -125,12 +125,12 @@ function unsealSnapshot(directory) {
     const stat = fs.lstatSync(entry);
     if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
-      fs.chmodSync(entry, 0o755);
+      fs.chmodSync(entry, stat.mode | 0o200);
       for (const child of fs.readdirSync(entry))
         unseal(path.join(entry, child));
       return;
     }
-    if (stat.isFile()) fs.chmodSync(entry, stat.mode & 0o111 ? 0o755 : 0o644);
+    if (stat.isFile()) fs.chmodSync(entry, stat.mode | 0o200);
   };
   unseal(directory);
 }
