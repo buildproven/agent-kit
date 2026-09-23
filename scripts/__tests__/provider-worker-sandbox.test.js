@@ -348,8 +348,20 @@ describe("provider worker sandbox", () => {
     expect(policy.filesystem.denyRead).toContain("/");
     expect(policy.filesystem.denyRead).toContain(`${process.env.HOME}/.codex`);
     expect(policy.filesystem.denyRead).toContain(`${process.env.HOME}/.claude`);
+    expect(policy.filesystem.denyRead).toContain(
+      `${process.env.HOME}/.local/share/claude`,
+    );
+    expect(policy.filesystem.denyRead).toContain(
+      `${process.env.HOME}/.local/share/codex`,
+    );
     expect(policy.filesystem.allowRead).not.toContain(
       `${process.env.HOME}/.codex`,
+    );
+    expect(policy.filesystem.allowRead).not.toContain(
+      `${process.env.HOME}/.local/share/claude`,
+    );
+    expect(policy.filesystem.allowRead).not.toContain(
+      `${process.env.HOME}/.local/share/codex`,
     );
     expect(policy.filesystem.denyWrite).toContain("/tmp/claude");
     expect(policy.filesystem.denyWrite).toContain(
@@ -367,6 +379,14 @@ describe("provider worker sandbox", () => {
     expect(
       policy.filesystem.denyRead.some((value) => value.endsWith("/sentinel")),
     ).toBe(true);
+  });
+
+  it("uses an explicit portable jq allowlist", () => {
+    const source = readFileSync(WRAPPER, "utf8");
+    expect(source).toContain(
+      "for candidate in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq; do",
+    );
+    expect(source).not.toContain("JQ_BIN='/usr/bin/jq'");
   });
 
   it("does not derive denied credential paths from a spoofed HOME", () => {

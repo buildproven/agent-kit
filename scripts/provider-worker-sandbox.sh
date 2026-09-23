@@ -47,7 +47,7 @@ reject_account_root() {
     echo "provider-worker-sandbox: $label must not contain the account home or a credential path" >&2
     exit 2
   fi
-  for protected in "$ACCOUNT_HOME/.ssh" "$ACCOUNT_HOME/.config/gh" "$ACCOUNT_HOME/.git-credentials" "$ACCOUNT_HOME/.netrc" "$ACCOUNT_HOME/.claude" "$ACCOUNT_HOME/.codex" "$ACCOUNT_HOME/.aws" "$ACCOUNT_HOME/.gnupg" "$ACCOUNT_HOME/.docker" "$ACCOUNT_HOME/.npmrc" "$ACCOUNT_HOME/Library/Keychains" "$ACCOUNT_HOME/Library/Application Support/gh"; do
+  for protected in "$ACCOUNT_HOME/.ssh" "$ACCOUNT_HOME/.config/gh" "$ACCOUNT_HOME/.git-credentials" "$ACCOUNT_HOME/.netrc" "$ACCOUNT_HOME/.claude" "$ACCOUNT_HOME/.codex" "$ACCOUNT_HOME/.local/share/claude" "$ACCOUNT_HOME/.local/share/codex" "$ACCOUNT_HOME/.aws" "$ACCOUNT_HOME/.gnupg" "$ACCOUNT_HOME/.docker" "$ACCOUNT_HOME/.npmrc" "$ACCOUNT_HOME/Library/Keychains" "$ACCOUNT_HOME/Library/Application Support/gh"; do
     if is_same_or_ancestor "$path" "$protected" || is_same_or_ancestor "$protected" "$path"; then
       echo "provider-worker-sandbox: $label must not contain the account home or a credential path" >&2
       exit 2
@@ -76,7 +76,13 @@ OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
 RUNTIME_DIR=$(cd -P "$SCRIPT_DIR/../node_modules" 2>/dev/null && pwd) \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 SAFE_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
-JQ_BIN='/usr/bin/jq'
+JQ_BIN=""
+for candidate in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq; do
+  if [ -x "$candidate" ]; then
+    JQ_BIN="$candidate"
+    break
+  fi
+done
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
@@ -183,7 +189,7 @@ fi
   --argjson gitDeny "$GIT_DENY" \
   --argjson hooksDeny "$HOOKS_DENY" \
   --argjson domains "$NETWORK_DOMAINS" \
-  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/.claude",$home+"/.codex",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:(["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug",$target+"/node_modules/.bin"] + $gitDeny + $hooksDeny)},network:{allowedDomains:$domains,deniedDomains:[]}}' \
+  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/.claude",$home+"/.codex",$home+"/.local/share/claude",$home+"/.local/share/codex",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$home+"/.local/bin"],allowWrite:[$target,$output],denyWrite:(["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug",$target+"/node_modules/.bin"] + $gitDeny + $hooksDeny)},network:{allowedDomains:$domains,deniedDomains:[]}}' \
   > "$SETTINGS"
 
 # A positive and a negative probe prove that the runtime can execute under the
