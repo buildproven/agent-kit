@@ -11,6 +11,7 @@ const {
   frozenCommand,
   npmInstallEnvironment,
   assertNoLocalDependencySources,
+  assertNpmInstallInputs,
   assertCleanCheckout,
   checkoutSnapshot,
   sealSnapshot,
@@ -43,7 +44,7 @@ describe("harness-certify", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
       fs.writeFileSync(
-        path.join(root, "package-lock.json"),
+        path.join(root, "npm-shrinkwrap.json"),
         JSON.stringify({
           lockfileVersion: 3,
           packages: {
@@ -54,6 +55,22 @@ describe("harness-certify", () => {
       );
       expect(() => assertNoLocalDependencySources(root)).toThrow(
         "local dependency source",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects candidate npm configuration before snapshot installation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      fs.writeFileSync(path.join(root, "package-lock.json"), "{}");
+      fs.writeFileSync(
+        path.join(root, ".npmrc"),
+        "registry=https://example.test\n",
+      );
+      expect(() => assertNpmInstallInputs(root)).toThrow(
+        "candidate-controlled .npmrc",
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -77,7 +94,9 @@ describe("harness-certify", () => {
         npm_config_ignore_scripts: "true",
         npm_config_audit: "false",
         npm_config_fund: "false",
+        npm_config_registry: "https://registry.npmjs.org",
       });
+      expect(environment.NPM_TOKEN).toBeUndefined();
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

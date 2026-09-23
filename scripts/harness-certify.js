@@ -99,7 +99,7 @@ function checkoutSnapshot(directory, sha, label, root) {
 
 function npmInstallEnvironment(scratch) {
   return {
-    ...process.env,
+    PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
     HOME: scratch,
     TMPDIR: scratch,
     TMP: scratch,
@@ -109,6 +109,7 @@ function npmInstallEnvironment(scratch) {
     npm_config_userconfig: "/dev/null",
     npm_config_globalconfig: "/dev/null",
     npm_config_prefix: scratch,
+    npm_config_registry: "https://registry.npmjs.org",
     npm_config_ignore_scripts: "true",
     npm_config_audit: "false",
     npm_config_fund: "false",
@@ -117,13 +118,10 @@ function npmInstallEnvironment(scratch) {
 }
 
 function assertNoLocalDependencySources(directory) {
-  const lockfile = path.join(directory, "package-lock.json");
-  let lock;
-  try {
-    lock = JSON.parse(fs.readFileSync(lockfile, "utf8"));
-  } catch (error) {
-    fail(`cannot read package-lock.json: ${error.message}`);
-  }
+  const lockfiles = ["package-lock.json", "npm-shrinkwrap.json"].filter(
+    (name) => fs.existsSync(path.join(directory, name)),
+  );
+  if (lockfiles.length === 0) fail("snapshot has no npm lockfile");
   const visit = (value) => {
     if (typeof value === "string") {
       if (/^(?:file:|link:|git\+file:|\.{1,2}[\\/]|[\\/])/.test(value)) {
@@ -134,21 +132,46 @@ function assertNoLocalDependencySources(directory) {
     if (Array.isArray(value)) return value.forEach(visit);
     if (value && typeof value === "object") Object.values(value).forEach(visit);
   };
-  visit(lock);
+  for (const name of lockfiles) {
+    let lock;
+    try {
+      lock = JSON.parse(fs.readFileSync(path.join(directory, name), "utf8"));
+    } catch (error) {
+      fail(`cannot read ${name}: ${error.message}`);
+    }
+    visit(lock);
+  }
+}
+
+function assertNpmInstallInputs(directory) {
+  assertNoLocalDependencySources(directory);
+  if (fs.existsSync(path.join(directory, ".npmrc"))) {
+    fail("snapshot contains candidate-controlled .npmrc");
+  }
 }
 
 function installSnapshotDependencies(directory) {
-  assertNoLocalDependencySources(directory);
+  assertNpmInstallInputs(directory);
   const scratch = fs.mkdtempSync(
     path.join(os.tmpdir(), "harness-certify-npm-"),
   );
   try {
-    execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
-      cwd: directory,
-      stdio: "ignore",
-      timeout: 5 * 60 * 1000,
-      env: npmInstallEnvironment(scratch),
-    });
+    execFileSync(
+      "npm",
+      [
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--registry=https://registry.npmjs.org",
+      ],
+      {
+        cwd: directory,
+        stdio: "ignore",
+        timeout: 5 * 60 * 1000,
+        env: npmInstallEnvironment(scratch),
+      },
+    );
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
@@ -683,6 +706,7 @@ module.exports = {
   frozenCommand,
   npmInstallEnvironment,
   assertNoLocalDependencySources,
+  assertNpmInstallInputs,
   snapshotSandboxProfile,
   assertCleanCheckout,
   checkoutSnapshot,
