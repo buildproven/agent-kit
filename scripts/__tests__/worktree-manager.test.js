@@ -469,20 +469,21 @@ describe("worktree-manager public CLI", () => {
     git(repo, "push", "origin", "main");
     const historicalHead = git(repo, "rev-parse", "HEAD");
 
-    git(repo, "checkout", "-b", "feature/recreated-tree", `${historicalHead}~1`);
+    git(
+      repo,
+      "checkout",
+      "-b",
+      "feature/recreated-tree",
+      `${historicalHead}~1`,
+    );
     writeFileSync(path.join(repo, "historical.txt"), "historical\n");
     git(repo, "add", "historical.txt");
     git(repo, "commit", "-m", "recreate historical tree");
     git(repo, "checkout", "main");
     const worktree = create(repo, "feature/recreated-tree");
 
-    const state = manager([
-      "status",
-      "--repo",
-      repo,
-      "--recent-minutes",
-      "0",
-    ]).json.worktrees[0];
+    const state = manager(["status", "--repo", repo, "--recent-minutes", "0"])
+      .json.worktrees[0];
     expect(state.localMerged).toBe(false);
     expect(state.unpushed).toBe(true);
     expect(state.classification).toBe("clean with unpushed commits");
