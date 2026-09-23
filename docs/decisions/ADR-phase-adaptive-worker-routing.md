@@ -2,6 +2,68 @@
 
 ## Status
 
+### Superseding selection decision, 2026-09-23
+
+The reviewed harness completion plan replaces the future calibration-platform
+dependency with a small static task table. This change affects compute selection,
+not access, mutation, review or merge authority. Claude Opus/high reviewed this
+decision; the revised review approved implementation with the safeguards below.
+The historical decision below remains the v1/v2 release
+record, not a requirement to build a new calibration service.
+
+For new schema-v2 plans: protected/public/cross-repository work stays critical
+(Sol/high); bounded unambiguous localized scans of at most two explicit planned
+paths use economy-micro (Luna/medium, 300 seconds); similarly bounded reversible
+docs-only edits with targeted proof use economy-builder (Luna/medium, 900
+seconds). Docs-only means explicit `.md` files, not broad directory prefixes or
+globs, at most two paths and two changed files. Instructions (`AGENTS.md`,
+`CLAUDE.md`, `SKILL.md`), command/skill/client configuration trees, policies and
+ADRs are protected before economy selection. Planned paths join declared and
+prompt-classified surfaces at initial selection, using the existing classifier.
+Ordinary features/fixes stay standard (Terra/medium). Diagnosis spanning
+multiple files or non-local scope uses expert (Terra/high). Unknown, broad or
+ambiguous work cannot qualify for economy. All routes retain one worker and
+existing task budget, path classification and handoff controls. Model choices
+must be recorded explicitly and later measured, not claimed superior by fiat.
+
+Planner booleans are hints that may veto economy, not evidence of semantic
+correctness or a source of permission. Structural path count/type, phase-derived
+access, protected classification and unchanged delivery gates bound the route.
+A broad refactor falsely labeled as simple must still stay inside those paths,
+pass the same deterministic tests and independent review, and spend the same
+bounded task budget. This policy does not promise every initial model succeeds.
+It does not require a new proof-command or calibration-admission service.
+
+Existing `validatePhaseCandidate` requires workspace-write, binds the actual
+patch and rejects paths outside the plan; read-only scans cannot hand off a
+patch. For economy-builder, strengthen its existing check to require exact path
+membership (not prefix membership), at most two changed files, `.md` extension
+and non-executable regular-file mode. Refuse an ineligible patch; never escalate
+after applying it. Tests exercise this public handoff as well as route selection.
+Use Git's NUL-delimited raw status/mode metadata, already checked against the
+bound patch, rather than a second text-header parser. Only additions or
+modifications of mode `100644` pass the economy edit check; no deletions, renames,
+copies, symlinks, gitlinks, executable modes, binary content or case-variant
+`.MD` extension. Protected classification is case-insensitive and runs again
+on actual changed paths. Membership in planned paths remains byte-exact.
+The two-path scan limit selects compute; it is not a claim that the read-only
+sandbox can read only those two files. Per-route time caps consume the existing
+task budget and never create extra retry allowance.
+
+Selection and plan validation share one pure route decision. Tests cover every
+eligibility boundary, protected-path dominance, route/model/effort/cap tampering
+and the public runner's actual model arguments. Policy version advances; stale
+execution plans refuse before launch and require a new bound plan. Historical
+records are preserved unchanged and remain tied to their original release;
+the frozen v1 policy and validator are unchanged. No historical record is
+relabeled as a new-policy result. Rollback returns new launches to the prior
+released policy, without rewriting evidence or granting authority.
+
+This slice does not enable the still-unsupported Claude v2 or verification
+profile, introduce history-based promotion, or claim automatic escalation has
+been proved. Those remaining acceptance gaps stay open. Ordinary caller migration
+and observed identity must be verified before A10 is marked complete.
+
 Accepted for BUI-792 after a Codex Sol/high adversarial architecture review
 returned `CLEAN` on 2026-08-22.
 

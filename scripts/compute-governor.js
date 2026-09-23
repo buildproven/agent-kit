@@ -444,13 +444,15 @@ function resolvePhaseExecution(
     ...new Set([
       ...request.evidence.protectedSurfaces,
       ...binding.classifiedProtectedSurfaces,
+      ...classifiedProtectedPaths(request.evidence.plannedPaths, policy),
     ]),
   ].sort();
-  const critical =
-    protectedSurfaces.length > 0 ||
-    request.evidence.publicContract ||
-    request.evidence.crossRepository;
-  const route = critical ? "critical" : "standard";
+  const selection = phaseRoute(
+    phase,
+    { ...request.evidence, protectedSurfaces },
+    policy,
+  );
+  const { route } = selection;
   const routePolicy = policy.routes[route];
   const executionProfile = {
     version: policy.executionProfile.version,
@@ -468,19 +470,64 @@ function resolvePhaseExecution(
     phase,
     accessProfile: PHASE_ACCESS[phase],
     caps: routePolicy.caps,
-    safetyFloor: critical ? "critical" : "standard",
+    safetyFloor: selection.safetyFloor,
     evidence: canonicalJson({
       ...request.evidence,
       protectedSurfaces,
       plannedPaths: [...request.evidence.plannedPaths].sort(),
     }),
-    reasons: critical
-      ? ["protected phase work"]
-      : ["reliable standard baseline"],
-    promotion: "economy-execution-disabled",
+    reasons: [selection.reason],
+    promotion: "static-task-policy",
     executionProfile,
     executionBinding: binding,
   };
+}
+
+function phaseRoute(phase, evidence, policy) {
+  const protectedWork =
+    evidence.protectedSurfaces.length > 0 ||
+    evidence.publicContract ||
+    evidence.crossRepository ||
+    classifiedProtectedPaths(evidence.plannedPaths, policy).length > 0;
+  if (protectedWork)
+    return {
+      route: "critical",
+      safetyFloor: "critical",
+      reason: "protected phase work",
+    };
+  const decision = (route, reason) => ({
+    route,
+    safetyFloor: "economy-micro",
+    reason,
+  });
+  const bounded =
+    evidence.localized === true &&
+    evidence.ambiguous === false &&
+    evidence.targetedProof === true &&
+    evidence.changedFiles <= 2 &&
+    evidence.plannedPaths.length <= 2 &&
+    evidence.plannedPaths.every(
+      (file) => !/[*?[\]]/.test(file) && /\.[a-zA-Z0-9]+$/.test(file),
+    );
+  if (bounded && phase === "scan")
+    return decision("economy-micro", "bounded read-only inventory");
+  if (
+    bounded &&
+    evidence.reversible === true &&
+    ["implement", "remediate"].includes(phase) &&
+    evidence.plannedPaths.every((file) => file.endsWith(".md"))
+  ) {
+    return decision("economy-builder", "bounded documentation edit");
+  }
+  if (
+    phase === "diagnose" &&
+    (!evidence.localized ||
+      evidence.plannedPaths.length > 2 ||
+      evidence.changedFiles > 2)
+  ) {
+    return decision("expert", "multi-file or non-local diagnosis");
+  }
+  return decision("standard", "ordinary phase work");
 }
 
 function canonicalJsonString(value) {
@@ -1115,7 +1162,7 @@ function phaseBindingValid(binding, policy) {
 function validatePhasePlan(plan, policy = loadPolicyV2()) {
   requireCondition(
     plan?.schemaVersion === 2 &&
-      ["standard", "critical"].includes(plan.route) &&
+      ROUTES.includes(plan.route) &&
       plan.provider === "codex" &&
       PHASES_V2.includes(plan.phase) &&
       plan.accessProfile === PHASE_ACCESS[plan.phase] &&
@@ -1124,11 +1171,18 @@ function validatePhasePlan(plan, policy = loadPolicyV2()) {
         ACCESS_RANK.indexOf(policy.callers[plan.caller].maxAccess),
     "compute-governor: invalid schema-v2 phase plan",
   );
-  const protectedWork =
-    plan.evidence?.protectedSurfaces?.length > 0 ||
-    plan.evidence?.publicContract === true ||
-    plan.evidence?.crossRepository === true;
-  const expectedRoute = protectedWork ? "critical" : "standard";
+  assertPhaseRequest(
+    {
+      schemaVersion: 2,
+      caller: plan.caller,
+      provider: plan.provider,
+      phase: plan.phase,
+      evidence: plan.evidence,
+    },
+    policy,
+  );
+  const selection = phaseRoute(plan.phase, plan.evidence, policy);
+  const expectedRoute = selection.route;
   const routePolicy = policy.routes[expectedRoute];
   const expectedProfile = {
     version: policy.executionProfile.version,
@@ -1139,9 +1193,9 @@ function validatePhasePlan(plan, policy = loadPolicyV2()) {
       plan.route === expectedRoute &&
       plan.model === routePolicy.model &&
       plan.effort === routePolicy.effort &&
-      plan.safetyFloor === expectedRoute &&
+      plan.safetyFloor === selection.safetyFloor &&
       plan.contextClass === "fresh-bounded-phase" &&
-      plan.promotion === "economy-execution-disabled" &&
+      plan.promotion === "static-task-policy" &&
       canonicalJsonString(plan.caps) ===
         canonicalJsonString(routePolicy.caps) &&
       canonicalJsonString(plan.executionProfile) ===
@@ -1149,14 +1203,6 @@ function validatePhasePlan(plan, policy = loadPolicyV2()) {
       phaseBindingValid(plan.executionBinding, policy),
     "compute-governor: schema-v2 plan violates phase policy",
   );
-  const request = {
-    schemaVersion: 2,
-    caller: plan.caller,
-    provider: plan.provider,
-    phase: plan.phase,
-    evidence: plan.evidence,
-  };
-  assertPhaseRequest(request, policy);
   const expectedKeys = [
     "schemaVersion",
     "policyVersion",
@@ -1180,11 +1226,7 @@ function validatePhasePlan(plan, policy = loadPolicyV2()) {
   requireCondition(
     Array.isArray(plan.reasons) &&
       canonicalJsonString(plan.reasons) ===
-        canonicalJsonString(
-          protectedWork
-            ? ["protected phase work"]
-            : ["reliable standard baseline"],
-        ),
+        canonicalJsonString([selection.reason]),
     "compute-governor: schema-v2 plan reasons mismatch",
   );
   return plan;
@@ -1578,6 +1620,8 @@ function pathWithinPlan(candidate, plannedPaths) {
 }
 
 function pathMatchesProtectedPrefix(candidate, prefix) {
+  candidate = candidate.toLowerCase();
+  prefix = prefix.toLowerCase();
   const segment = prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
   return (
     candidate === segment ||
@@ -1642,6 +1686,29 @@ function validatePhaseCandidate(
       "compute-governor: changed path is malformed, unknown, or outside plan",
     );
     changes.push(changedPath);
+    if (plan.route === "economy-builder") {
+      requireCondition(
+        newMode === "100644" &&
+          changedPath.endsWith(".md") &&
+          plan.evidence.plannedPaths.includes(changedPath) &&
+          changes.length <= 2,
+        "compute-governor: economy candidate must contain only exact non-executable Markdown paths",
+      );
+    }
+  }
+  if (plan.route === "economy-builder") {
+    const numstat = execFileSync(
+      "git",
+      ["diff", "--numstat", "-z", plan.executionBinding.targetHead, "--"],
+      { cwd: targetDir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    requireCondition(
+      numstat
+        .split("\0")
+        .filter(Boolean)
+        .every((entry) => /^\d+\t\d+\t/.test(entry)),
+      "compute-governor: economy candidate cannot contain binary files",
+    );
   }
   const ignored = execFileSync(
     "git",

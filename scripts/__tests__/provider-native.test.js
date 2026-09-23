@@ -2399,80 +2399,96 @@ describe("provider-native platform", () => {
     expect(readFileSync(calls, "utf8")).toContain("--effort medium");
   });
 
-  it("launches a schema-v2 read-only phase with isolated Codex authority", () => {
-    const dir = makeTempDir("provider-phase-readonly-");
-    const bin = path.join(dir, "bin");
-    const output = path.join(makeTempDir("provider-output-"), "output");
-    const prompt = path.join(dir, "prompt");
-    const request = path.join(dir, "request.json");
-    const calls = path.join(dir, "codex.calls");
-    mkdirSync(bin);
-    writeFileSync(prompt, "review the supplied local change\n");
-    writeFileSync(
-      request,
-      JSON.stringify({
-        schemaVersion: 2,
-        caller: "cross-review",
-        provider: "codex",
-        phase: "review",
-        evidence: {
-          localized: true,
-          reversible: false,
-          targetedProof: true,
-          ambiguous: false,
-          changedFiles: 1,
-          protectedSurfaces: [],
-          publicContract: false,
-          crossRepository: false,
-          plannedPaths: ["src/"],
-        },
-      }),
-    );
-    initializeGovernedTarget(dir);
-    executable(
-      path.join(bin, "codex"),
-      [
-        `printf '%s\\n' "$*" > '${calls}'`,
-        'for arg in "$@"; do',
-        '  if [ "$arg" = "-o" ]; then shift_next=1; continue; fi',
-        '  if [ "${shift_next:-0}" = 1 ]; then last_message="$arg"; shift_next=0; fi',
-        "done",
-        'printf "%s\\n" "CLEAN" > "$last_message"',
-      ].join("\n"),
-    );
-    const result = spawnSync(
-      "bash",
-      [
-        PROVIDER_RUN,
-        "--prompt-file",
-        prompt,
-        "--phase-request",
+  it.each([
+    ["review", ["src/"], "standard", "gpt-5.6-terra"],
+    ["scan", ["README.md"], "economy-micro", "gpt-5.6-luna"],
+  ])(
+    "launches schema-v2 %s with the selected model and isolated authority",
+    (phase, plannedPaths, route, model) => {
+      const dir = makeTempDir("provider-phase-readonly-");
+      const bin = path.join(dir, "bin");
+      const output = path.join(makeTempDir("provider-output-"), "output");
+      const prompt = path.join(dir, "prompt");
+      const request = path.join(dir, "request.json");
+      const calls = path.join(dir, "codex.calls");
+      mkdirSync(bin);
+      writeFileSync(prompt, "review the supplied local change\n");
+      writeFileSync(
         request,
-        "--caller",
-        "cross-review",
-        "--target-dir",
-        dir,
-        "--output-dir",
-        output,
-      ],
-      {
-        encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
-      },
-    );
-    expect(result.status, result.stderr).toBe(0);
-    expect(readFileSync(calls, "utf8")).toContain("-s read-only");
-    expect(readFileSync(calls, "utf8")).toContain("mcp_servers={}");
-    expect(readFileSync(calls, "utf8")).not.toContain("-a never");
-    expect(readFileSync(calls, "utf8")).toContain('approval_policy="never"');
-    expect(
-      JSON.parse(readFileSync(path.join(output, "run-record.json"), "utf8")),
-    ).toMatchObject({
-      schemaVersion: 2,
-      plan: { phase: "review", accessProfile: "read-only", route: "standard" },
-      outcome: { status: "completed", exitCode: 0 },
-    });
-  });
+        JSON.stringify({
+          schemaVersion: 2,
+          caller: "cross-review",
+          provider: "codex",
+          phase,
+          evidence: {
+            localized: true,
+            reversible: false,
+            targetedProof: true,
+            ambiguous: false,
+            changedFiles: 1,
+            protectedSurfaces: [],
+            publicContract: false,
+            crossRepository: false,
+            plannedPaths,
+          },
+        }),
+      );
+      initializeGovernedTarget(dir);
+      executable(
+        path.join(bin, "codex"),
+        [
+          `printf '%s\\n' "$*" > '${calls}'`,
+          'for arg in "$@"; do',
+          '  if [ "$arg" = "-o" ]; then shift_next=1; continue; fi',
+          '  if [ "${shift_next:-0}" = 1 ]; then last_message="$arg"; shift_next=0; fi',
+          "done",
+          'printf "%s\\n" "CLEAN" > "$last_message"',
+        ].join("\n"),
+      );
+      const result = spawnSync(
+        "bash",
+        [
+          PROVIDER_RUN,
+          "--prompt-file",
+          prompt,
+          "--phase-request",
+          request,
+          "--caller",
+          "cross-review",
+          "--target-dir",
+          dir,
+          "--output-dir",
+          output,
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(calls, "utf8")).toContain("-s read-only");
+      expect(readFileSync(calls, "utf8")).toContain(`--model ${model}`);
+      expect(readFileSync(calls, "utf8")).toContain(
+        'model_reasoning_effort="medium"',
+      );
+      expect(readFileSync(calls, "utf8")).toContain("mcp_servers={}");
+      expect(readFileSync(calls, "utf8")).not.toContain("-a never");
+      expect(readFileSync(calls, "utf8")).toContain('approval_policy="never"');
+      expect(
+        JSON.parse(readFileSync(path.join(output, "run-record.json"), "utf8")),
+      ).toMatchObject({
+        schemaVersion: 2,
+        plan: {
+          phase,
+          accessProfile: "read-only",
+          route,
+          model,
+          effort: "medium",
+        },
+        outcome: { status: "completed", exitCode: 0 },
+      });
+    },
+  );
 
   it("rejects a missing or mismatched phase caller before provider launch", () => {
     const dir = makeTempDir("provider-phase-caller-binding-");

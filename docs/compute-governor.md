@@ -148,12 +148,20 @@ bash ~/.claude/scripts/provider-run.sh \
   --output-dir /tmp/run-evidence
 ```
 
-V2 uses the reliable `standard` Codex route for ordinary work and `critical`
-for auth, authorization, payments, durable data, migrations, public contracts,
-deployment, security, and cross-repository work. Economy execution is disabled
-until application telemetry, exact token data, lineage, budgets, and late-defect
-adjudication can prove it safe. Repeated-failure escalation is also deferred
-until that lineage exists.
+V2 uses a static task table. Bounded read-only scans use Luna/medium for up to
+300 seconds. Reversible edits to at most two exact Markdown paths use
+Luna/medium for up to 900 seconds. Both require localized, unambiguous work and
+targeted proof. Directory and wildcard scopes do not qualify. Ordinary work
+uses Terra/medium; multi-file or non-local diagnosis uses Terra/high. Protected
+work uses Sol/high. These are per-attempt limits within the existing campaign
+budget, not new retry budgets. Automatic retry escalation remains separate.
+
+Task hints select effort; they do not grant authority. Protected prompt and
+path classification runs first. Instruction files, skills, commands, and
+architecture decisions are protected even when they are Markdown. Economy
+write handoff accepts only text additions or modifications at the exact planned
+paths, with mode 100644. Binary files and executable Markdown are rejected.
+No learned router or calibration service is required for this static policy.
 
 The governor, provider runner, provider policy, deadline and provider-evidence
 helpers, autonomous runtime, migrated caller entrypoints, and both versioned
@@ -213,4 +221,4 @@ provider launches fail. `--execution-facts` and `--execution-plan` remain
 frozen schema-v1 interfaces; a workspace-write schema-v2 plan needs a receipt.
 
 See [ADR-phase-adaptive-worker-routing.md](decisions/ADR-phase-adaptive-worker-routing.md)
-for the reviewed decision and deferred automatic-economy control plane.
+for the reviewed static routing decision and the historical superseded design.
