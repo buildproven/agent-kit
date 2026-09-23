@@ -97,13 +97,39 @@ function checkoutSnapshot(directory, sha, label, root) {
   return snapshot;
 }
 
+function npmInstallEnvironment(scratch) {
+  return {
+    ...process.env,
+    HOME: scratch,
+    TMPDIR: scratch,
+    TMP: scratch,
+    TEMP: scratch,
+    npm_config_cache: scratch,
+    npm_config_logs_dir: scratch,
+    npm_config_userconfig: "/dev/null",
+    npm_config_globalconfig: "/dev/null",
+    npm_config_prefix: scratch,
+    npm_config_ignore_scripts: "true",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_update_notifier: "false",
+  };
+}
+
 function installSnapshotDependencies(directory) {
-  execFileSync("npm", ["ci", "--ignore-scripts"], {
-    cwd: directory,
-    stdio: "ignore",
-    timeout: 5 * 60 * 1000,
-    env: { ...process.env, npm_config_ignore_scripts: "true" },
-  });
+  const scratch = fs.mkdtempSync(
+    path.join(os.tmpdir(), "harness-certify-npm-"),
+  );
+  try {
+    execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+      cwd: directory,
+      stdio: "ignore",
+      timeout: 5 * 60 * 1000,
+      env: npmInstallEnvironment(scratch),
+    });
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 function sealSnapshot(directory) {
@@ -617,6 +643,7 @@ if (require.main === module) {
 
 module.exports = {
   frozenCommand,
+  npmInstallEnvironment,
   snapshotSandboxProfile,
   assertCleanCheckout,
   checkoutSnapshot,

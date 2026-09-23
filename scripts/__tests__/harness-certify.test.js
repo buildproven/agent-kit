@@ -9,6 +9,7 @@ const HAS_IMMUTABLE_GATE_SANDBOX =
   process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec");
 const {
   frozenCommand,
+  npmInstallEnvironment,
   assertCleanCheckout,
   checkoutSnapshot,
   sealSnapshot,
@@ -37,6 +38,29 @@ function initRepository(directory) {
 }
 
 describe("harness-certify", () => {
+  it("pins snapshot dependency installation writes to harness-owned scratch", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const environment = npmInstallEnvironment(scratch);
+      expect(environment).toMatchObject({
+        HOME: scratch,
+        TMPDIR: scratch,
+        TMP: scratch,
+        TEMP: scratch,
+        npm_config_cache: scratch,
+        npm_config_logs_dir: scratch,
+        npm_config_prefix: scratch,
+        npm_config_userconfig: "/dev/null",
+        npm_config_globalconfig: "/dev/null",
+        npm_config_ignore_scripts: "true",
+        npm_config_audit: "false",
+        npm_config_fund: "false",
+      });
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it("resolves executable paths from the frozen baseline, never candidate node_modules", () => {
     expect(frozenCommand(ROOT, ["node_modules/.bin/eslint", "."])).toEqual([
       path.join(ROOT, "node_modules/.bin/eslint"),
