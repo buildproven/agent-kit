@@ -17,6 +17,45 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
+  it("uses selector behavior tests for explicit mutation proof without weakening the delivery audit", () => {
+    const source = [".buildproven/test-impact.json"];
+    expect(plan(source, loadPolicy(ROOT), { root: ROOT })).toMatchObject({
+      mode: "audit",
+    });
+    expect(
+      plan(source, loadPolicy(ROOT), {
+        root: ROOT,
+        preferExplicitMappings: true,
+      }),
+    ).toMatchObject({
+      mode: "focused",
+      commands: [
+        {
+          executable: "npx",
+          args: ["vitest", "run", "scripts/__tests__/test-impact.test.js"],
+        },
+      ],
+    });
+  });
+  it("selects the native credential boundary proof when its C fixture changes", () => {
+    const selected = plan(
+      ["scripts/__tests__/fixtures/credential-boundary.c"],
+      loadPolicy(ROOT),
+      { root: ROOT },
+    );
+    expect(selected.mode).toBe("focused");
+    expect(selected.commands).toEqual([
+      {
+        executable: "npx",
+        args: [
+          "vitest",
+          "run",
+          "scripts/__tests__/provider-worker-sandbox.test.js",
+        ],
+      },
+    ]);
+  });
+
   it.each([
     "scripts/quality-run.js",
     "scripts/__tests__/quality-run.test.js",
