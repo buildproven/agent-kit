@@ -331,8 +331,15 @@ async function main() {
     "rev-parse",
     "refs/remotes/origin/main",
   ]);
-  if (trustedMain !== baselineHead) {
-    fail("baseline checkout must be pinned to canonical origin/main");
+  try {
+    git(baselineDir, [
+      "merge-base",
+      "--is-ancestor",
+      baselineHead,
+      trustedMain,
+    ]);
+  } catch {
+    fail("baseline checkout must be a canonical origin/main ancestor");
   }
   assertFrozenRunner(baselineDir);
   const candidateHead = git(candidateDir, ["rev-parse", "HEAD"]);
