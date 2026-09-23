@@ -431,6 +431,10 @@ describe("worktree-manager public CLI", () => {
     git(repo, "merge", "--squash", "feature/test");
     git(repo, "commit", "-m", "squash feature");
     git(repo, "push", "origin", "main");
+    writeFileSync(path.join(repo, "later.txt"), "later main change\n");
+    git(repo, "add", "later.txt");
+    git(repo, "commit", "-m", "later main change");
+    git(repo, "push", "origin", "main");
     git(repo, "push", "origin", "--delete", "feature/test");
     git(repo, "fetch", "--prune", "origin");
     git(repo, "branch", "--unset-upstream", "feature/test");
@@ -440,7 +444,9 @@ describe("worktree-manager public CLI", () => {
       ["status", "--repo", repo, "--grace-hours", "0", "--recent-minutes", "0"],
       { env: ghEnv(bin, "MERGED", mergedPrHead) },
     ).json.worktrees[0];
-    expect(state.unpushed).toBe(true);
+    // A squash merge changes commit ancestry but preserves the source tree.
+    // Tree equality proves this clean materialization has no unpushed content.
+    expect(state.unpushed).toBe(false);
     expect(state.classification).toBe("clean with merged PR");
     expect(state.removable).toBe(true);
 
