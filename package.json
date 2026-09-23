@@ -32,6 +32,9 @@
     "check:dependency-preflight": "node scripts/build-quality-dependency-preflight.js",
     "check:commands": "bash scripts/check-command-readme.sh"
   },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.77"
+  },
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.0",
