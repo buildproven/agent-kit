@@ -1002,11 +1002,26 @@ function upstreamState(repoRoot, branch) {
       ["merge-base", "--is-ancestor", branch, `refs/remotes/origin/${base}`],
       { allowFailure: true },
     ).status === 0;
+  const defaultTree = git(
+    repoRoot,
+    ["rev-parse", `refs/remotes/origin/${base}^{tree}`],
+    {
+      allowFailure: true,
+    },
+  ).stdout;
+  const localTree = localHead
+    ? git(repoRoot, ["rev-parse", `${localHead}^{tree}`], {
+        allowFailure: true,
+      }).stdout
+    : null;
+  const treeMerged = Boolean(
+    defaultTree && localTree && defaultTree === localTree,
+  );
   return {
     upstream: null,
     ahead: null,
-    unpushed: !merged,
-    localMerged: merged,
+    unpushed: !(merged || treeMerged),
+    localMerged: merged || treeMerged,
     localHead,
   };
 }
