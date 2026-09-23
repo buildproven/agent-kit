@@ -414,7 +414,7 @@ function verifyEngineeringDeliveryClaim(manifest, productInputs) {
   return `declared engineering at protected policy ${policy.policyRevision}; product acceptance not established`;
 }
 
-function verifyDeliveryClaim(manifest) {
+function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
   const claim = deliveryClaim(manifest);
   const { productPrd, productTasks, deliveryEvidence } = manifest.options || {};
   const changedFiles = quality.changedFiles(
@@ -458,6 +458,7 @@ function verifyDeliveryClaim(manifest) {
     );
   }
   verifyDeliveryEvidenceDigest(manifest, deliveryEvidence);
+  if (inputsOnly) return "delivery inputs bound; full verification pending";
   const changedFilesPath = path.join(
     manifest.stateRoot,
     "delivery-changed-files.json",
@@ -515,9 +516,8 @@ function actionRequired(manifestPath, phase, message, manifest, review) {
 
 function prepareProductAdmission(manifestPath) {
   const manifest = manifestAt(manifestPath);
-  if (deliveryClaim(manifest) === "contract") return null;
-  if (deliveryClaim(manifest) === "engineering") {
-    verifyDeliveryClaim(manifest);
+  if (["contract", "engineering"].includes(deliveryClaim(manifest))) {
+    verifyDeliveryClaim(manifest, { inputsOnly: true });
     return null;
   }
 
