@@ -95,6 +95,16 @@ unknown shell paths must remain `unmapped` and audit-trigger paths must still
 select `npm test`. This is a repository-policy fix, not a new cache or a change
 to the shared planner API.
 
+### Orchestrator test scope (BUI-953)
+
+An edit confined to `quality-run.js`, its public orchestration tests, or this
+document selects `quality-run.test.js`. That suite copies and executes the actual
+runner. The invocation suite's `quality-run.js` references create synthetic
+runtime files to test digest/identity handling; they do not execute this runner.
+The release approval and merge suites test separate scripts. Changes to those
+dependencies, ownership, engineering policy, or mixed diffs keep their existing
+broader mappings. Selector/configuration changes still require a complete audit.
+
 ### Release CI overlap (BUI-933)
 
 For an exact same-repository release-please candidate, the runner starts the
