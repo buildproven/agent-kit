@@ -81,6 +81,7 @@ function fixture({ permissiveCanary = false, runtimeAvailable = true } = {}) {
       schemaVersion: 1,
       targetHead: head,
       outputDir: realpathSync(output),
+      nodeBin: realpathSync(process.execPath),
     }),
   );
   if (runtimeAvailable) {
@@ -182,6 +183,15 @@ describe("provider worker sandbox", () => {
     expect(result.stderr).toContain("Sandbox Runtime is unavailable");
   });
 
+  it("uses the receipt-bound Node instead of a PATH-prepended replacement", () => {
+    const fx = fixture();
+    const replacement = path.join(fx.root, "node");
+    executable(replacement, "exit 99");
+    const result = launch(fx, { PATH: `${fx.root}:${process.env.PATH}` });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(true);
+  });
+
   it("requires a clean controller receipt bound to the snapshot head", () => {
     const fx = fixture();
     unlinkSync(fx.receipt);
@@ -200,6 +210,7 @@ describe("provider worker sandbox", () => {
           encoding: "utf8",
         }).stdout.trim(),
         outputDir: realpathSync(fx.output),
+        nodeBin: realpathSync(process.execPath),
       }),
     );
     result = launch(fx);
@@ -376,6 +387,30 @@ describe("provider worker sandbox", () => {
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("must not contain the account home");
+  });
+
+  it("rejects an output directory inside a credential root", () => {
+    const fx = fixture();
+    const result = spawnSync(
+      "bash",
+      [
+        fx.wrapper,
+        "--target-dir",
+        fx.target,
+        "--output-dir",
+        path.join(process.env.HOME, ".codex"),
+        "--provider",
+        "codex",
+        "--",
+        "/bin/true",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, BS_GOVERNED_PROVIDER_SNAPSHOT: "1" },
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("credential path");
   });
 
   it("rejects a normal checkout even when the invocation marker is present", () => {

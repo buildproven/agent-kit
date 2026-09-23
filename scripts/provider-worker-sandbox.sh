@@ -40,8 +40,12 @@ is_same_or_ancestor() {
 reject_account_root() {
   local path="$1" label="$2" protected
   [ "$path" != "/" ] || { echo "provider-worker-sandbox: $label must not be /" >&2; exit 2; }
-  for protected in "$ACCOUNT_HOME" "$ACCOUNT_HOME/.ssh" "$ACCOUNT_HOME/.config/gh" "$ACCOUNT_HOME/.git-credentials" "$ACCOUNT_HOME/.netrc" "$ACCOUNT_HOME/.claude" "$ACCOUNT_HOME/.codex" "$ACCOUNT_HOME/.aws" "$ACCOUNT_HOME/.gnupg" "$ACCOUNT_HOME/.docker" "$ACCOUNT_HOME/.npmrc" "$ACCOUNT_HOME/Library/Keychains" "$ACCOUNT_HOME/Library/Application Support/gh"; do
-    if is_same_or_ancestor "$path" "$protected"; then
+  if is_same_or_ancestor "$path" "$ACCOUNT_HOME"; then
+    echo "provider-worker-sandbox: $label must not contain the account home or a credential path" >&2
+    exit 2
+  fi
+  for protected in "$ACCOUNT_HOME/.ssh" "$ACCOUNT_HOME/.config/gh" "$ACCOUNT_HOME/.git-credentials" "$ACCOUNT_HOME/.netrc" "$ACCOUNT_HOME/.claude" "$ACCOUNT_HOME/.codex" "$ACCOUNT_HOME/.aws" "$ACCOUNT_HOME/.gnupg" "$ACCOUNT_HOME/.docker" "$ACCOUNT_HOME/.npmrc" "$ACCOUNT_HOME/Library/Keychains" "$ACCOUNT_HOME/Library/Application Support/gh"; do
+    if is_same_or_ancestor "$path" "$protected" || is_same_or_ancestor "$protected" "$path"; then
       echo "provider-worker-sandbox: $label must not contain the account home or a credential path" >&2
       exit 2
     fi
@@ -69,33 +73,37 @@ OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
 RUNTIME_DIR=$(cd -P "$SCRIPT_DIR/../node_modules" 2>/dev/null && pwd) \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 SAFE_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
-NODE_BIN=$(command -v node 2>/dev/null) \
-  || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
 reject_account_root "$TARGET_DIR" "target directory"
 reject_account_root "$OUTPUT_DIR" "output directory"
-case "$NODE_BIN" in
-  /*) ;;
-  *) echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74 ;;
-esac
+git_safe() {
+  env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" 'TERM=dumb' \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false \
+    git "$@"
+}
+
+GIT_DIR=$(git_safe -C "$TARGET_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || { echo "provider-worker-sandbox: governed target must be a Git worktree" >&2; exit 78; }
+GIT_COMMON_DIR=$(git_safe -C "$TARGET_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 78
+[ "$(git_safe -C "$TARGET_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)" = "" ] || { echo "provider-worker-sandbox: governed target must have detached HEAD" >&2; exit 78; }
+[ "$GIT_DIR" != "$GIT_COMMON_DIR" ] || { echo "provider-worker-sandbox: governed target must be a linked worktree" >&2; exit 78; }
+TARGET_HEAD=$(git_safe -C "$TARGET_DIR" rev-parse HEAD) || exit 78
+GOVERNED_RECEIPT="$GIT_DIR/buildproven-provider-sandbox.json"
+jq -e --arg head "$TARGET_HEAD" \
+  --arg output "$OUTPUT_DIR" \
+  '.schemaVersion == 1 and .targetHead == $head and .outputDir == $output and (.nodeBin | type == "string")' "$GOVERNED_RECEIPT" >/dev/null 2>&1 \
+  || { echo "provider-worker-sandbox: governed snapshot receipt is missing or mismatched" >&2; exit 78; }
+NODE_DECLARED=$(jq -r '.nodeBin' "$GOVERNED_RECEIPT")
+NODE_BIN=$(cd -P "$(dirname "$NODE_DECLARED")" 2>/dev/null && pwd)/$(basename "$NODE_DECLARED")
+[ -x "$NODE_BIN" ] && [ "$NODE_BIN" = "$NODE_DECLARED" ] \
+  || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 if is_same_or_ancestor "$TARGET_DIR" "$NODE_BIN" || is_same_or_ancestor "$OUTPUT_DIR" "$NODE_BIN"; then
   echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2
   exit 74
 fi
-
-GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || { echo "provider-worker-sandbox: governed target must be a Git worktree" >&2; exit 78; }
-GIT_COMMON_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 78
-[ "$(git -C "$TARGET_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)" = "" ] || { echo "provider-worker-sandbox: governed target must have detached HEAD" >&2; exit 78; }
-[ "$GIT_DIR" != "$GIT_COMMON_DIR" ] || { echo "provider-worker-sandbox: governed target must be a linked worktree" >&2; exit 78; }
-TARGET_HEAD=$(git -C "$TARGET_DIR" rev-parse HEAD) || exit 78
-GOVERNED_RECEIPT="$GIT_DIR/buildproven-provider-sandbox.json"
-jq -e --arg head "$TARGET_HEAD" \
-  --arg output "$OUTPUT_DIR" \
-  '.schemaVersion == 1 and .targetHead == $head and .outputDir == $output' "$GOVERNED_RECEIPT" >/dev/null 2>&1 \
-  || { echo "provider-worker-sandbox: governed snapshot receipt is missing or mismatched" >&2; exit 78; }
-[ -z "$(git -C "$TARGET_DIR" status --porcelain=v1 --untracked-files=all)" ] \
+[ -z "$(git_safe -C "$TARGET_DIR" status --porcelain=v1 --untracked-files=all)" ] \
   || { echo "provider-worker-sandbox: governed target must be clean" >&2; exit 78; }
 [ -z "$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ] \
   || { echo "provider-worker-sandbox: governed output directory must be empty" >&2; exit 78; }
@@ -137,7 +145,7 @@ case "$PROVIDER" in
 esac
 
 GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | python3 -c 'import json, sys; print(json.dumps([item.decode() for item in sys.stdin.buffer.read().split(b"\0") if item]))')
-HOOKS_PATH=$(git -C "$TARGET_DIR" config --get core.hooksPath 2>/dev/null || true)
+HOOKS_PATH=$(git_safe -C "$TARGET_DIR" config --get core.hooksPath 2>/dev/null || true)
 if [ -n "$HOOKS_PATH" ]; then
   HOOKS_DENY=$(python3 - "$TARGET_DIR" "$HOOKS_PATH" <<'PY'
 import json
