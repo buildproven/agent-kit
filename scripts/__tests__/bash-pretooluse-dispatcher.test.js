@@ -188,11 +188,11 @@ describe("bash-pretooluse-dispatcher.js", () => {
   it.each(["classifier", "admission"])(
     "bounds the %s child and denies before the outer timeout",
     (stage) => {
-      // A real process launch can take longer than 100ms on a busy CI worker.
-      // Keep this behavioral proof below the hook's four-second shared budget,
-      // but give the preceding real Bash guards enough time that the asserted
-      // child, rather than scheduler noise, determines the outcome.
-      const childTimeoutMs = 1000;
+      // A real Node process can take longer than one second to schedule on a
+      // busy CI worker. Two seconds still leaves two seconds inside the
+      // dispatcher's four-second shared budget, so this test proves that the
+      // intended child starts and is terminated rather than a scheduler race.
+      const childTimeoutMs = 2000;
       const guardDir = mkdtempSync(path.join(tmpdir(), "bounded-push-"));
       const startedFile = path.join(guardDir, "child-started");
       try {
