@@ -445,6 +445,33 @@ describe("harness-certify", () => {
   );
 
   it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "reaps detached descendants after a successful gate",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      const marker = `harness-certify-child-${process.pid}-${Date.now()}`;
+      try {
+        const executable = path.join(root, "node_modules", ".bin", "child");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(
+          executable,
+          `#!/usr/bin/env node\nrequire("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", ${JSON.stringify(marker)}], { stdio: "ignore" }).unref();\n`,
+          { mode: 0o755 },
+        );
+        const result = await runGate(root, root, "child", [
+          "node_modules/.bin/child",
+        ]);
+        expect(result.status).toBe("success");
+        const processes = execFileSync("/bin/ps", ["-axo", "command="], {
+          encoding: "utf8",
+        });
+        expect(processes).not.toContain(marker);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
     "denies candidate gate writes to the immutable snapshots",
     async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));

@@ -493,15 +493,44 @@ function runGate(
         /* already exited */
       }
     };
+    const processGroupAlive = () => {
+      if (!child.pid) return false;
+      try {
+        process.kill(-child.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const waitForProcessGroup = async () => {
+      if (!processGroupAlive()) return true;
+      signalTree("SIGTERM");
+      const deadline = Date.now() + killGraceMs;
+      while (processGroupAlive() && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 25));
+      }
+      if (!processGroupAlive()) return true;
+      signalTree("SIGKILL");
+      const killDeadline = Date.now() + killGraceMs;
+      while (processGroupAlive() && Date.now() < killDeadline) {
+        await new Promise((done) => setTimeout(done, 25));
+      }
+      return !processGroupAlive();
+    };
     const timeout = setTimeout(() => {
       timedOut = true;
       signalTree("SIGTERM");
       setTimeout(() => signalTree("SIGKILL"), killGraceMs).unref();
     }, timeoutMs);
-    const finish = (result) => {
+    const finish = async (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (!(await waitForProcessGroup())) {
+        output += "\nfailed to terminate gate process group";
+        result.outputSha256 = sha256(output);
+        result.status = "failed";
+      }
       try {
         fs.rmSync(scratch, { recursive: true, force: true });
       } catch (error) {
@@ -513,7 +542,7 @@ function runGate(
     };
     child.on("error", (error) => {
       output += error.message;
-      finish({
+      void finish({
         name,
         command: [file, ...args],
         startedAt,
@@ -526,7 +555,7 @@ function runGate(
       });
     });
     child.on("close", (exitCode, signal) => {
-      finish({
+      void finish({
         name,
         command: [file, ...args],
         startedAt,
