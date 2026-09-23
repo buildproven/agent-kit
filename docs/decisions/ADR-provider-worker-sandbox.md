@@ -16,6 +16,10 @@ The wrapper must fail before worker launch when the operating-system sandbox is
 missing or its deny-read policy is not enforced. It must also remove ambient
 credential environment variables.
 
+Policy construction uses the already validated jq executable and receipt-bound
+Node runtime. It does not require Python. The Node path resolver starts with an
+empty environment so ambient Node options cannot alter controller policy creation.
+
 ## Decision
 
 Use the Apache-2.0 `@anthropic-ai/sandbox-runtime` package as a local worker
