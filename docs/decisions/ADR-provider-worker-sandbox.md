@@ -21,12 +21,17 @@ credential environment variables.
 Use the Apache-2.0 `@anthropic-ai/sandbox-runtime` package as a local worker
 wrapper on macOS. Each launch:
 
-- starts with `env -i` and passes only `PATH`, `HOME`, and `TERM`;
-- denies home reads plus known GitHub and SSH credential paths; writes remain
-  allow-only, so only the bound target and output paths are writable;
+- starts with `env -i` and passes only `PATH`, an account-home value resolved
+  from the password database, and `TERM`;
+- denies `/`, then opens only the bound paths and required system paths; this
+  prevents reads from other user, volume, and temporary directories;
+- rejects a target or output root that is the account home, its ancestor, or a
+  known credential location;
+- opens only the selected provider's configuration directory; and
+- keeps writes allow-only, with explicit denials for shared Claude debug paths;
 - permits only the bound target, output, required provider configuration,
   installed sandbox runtime, provider binary locations, and standard executable
-  locations;
+  locations (including the macOS shell selector);
 - permits only provider-specific network domains; and
 - creates a unique denied-read sentinel and refuses launch if the runtime can
   read it.
@@ -57,10 +62,11 @@ credential and controller probes.
   deny paths.
 
 `scripts/__tests__/provider-worker-sandbox.test.js` proves these launch
-contracts with a deterministic runtime fixture. Live probes must separately
-prove Keychain, `git credential fill`, launchd, AppleEvents, controller Git
-hooks/configuration, real provider authentication, and a worker canary before
-this wrapper is wired into normal provider execution.
+contracts with a deterministic runtime fixture and a macOS runtime canary.
+Live probes must separately prove Keychain, `git credential fill`, launchd,
+AppleEvents, controller Git hooks/configuration, real provider authentication,
+linked-worktree Git metadata, and a provider worker canary before this wrapper
+is wired into normal provider execution.
 
 ## Rollback
 

@@ -1,4 +1,10 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
@@ -107,7 +113,7 @@ describe("provider worker sandbox", () => {
       expect(names).not.toContain(name);
     }
     expect(readFileSync(path.join(fx.output, "home"), "utf8").trim()).toBe(
-      fx.root,
+      process.env.HOME,
     );
   });
 
@@ -128,19 +134,70 @@ describe("provider worker sandbox", () => {
     const policy = JSON.parse(
       readFileSync(path.join(fx.output, "captured-policy.json"), "utf8"),
     );
-    expect(policy.filesystem.denyRead).toContain(`${fx.root}/.ssh`);
-    expect(policy.filesystem.denyRead).toContain(`${fx.root}/.config/gh`);
-    expect(policy.filesystem.denyRead).toContain(`${fx.root}/.git-credentials`);
+    expect(policy.filesystem.denyRead).toContain(`${process.env.HOME}/.ssh`);
+    expect(policy.filesystem.denyRead).toContain(
+      `${process.env.HOME}/.config/gh`,
+    );
+    expect(policy.filesystem.denyRead).toContain(
+      `${process.env.HOME}/.git-credentials`,
+    );
     expect(policy.filesystem.allowRead).toContain(
       path.join(ROOT, "node_modules"),
     );
-    expect(policy.filesystem.allowRead).toContain(`${fx.root}/.local/bin`);
-    expect(policy.filesystem.allowRead).not.toContain(`${fx.root}/.local`);
+    expect(policy.filesystem.allowRead).toContain(
+      `${process.env.HOME}/.local/bin`,
+    );
+    expect(policy.filesystem.allowRead).not.toContain(
+      `${process.env.HOME}/.local`,
+    );
+    expect(policy.filesystem.denyRead).toContain("/");
+    expect(policy.filesystem.allowRead).toContain(`${process.env.HOME}/.codex`);
+    expect(policy.filesystem.allowRead).not.toContain(
+      `${process.env.HOME}/.claude`,
+    );
+    expect(policy.filesystem.denyWrite).toContain("/tmp/claude");
     expect(
       policy.filesystem.denyRead.some((value) =>
         value.includes(".provider-sandbox-sentinel."),
       ),
     ).toBe(true);
+  });
+
+  it("does not derive denied credential paths from a spoofed HOME", () => {
+    const fx = fixture();
+    const spoofedHome = path.join(fx.root, "spoofed-home");
+    const result = launch(fx, { HOME: spoofedHome });
+    expect(result.status).toBe(0);
+    const policy = JSON.parse(
+      readFileSync(path.join(fx.output, "captured-policy.json"), "utf8"),
+    );
+    const actualHome = process.env.HOME;
+    expect(policy.filesystem.denyRead).toContain(actualHome);
+    expect(policy.filesystem.denyRead).not.toContain(spoofedHome);
+  });
+
+  it("rejects a target that would grant access to the account home", () => {
+    const fx = fixture();
+    const result = spawnSync(
+      "bash",
+      [
+        WRAPPER,
+        "--target-dir",
+        process.env.HOME,
+        "--output-dir",
+        fx.output,
+        "--provider",
+        "codex",
+        "--",
+        "/bin/true",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, BS_PROVIDER_SANDBOX_BIN: fx.runtime },
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("must not contain the account home");
   });
 
   it.skipIf(process.platform !== "darwin" || !existsSync(REAL_RUNTIME))(
@@ -160,8 +217,9 @@ describe("provider worker sandbox", () => {
           "--provider",
           "codex",
           "--",
-          worker,
-          fx.output,
+          "/bin/sh",
+          realpathSync(worker),
+          realpathSync(fx.output),
         ],
         {
           encoding: "utf8",
