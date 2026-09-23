@@ -36,9 +36,13 @@ wrapper on macOS. Each launch:
 - creates a unique denied-read sentinel and refuses launch if the runtime can
   read it.
 
-The wrapper has no merge, Git credential, or controller authority. It is a
-small launch boundary that provider orchestration can adopt after the real
-client-authentication and controller-hook probes pass.
+The wrapper has no merge, Git credential, or controller authority. It is not a
+generic workspace-write API. A worker that may write arbitrary files in a live
+Git target can create a nested repository or other future controller input that
+an operating-system path policy cannot predict. Production adoption therefore
+requires the existing governed provider-run path: a detached exact-head
+worktree, classified patch handoff, and controller validation before any change
+reaches the live target.
 
 ## Alternatives
 
@@ -65,8 +69,8 @@ credential and controller probes.
 contracts with a deterministic runtime fixture and a macOS runtime canary.
 Live probes must separately prove Keychain, `git credential fill`, launchd,
 AppleEvents, controller Git hooks/configuration, real provider authentication,
-linked-worktree Git metadata, and a provider worker canary before this wrapper
-is wired into normal provider execution.
+linked-worktree Git metadata, nested-repository rejection, and a provider
+worker canary before this wrapper is wired into normal provider execution.
 
 ## Rollback
 
