@@ -116,7 +116,29 @@ function npmInstallEnvironment(scratch) {
   };
 }
 
+function assertNoLocalDependencySources(directory) {
+  const lockfile = path.join(directory, "package-lock.json");
+  let lock;
+  try {
+    lock = JSON.parse(fs.readFileSync(lockfile, "utf8"));
+  } catch (error) {
+    fail(`cannot read package-lock.json: ${error.message}`);
+  }
+  const visit = (value) => {
+    if (typeof value === "string") {
+      if (/^(?:file:|link:|git\+file:|\.{1,2}[\\/]|[\\/])/.test(value)) {
+        fail("package-lock.json contains a local dependency source");
+      }
+      return;
+    }
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (value && typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(lock);
+}
+
 function installSnapshotDependencies(directory) {
+  assertNoLocalDependencySources(directory);
   const scratch = fs.mkdtempSync(
     path.join(os.tmpdir(), "harness-certify-npm-"),
   );
@@ -295,7 +317,6 @@ function snapshotSandboxProfile(baselineDir, candidateDir, scratchDirectory) {
         "/Library",
         "/dev",
         "/private/etc",
-        "/private/var",
       ].map((dir) => fs.realpathSync(dir)),
     ),
   ];
@@ -661,6 +682,7 @@ if (require.main === module) {
 module.exports = {
   frozenCommand,
   npmInstallEnvironment,
+  assertNoLocalDependencySources,
   snapshotSandboxProfile,
   assertCleanCheckout,
   checkoutSnapshot,

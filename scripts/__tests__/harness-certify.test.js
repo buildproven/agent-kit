@@ -10,6 +10,7 @@ const HAS_IMMUTABLE_GATE_SANDBOX =
 const {
   frozenCommand,
   npmInstallEnvironment,
+  assertNoLocalDependencySources,
   assertCleanCheckout,
   checkoutSnapshot,
   sealSnapshot,
@@ -38,6 +39,27 @@ function initRepository(directory) {
 }
 
 describe("harness-certify", () => {
+  it("rejects local dependency sources before snapshot installation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "package-lock.json"),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            "": {},
+            "node_modules/x": { resolved: "file:/private/secret" },
+          },
+        }),
+      );
+      expect(() => assertNoLocalDependencySources(root)).toThrow(
+        "local dependency source",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("pins snapshot dependency installation writes to harness-owned scratch", () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
