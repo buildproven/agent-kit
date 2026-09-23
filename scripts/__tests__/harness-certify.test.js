@@ -514,7 +514,7 @@ describe("harness-certify", () => {
         fs.writeFileSync(sentinel, "secret\n", { mode: 0o600 });
         fs.writeFileSync(
           executable,
-          `#!/bin/sh\nif cat '${sentinel}' >/dev/null 2>&1; then exit 1; fi\n`,
+          `#!/usr/bin/env node\ntry { require("fs").readFileSync(${JSON.stringify(sentinel)}); process.exit(1); } catch { process.exit(0); }\n`,
           { mode: 0o755 },
         );
         const result = await runGate(root, root, "read-host", [

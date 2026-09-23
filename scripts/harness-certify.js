@@ -720,6 +720,8 @@ async function main() {
   );
   let baselineSnapshot;
   let candidateSnapshot;
+  let receipt;
+  let receiptOut;
   try {
     baselineSnapshot = checkoutSnapshot(
       baselineDir,
@@ -743,8 +745,8 @@ async function main() {
       options["base-sha"],
       candidateHead,
     );
-    const out = receiptPath(candidateDir, options.out);
-    const receipt = {
+    receiptOut = receiptPath(candidateDir, options.out);
+    receipt = {
       schemaVersion: 1,
       kind: "frozen-harness-certification",
       recordedAt: new Date().toISOString(),
@@ -767,7 +769,7 @@ async function main() {
       state: "RUNNING",
       gates: [],
     };
-    writeReceipt(out, receipt, { create: true });
+    writeReceipt(receiptOut, receipt, { create: true });
     for (const [name, command] of [
       ...PROFILES[options.profile],
       ...testPlan.gates,
@@ -775,14 +777,16 @@ async function main() {
       receipt.gates.push(
         await runGate(baselineSnapshot, candidateSnapshot, name, command),
       );
-      writeReceipt(out, receipt);
+      writeReceipt(receiptOut, receipt);
     }
     receipt.state = receipt.gates.every((gate) => gate.status === "success")
       ? "passed"
       : "failed";
     receipt.completedAt = new Date().toISOString();
-    writeReceipt(out, receipt);
-    process.stdout.write(`${JSON.stringify({ status: receipt.state, out })}\n`);
+    writeReceipt(receiptOut, receipt);
+    process.stdout.write(
+      `${JSON.stringify({ status: receipt.state, out: receiptOut })}\n`,
+    );
     process.exitCode = receipt.state === "passed" ? 0 : 1;
   } finally {
     let snapshotsRemoved = true;
@@ -796,8 +800,14 @@ async function main() {
     }
     if (snapshotsRemoved)
       fs.rmSync(snapshotRoot, { recursive: true, force: true });
-    else
+    else {
+      if (receipt && receiptOut) {
+        receipt.state = "cleanup_failed";
+        receipt.completedAt = new Date().toISOString();
+        writeReceipt(receiptOut, receipt);
+      }
       fail(`snapshot cleanup failed; preserved ${snapshotRoot} for recovery`);
+    }
   }
 }
 
