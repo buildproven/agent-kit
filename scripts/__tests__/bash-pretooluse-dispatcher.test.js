@@ -194,6 +194,7 @@ describe("bash-pretooluse-dispatcher.js", () => {
       // child, rather than scheduler noise, determines the outcome.
       const childTimeoutMs = 1000;
       const guardDir = mkdtempSync(path.join(tmpdir(), "bounded-push-"));
+      const startedFile = path.join(guardDir, "child-started");
       try {
         const staged = path.join(guardDir, "bash-pretooluse-dispatcher.js");
         writeFileSync(staged, readFileSync(HOOK, "utf8"));
@@ -205,18 +206,26 @@ describe("bash-pretooluse-dispatcher.js", () => {
         ]) {
           const body =
             name === "block-push-main.sh" && stage === "classifier"
-              ? '#!/bin/sh\nif [ "$1" = "--ci-budget-classify" ]; then cat >/dev/null; exec sleep 600; fi\nexit 0\n'
+              ? `#!/bin/sh
+if [ "$1" = "--ci-budget-classify" ]; then
+  cat >/dev/null
+  printf '%s' started > ${JSON.stringify(startedFile)}
+  exec sleep 600
+fi
+exit 0
+`
               : "#!/bin/sh\nexit 0\n";
           writeFileSync(path.join(guardDir, name), body);
         }
         writeFileSync(
           path.join(guardDir, "ci-budget-admission.js"),
           stage === "admission"
-            ? "setInterval(() => {}, 1000);\n"
+            ? `require("node:fs").writeFileSync(${JSON.stringify(startedFile)}, "started"); setInterval(() => {}, 1000);\n`
             : "process.exit(0);\n",
         );
         let result;
         for (let attempt = 0; attempt < 3; attempt += 1) {
+          rmSync(startedFile, { force: true });
           result = spawnSync(process.execPath, [staged], {
             input: JSON.stringify({
               tool_input: { command: "git push origin topic" },
@@ -229,10 +238,16 @@ describe("bash-pretooluse-dispatcher.js", () => {
             timeout: childTimeoutMs + 2000,
             killSignal: "SIGKILL",
           });
-          if (!String(result.stderr || "").includes("EPIPE")) break;
+          if (
+            existsSync(startedFile) ||
+            !String(result.stderr || "").includes("EPIPE")
+          ) {
+            break;
+          }
         }
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(2);
+        expect(existsSync(startedFile)).toBe(true);
         expect(result.stderr).toMatch(
           new RegExp(
             `CI budget ${stage} did not finish within ${childTimeoutMs}ms`,
