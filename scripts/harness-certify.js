@@ -149,6 +149,24 @@ function hasValidIntegrity(value) {
   );
 }
 
+function assertSupportedLockfile(lock, name) {
+  if (![2, 3].includes(lock.lockfileVersion) || !lock.packages) {
+    fail(`${name} uses an unsupported lockfile format`);
+  }
+  for (const [packagePath, entry] of Object.entries(lock.packages)) {
+    if (packagePath === "") continue;
+    if (!entry || typeof entry !== "object") {
+      fail(`${name} contains an invalid package entry`);
+    }
+    if (typeof entry.resolved !== "string") {
+      fail(`${name} contains a dependency without a resolved registry URL`);
+    }
+    if (!hasValidIntegrity(entry.integrity)) {
+      fail(`${name} contains a resolved dependency without integrity`);
+    }
+  }
+}
+
 function assertNoLocalDependencySources(directory) {
   const lockfiles = ["package-lock.json", "npm-shrinkwrap.json"].filter(
     (name) => fs.existsSync(path.join(directory, name)),
@@ -200,6 +218,7 @@ function assertNoLocalDependencySources(directory) {
     } catch (error) {
       fail(`cannot read ${name}: ${error.message}`);
     }
+    assertSupportedLockfile(lock, name);
     visit(lock);
   }
 }
@@ -407,7 +426,6 @@ function snapshotSandboxProfile(baselineDir, candidateDir, scratchDirectory) {
         "/bin",
         "/sbin",
         "/System",
-        "/Library",
         "/dev",
         "/private/etc",
       ].map((dir) => fs.realpathSync(dir)),

@@ -50,7 +50,10 @@ describe("harness-certify", () => {
           lockfileVersion: 3,
           packages: {
             "": {},
-            "node_modules/x": { resolved: "file:/private/secret" },
+            "node_modules/x": {
+              resolved: "file:/private/secret",
+              integrity: "sha512-aaaaaaaa",
+            },
           },
         }),
       );
@@ -68,8 +71,12 @@ describe("harness-certify", () => {
       fs.writeFileSync(
         path.join(root, "package-lock.json"),
         JSON.stringify({
+          lockfileVersion: 3,
           packages: {
-            "node_modules/x": { resolved: "https://example.test/x.tgz" },
+            "node_modules/x": {
+              resolved: "https://example.test/x.tgz",
+              integrity: "sha512-aaaaaaaa",
+            },
           },
         }),
       );
@@ -87,6 +94,7 @@ describe("harness-certify", () => {
       fs.writeFileSync(
         path.join(root, "package-lock.json"),
         JSON.stringify({
+          lockfileVersion: 3,
           packages: {
             "node_modules/x": {
               resolved: "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
@@ -102,7 +110,7 @@ describe("harness-certify", () => {
     }
   });
 
-  it("rejects remote dependency versions in legacy lockfiles", () => {
+  it("rejects unsupported legacy lockfiles before installation", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
       fs.writeFileSync(
@@ -117,7 +125,7 @@ describe("harness-certify", () => {
         }),
       );
       expect(() => assertNoLocalDependencySources(root)).toThrow(
-        "non-registry dependency version",
+        "unsupported lockfile format",
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -127,7 +135,10 @@ describe("harness-certify", () => {
   it("rejects candidate npm configuration before snapshot installation", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
-      fs.writeFileSync(path.join(root, "package-lock.json"), "{}");
+      fs.writeFileSync(
+        path.join(root, "package-lock.json"),
+        JSON.stringify({ lockfileVersion: 3, packages: {} }),
+      );
       fs.writeFileSync(
         path.join(root, ".npmrc"),
         "registry=https://example.test\n",
@@ -207,19 +218,25 @@ describe("harness-certify", () => {
     expect(githubRepository("https://example.test/agent-kit.git")).toBeNull();
   });
 
-  it("escapes backslashes before quotes in sandbox profile paths", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    try {
-      const candidate = `${root}\\"quoted`;
-      fs.mkdirSync(candidate);
-      const profile = snapshotSandboxProfile(root, candidate, scratch);
-      expect(profile).toContain('\\\\\\"quoted');
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(scratch, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(process.platform !== "darwin")(
+    "escapes backslashes before quotes in sandbox profile paths",
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      const scratch = fs.mkdtempSync(
+        path.join(os.tmpdir(), "harness-certify-"),
+      );
+      try {
+        const candidate = `${root}\\"quoted`;
+        fs.mkdirSync(candidate);
+        const profile = snapshotSandboxProfile(root, candidate, scratch);
+        expect(profile).toContain('\\\\\\"quoted');
+        expect(profile).not.toContain('(subpath "/Library")');
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("refuses a dirty source checkout before certification", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
