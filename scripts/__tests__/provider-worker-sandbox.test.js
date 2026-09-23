@@ -64,6 +64,7 @@ function launch(fx, extra = {}) {
         ...process.env,
         HOME: fx.root,
         BS_PROVIDER_SANDBOX_BIN: fx.runtime,
+        BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         GH_TOKEN: "must-not-reach-worker",
         GITHUB_TOKEN: "must-not-reach-worker",
         GH_ENTERPRISE_TOKEN: "must-not-reach-worker",
@@ -96,6 +97,7 @@ describe("provider worker sandbox", () => {
           ...process.env,
           HOME: fx.root,
           BS_PROVIDER_SANDBOX_BIN: "/missing/srt",
+          BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         },
       },
     );
@@ -132,6 +134,32 @@ describe("provider worker sandbox", () => {
     expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(false);
   });
 
+  it("refuses a direct invocation before it starts a worker", () => {
+    const fx = fixture();
+    const result = spawnSync(
+      "bash",
+      [
+        WRAPPER,
+        "--target-dir",
+        fx.target,
+        "--output-dir",
+        fx.output,
+        "--provider",
+        "codex",
+        "--",
+        "/bin/true",
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, BS_PROVIDER_SANDBOX_BIN: fx.runtime },
+      },
+    );
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain(
+      "governed detached-worktree invocation is required",
+    );
+  });
+
   it("passes runtime-looking wrapped arguments to the child unchanged", () => {
     const fx = fixture();
     const result = spawnSync(
@@ -154,7 +182,11 @@ describe("provider worker sandbox", () => {
       ],
       {
         encoding: "utf8",
-        env: { ...process.env, BS_PROVIDER_SANDBOX_BIN: fx.runtime },
+        env: {
+          ...process.env,
+          BS_PROVIDER_SANDBOX_BIN: fx.runtime,
+          BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
+        },
       },
     );
     expect(result.status, result.stderr).toBe(0);
@@ -230,7 +262,11 @@ describe("provider worker sandbox", () => {
       ],
       {
         encoding: "utf8",
-        env: { ...process.env, BS_PROVIDER_SANDBOX_BIN: fx.runtime },
+        env: {
+          ...process.env,
+          BS_PROVIDER_SANDBOX_BIN: fx.runtime,
+          BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
+        },
       },
     );
     expect(result.status).toBe(2);
@@ -264,6 +300,7 @@ describe("provider worker sandbox", () => {
             ...process.env,
             HOME: fx.root,
             BS_PROVIDER_SANDBOX_BIN: REAL_RUNTIME,
+            BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
           },
         },
       );

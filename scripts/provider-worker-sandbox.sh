@@ -58,6 +58,7 @@ done
 [ -n "$OUTPUT_DIR" ] && [ -d "$OUTPUT_DIR" ] || { echo "provider-worker-sandbox: output directory is required" >&2; exit 2; }
 case "$PROVIDER" in claude|codex) ;; *) echo "provider-worker-sandbox: provider must be claude or codex" >&2; exit 2 ;; esac
 [ $# -gt 0 ] || { echo "provider-worker-sandbox: wrapped command is required" >&2; exit 2; }
+[ "${BS_GOVERNED_PROVIDER_SNAPSHOT:-}" = "1" ] || { echo "provider-worker-sandbox: governed detached-worktree invocation is required" >&2; exit 78; }
 
 TARGET_DIR=$(cd -P "$TARGET_DIR" && pwd)
 OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
