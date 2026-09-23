@@ -9,6 +9,7 @@ const HAS_IMMUTABLE_GATE_SANDBOX =
   process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec");
 const {
   frozenCommand,
+  gateEnvironment,
   npmInstallEnvironment,
   assertNoLocalDependencySources,
   assertNpmInstallInputs,
@@ -80,6 +81,28 @@ describe("harness-certify", () => {
     }
   });
 
+  it("rejects remote dependency versions in legacy lockfiles", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "package-lock.json"),
+        JSON.stringify({
+          lockfileVersion: 1,
+          dependencies: {
+            hostile: {
+              version: "git+https://example.test/hostile.git#deadbeef",
+            },
+          },
+        }),
+      );
+      expect(() => assertNoLocalDependencySources(root)).toThrow(
+        "non-registry dependency version",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects candidate npm configuration before snapshot installation", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
@@ -116,6 +139,24 @@ describe("harness-certify", () => {
         npm_config_registry: "https://registry.npmjs.org",
       });
       expect(environment.NPM_TOKEN).toBeUndefined();
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("runs gates with a fixed environment that omits host credentials", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const environment = gateEnvironment(ROOT, scratch);
+      expect(environment).toMatchObject({
+        HOME: scratch,
+        TMPDIR: scratch,
+        npm_config_cache: scratch,
+        npm_config_userconfig: "/dev/null",
+      });
+      expect(environment.NPM_TOKEN).toBeUndefined();
+      expect(environment.AWS_ACCESS_KEY_ID).toBeUndefined();
+      expect(environment.GITHUB_TOKEN).toBeUndefined();
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

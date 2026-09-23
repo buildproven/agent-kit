@@ -117,6 +117,27 @@ function npmInstallEnvironment(scratch) {
   };
 }
 
+function gateEnvironment(baselineDir, scratch) {
+  return {
+    PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+    HOME: scratch,
+    TMPDIR: scratch,
+    TMP: scratch,
+    TEMP: scratch,
+    npm_config_ignore_scripts: "true",
+    npm_config_registry: "https://registry.npmjs.org",
+    npm_config_userconfig: "/dev/null",
+    npm_config_globalconfig: "/dev/null",
+    npm_config_cache: scratch,
+  };
+}
+
+function isRemoteDependencySpecifier(value) {
+  return /^(?:(?:git\+)?(?:https?|ssh):|git@|github:|gitlab:|bitbucket:|npm:)/i.test(
+    value,
+  );
+}
+
 function assertNoLocalDependencySources(directory) {
   const lockfiles = ["package-lock.json", "npm-shrinkwrap.json"].filter(
     (name) => fs.existsSync(path.join(directory, name)),
@@ -140,6 +161,9 @@ function assertNoLocalDependencySources(directory) {
         ) {
           fail("package-lock.json contains a non-registry resolved URL");
         }
+      }
+      if (key === "version" && isRemoteDependencySpecifier(value)) {
+        fail("package-lock.json contains a non-registry dependency version");
       }
       return;
     }
@@ -405,18 +429,7 @@ function runGate(
       {
         cwd: candidateDir,
         detached: true,
-        env: {
-          ...process.env,
-          PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
-          npm_config_ignore_scripts: "true",
-          npm_config_registry: "https://registry.npmjs.org",
-          npm_config_userconfig: "/dev/null",
-          npm_config_cache: scratch,
-          TMPDIR: scratch,
-          TMP: scratch,
-          TEMP: scratch,
-          HOME: scratch,
-        },
+        env: gateEnvironment(baselineDir, scratch),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -723,6 +736,7 @@ if (require.main === module) {
 module.exports = {
   frozenCommand,
   npmInstallEnvironment,
+  gateEnvironment,
   assertNoLocalDependencySources,
   assertNpmInstallInputs,
   snapshotSandboxProfile,
