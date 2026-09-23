@@ -1,8 +1,11 @@
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -19,15 +22,22 @@ function executable(file, body) {
   chmodSync(file, 0o755);
 }
 
-function fixture({ permissiveCanary = false } = {}) {
+function fixture({ permissiveCanary = false, runtimeAvailable = true } = {}) {
   const root = makeTempDir("provider-worker-sandbox-");
   const repo = path.join(root, "repo");
   const target = path.join(root, "target");
   const output = path.join(root, "output");
-  const bin = path.join(root, "bin");
+  const install = path.join(root, "install");
+  const scripts = path.join(install, "scripts");
+  const bin = path.join(install, "node_modules", ".bin");
+  const wrapper = path.join(scripts, "provider-worker-sandbox.sh");
   const runtime = path.join(bin, "srt");
-  const worker = path.join(bin, "worker");
-  spawnSync("mkdir", ["-p", repo, output, bin], { encoding: "utf8" });
+  const worker = path.join(root, "worker");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  spawnSync("mkdir", ["-p", repo, output], { encoding: "utf8" });
+  copyFileSync(WRAPPER, wrapper);
+  chmodSync(wrapper, 0o755);
   expect(spawnSync("git", ["init", "-q", repo]).status).toBe(0);
   expect(
     spawnSync("git", ["-C", repo, "config", "user.email", "tests@example.test"])
@@ -56,22 +66,37 @@ function fixture({ permissiveCanary = false } = {}) {
     spawnSync("git", ["-C", target, "config", "core.hooksPath", ".husky/_"])
       .status,
   ).toBe(0);
-  executable(
-    runtime,
-    `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\nif [ "\${1:-}" = "/bin/cat" ]; then ${permissiveCanary ? 'exec "$@"' : "exit 1"}; fi\ncp "$settings" "$PWD/captured-policy.json"\n[ "\${1:-}" != "--" ] || shift\nexec "$@"`,
+  const head = spawnSync("git", ["-C", target, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).stdout.trim();
+  const gitDir = spawnSync(
+    "git",
+    ["-C", target, "rev-parse", "--path-format=absolute", "--git-dir"],
+    { encoding: "utf8" },
+  ).stdout.trim();
+  const receipt = path.join(gitDir, "buildproven-provider-sandbox.json");
+  writeFileSync(
+    receipt,
+    JSON.stringify({ schemaVersion: 1, targetHead: head }),
   );
+  if (runtimeAvailable) {
+    executable(
+      runtime,
+      `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\n[ "\${1:-}" != "--" ] || shift\nif [ "\${1:-}" = "/bin/cat" ]; then\n  if ${permissiveCanary ? "true" : '[ "${2##*/}" != "sentinel" ]'}; then exec "$@"; fi\n  echo "Operation not permitted" >&2\n  exit 1\nfi\ncp "$settings" "$PWD/captured-policy.json"\nexec "$@"`,
+    );
+  }
   executable(
     worker,
     'env | cut -d= -f1 | sort > "$1/env-names"\nprintf "%s\\n" "$HOME" > "$1/home"\ntouch "$1/worker-ran"',
   );
-  return { root, target, output, runtime, worker };
+  return { root, target, output, runtime, worker, wrapper, receipt };
 }
 
 function launch(fx, extra = {}) {
   return spawnSync(
     "bash",
     [
-      WRAPPER,
+      fx.wrapper,
       "--target-dir",
       fx.target,
       "--output-dir",
@@ -87,7 +112,6 @@ function launch(fx, extra = {}) {
       env: {
         ...process.env,
         HOME: fx.root,
-        BS_PROVIDER_SANDBOX_BIN: fx.runtime,
         BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         GH_TOKEN: "must-not-reach-worker",
         GITHUB_TOKEN: "must-not-reach-worker",
@@ -101,11 +125,11 @@ function launch(fx, extra = {}) {
 
 describe("provider worker sandbox", () => {
   it("fails closed before launch when Sandbox Runtime is unavailable", () => {
-    const fx = fixture();
+    const fx = fixture({ runtimeAvailable: false });
     const result = spawnSync(
       "bash",
       [
-        WRAPPER,
+        fx.wrapper,
         "--target-dir",
         fx.target,
         "--output-dir",
@@ -120,13 +144,45 @@ describe("provider worker sandbox", () => {
         env: {
           ...process.env,
           HOME: fx.root,
-          BS_PROVIDER_SANDBOX_BIN: "/missing/srt",
           BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         },
       },
     );
     expect(result.status).toBe(74);
     expect(result.stderr).toContain("Sandbox Runtime is unavailable");
+  });
+
+  it("does not accept a caller-supplied runtime path", () => {
+    const fx = fixture({ runtimeAvailable: false });
+    const replacement = path.join(fx.root, "replacement-runtime");
+    executable(replacement, "exit 0");
+    const result = launch(fx, { BS_PROVIDER_SANDBOX_BIN: replacement });
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain("Sandbox Runtime is unavailable");
+  });
+
+  it("requires a clean controller receipt bound to the snapshot head", () => {
+    const fx = fixture();
+    unlinkSync(fx.receipt);
+    let result = launch(fx);
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain(
+      "snapshot receipt is missing or mismatched",
+    );
+
+    writeFileSync(path.join(fx.target, "untracked.txt"), "dirty\n");
+    writeFileSync(
+      fx.receipt,
+      JSON.stringify({
+        schemaVersion: 1,
+        targetHead: spawnSync("git", ["-C", fx.target, "rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).stdout.trim(),
+      }),
+    );
+    result = launch(fx);
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("governed target must be clean");
   });
 
   it("runs only after the deny-read canary and strips ambient credentials", () => {
@@ -152,9 +208,7 @@ describe("provider worker sandbox", () => {
     const fx = fixture({ permissiveCanary: true });
     const result = launch(fx);
     expect(result.status).toBe(78);
-    expect(result.stderr).toContain(
-      "denied-read canary unexpectedly succeeded",
-    );
+    expect(result.stderr).toContain("denied-read canary was not enforced");
     expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(false);
   });
 
@@ -163,7 +217,7 @@ describe("provider worker sandbox", () => {
     const result = spawnSync(
       "bash",
       [
-        WRAPPER,
+        fx.wrapper,
         "--target-dir",
         fx.target,
         "--output-dir",
@@ -175,7 +229,7 @@ describe("provider worker sandbox", () => {
       ],
       {
         encoding: "utf8",
-        env: { ...process.env, BS_PROVIDER_SANDBOX_BIN: fx.runtime },
+        env: { ...process.env },
       },
     );
     expect(result.status).toBe(78);
@@ -189,7 +243,7 @@ describe("provider worker sandbox", () => {
     const result = spawnSync(
       "bash",
       [
-        WRAPPER,
+        fx.wrapper,
         "--target-dir",
         fx.target,
         "--output-dir",
@@ -208,7 +262,6 @@ describe("provider worker sandbox", () => {
         encoding: "utf8",
         env: {
           ...process.env,
-          BS_PROVIDER_SANDBOX_BIN: fx.runtime,
           BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         },
       },
@@ -231,7 +284,7 @@ describe("provider worker sandbox", () => {
       `${process.env.HOME}/.git-credentials`,
     );
     expect(policy.filesystem.allowRead).toContain(
-      path.join(ROOT, "node_modules"),
+      realpathSync(path.join(fx.root, "install", "node_modules")),
     );
     expect(policy.filesystem.allowRead).toContain(
       `${process.env.HOME}/.local/bin`,
@@ -281,7 +334,7 @@ describe("provider worker sandbox", () => {
     const result = spawnSync(
       "bash",
       [
-        WRAPPER,
+        fx.wrapper,
         "--target-dir",
         process.env.HOME,
         "--output-dir",
@@ -295,7 +348,6 @@ describe("provider worker sandbox", () => {
         encoding: "utf8",
         env: {
           ...process.env,
-          BS_PROVIDER_SANDBOX_BIN: fx.runtime,
           BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         },
       },
@@ -309,7 +361,7 @@ describe("provider worker sandbox", () => {
     const result = spawnSync(
       "bash",
       [
-        WRAPPER,
+        fx.wrapper,
         "--target-dir",
         path.join(fx.root, "repo"),
         "--output-dir",
@@ -323,7 +375,6 @@ describe("provider worker sandbox", () => {
         encoding: "utf8",
         env: {
           ...process.env,
-          BS_PROVIDER_SANDBOX_BIN: fx.runtime,
           BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
         },
       },
@@ -336,8 +387,6 @@ describe("provider worker sandbox", () => {
     "requires the installed runtime to enforce the canary before a real worker runs",
     () => {
       const fx = fixture();
-      const worker = path.join(fx.target, "real-worker");
-      executable(worker, 'touch "$1/worker-ran"');
       const result = spawnSync(
         "bash",
         [
@@ -350,7 +399,9 @@ describe("provider worker sandbox", () => {
           "codex",
           "--",
           "/bin/sh",
-          realpathSync(worker),
+          "-c",
+          'touch "$1/worker-ran"',
+          "_",
           realpathSync(fx.output),
         ],
         {
@@ -358,7 +409,6 @@ describe("provider worker sandbox", () => {
           env: {
             ...process.env,
             HOME: fx.root,
-            BS_PROVIDER_SANDBOX_BIN: REAL_RUNTIME,
             BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
           },
         },

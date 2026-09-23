@@ -23,6 +23,9 @@ wrapper on macOS. Each launch:
 
 - starts with `env -i` and passes only `PATH`, an account-home value resolved
   from the password database, and `TERM`;
+- resolves the sandbox runtime only from this package's installed dependency;
+- accepts only a clean, detached linked worktree with a controller receipt that
+  binds its exact HEAD; and
 - denies `/`, then opens only the bound paths and required system paths; this
   prevents reads from other user, volume, and temporary directories;
 - rejects a target or output root that is the account home, its ancestor, or a
@@ -34,8 +37,8 @@ wrapper on macOS. Each launch:
   binary locations, and standard executable
   locations (including the macOS shell selector);
 - permits only provider-specific network domains; and
-- creates a unique denied-read sentinel and refuses launch if the runtime can
-  read it.
+- proves one allowed control read and one denied sentinel read under the same
+  minimal launch environment before it starts a worker.
 
 The wrapper has no merge, Git credential, or controller authority. It is not a
 generic workspace-write API. A worker that may write arbitrary files in a live
@@ -61,10 +64,11 @@ credential and controller probes.
 
 - No runtime executable: exit 74 and no worker starts.
 - A permissive denied-read canary: exit 78 and no worker starts.
+- A missing, stale, or dirty governed snapshot: exit 78 and no worker starts.
 - Provider workers do not receive `GH_TOKEN`, `GITHUB_TOKEN`,
   `GH_ENTERPRISE_TOKEN`, or `SSH_AUTH_SOCK`.
 - Policy contains the exact SSH, GitHub, credential-file, and unique sentinel
-  deny paths.
+  deny paths, including Git metadata, Husky, and executable shim directories.
 
 `scripts/__tests__/provider-worker-sandbox.test.js` proves these launch
 contracts with a deterministic runtime fixture and a macOS runtime canary.

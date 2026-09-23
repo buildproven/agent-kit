@@ -63,6 +63,7 @@ case "$PROVIDER" in claude|codex) ;; *) echo "provider-worker-sandbox: provider 
 TARGET_DIR=$(cd -P "$TARGET_DIR" && pwd)
 OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
 RUNTIME_DIR=$(cd "$SCRIPT_DIR/../node_modules" && pwd)
+SAFE_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
@@ -73,23 +74,40 @@ GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-dir 2>/dev
 GIT_COMMON_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 78
 [ "$(git -C "$TARGET_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)" = "" ] || { echo "provider-worker-sandbox: governed target must have detached HEAD" >&2; exit 78; }
 [ "$GIT_DIR" != "$GIT_COMMON_DIR" ] || { echo "provider-worker-sandbox: governed target must be a linked worktree" >&2; exit 78; }
+TARGET_HEAD=$(git -C "$TARGET_DIR" rev-parse HEAD) || exit 78
+GOVERNED_RECEIPT="$GIT_DIR/buildproven-provider-sandbox.json"
+jq -e --arg head "$TARGET_HEAD" \
+  '.schemaVersion == 1 and .targetHead == $head' "$GOVERNED_RECEIPT" >/dev/null 2>&1 \
+  || { echo "provider-worker-sandbox: governed snapshot receipt is missing or mismatched" >&2; exit 78; }
+[ -z "$(git -C "$TARGET_DIR" status --porcelain=v1 --untracked-files=all)" ] \
+  || { echo "provider-worker-sandbox: governed target must be clean" >&2; exit 78; }
 for protected in "$GIT_DIR" "$GIT_COMMON_DIR" "$SCRIPT_DIR" "$RUNTIME_DIR"; do
-  if is_same_or_ancestor "$TARGET_DIR" "$protected" || is_same_or_ancestor "$OUTPUT_DIR" "$protected" || is_same_or_ancestor "$protected" "$OUTPUT_DIR"; then
+  if is_same_or_ancestor "$TARGET_DIR" "$protected" || is_same_or_ancestor "$protected" "$TARGET_DIR" || is_same_or_ancestor "$OUTPUT_DIR" "$protected" || is_same_or_ancestor "$protected" "$OUTPUT_DIR"; then
     echo "provider-worker-sandbox: target or output overlaps controller metadata" >&2
     exit 78
   fi
 done
 [ "$TARGET_DIR" != "$OUTPUT_DIR" ] || { echo "provider-worker-sandbox: output directory must differ from target" >&2; exit 78; }
 
-SRT_BIN="${BS_PROVIDER_SANDBOX_BIN:-$SCRIPT_DIR/../node_modules/.bin/srt}"
-[ -x "$SRT_BIN" ] || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
+SRT_SOURCE="$SCRIPT_DIR/../node_modules/.bin/srt"
+while [ -L "$SRT_SOURCE" ]; do
+  SRT_SOURCE_DIR=$(cd -P "$(dirname "$SRT_SOURCE")" && pwd)
+  SRT_SOURCE=$(readlink "$SRT_SOURCE")
+  case "$SRT_SOURCE" in /*) ;; *) SRT_SOURCE="$SRT_SOURCE_DIR/$SRT_SOURCE" ;; esac
+done
+SRT_BIN=$(cd -P "$(dirname "$SRT_SOURCE")" 2>/dev/null && pwd)/$(basename "$SRT_SOURCE")
+[ -x "$SRT_BIN" ] && is_same_or_ancestor "$RUNTIME_DIR" "$SRT_BIN" \
+  || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 
 CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-sandbox.XXXXXX") || exit 2
+CONTROL_DIR=$(cd -P "$CONTROL_DIR" && pwd)
 SETTINGS="$CONTROL_DIR/settings.json"
 SENTINEL="$CONTROL_DIR/sentinel"
-cleanup() { rm -f "$SETTINGS" "$SENTINEL"; rmdir "$CONTROL_DIR" 2>/dev/null || true; }
+POSITIVE_CONTROL="$CONTROL_DIR/allowed"
+cleanup() { rm -f "$SETTINGS" "$SENTINEL" "$POSITIVE_CONTROL"; rmdir "$CONTROL_DIR" 2>/dev/null || true; }
 trap cleanup EXIT
 printf '%s\n' 'sandbox canary' > "$SENTINEL"
+printf '%s\n' 'sandbox allowed' > "$POSITIVE_CONTROL"
 
 case "$PROVIDER" in
   claude) NETWORK_DOMAINS='["*.anthropic.com"]' ;;
@@ -132,17 +150,25 @@ jq -n \
   '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/.claude",$home+"/.codex",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:(["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug",$target+"/node_modules/.bin"] + $gitDeny + $hooksDeny)},network:{allowedDomains:$domains,deniedDomains:[]}}' \
   > "$SETTINGS"
 
-# A passed canary is proof that the configured runtime is enforcing its most
-# specific denied path; a missing or permissive runtime never launches work.
-if "$SRT_BIN" --settings "$SETTINGS" /bin/cat "$SENTINEL" >/dev/null 2>&1; then
-  echo "provider-worker-sandbox: denied-read canary unexpectedly succeeded" >&2
+# A positive and a negative probe prove that the runtime can execute under the
+# same minimal environment and specifically enforces this denied path.
+if [ "$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" "TERM=${TERM:-dumb}" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$POSITIVE_CONTROL" 2>/dev/null)" != 'sandbox allowed' ]; then
+  echo "provider-worker-sandbox: positive sandbox probe failed" >&2
+  exit 78
+fi
+set +e
+DENY_ERROR=$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" "TERM=${TERM:-dumb}" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$SENTINEL" 2>&1)
+DENY_STATUS=$?
+set -e
+if [ "$DENY_STATUS" -eq 0 ] || ! printf '%s' "$DENY_ERROR" | grep -q 'Operation not permitted'; then
+  echo "provider-worker-sandbox: denied-read canary was not enforced" >&2
   exit 78
 fi
 
 (
   cd "$TARGET_DIR"
   env -i \
-    "PATH=$PATH" \
+    "PATH=$SAFE_PATH" \
     "HOME=$ACCOUNT_HOME" \
     "TERM=${TERM:-dumb}" \
     "$SRT_BIN" --settings "$SETTINGS" -- "$@"
