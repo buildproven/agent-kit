@@ -1260,7 +1260,7 @@ describe("quality-run public orchestration", () => {
     expect(result.manifest.telemetryWrites).toBe(1);
   });
 
-  it("blocks an evidence-free contract claim for a product diff", () => {
+  it("blocks an evidence-free contract claim before gates or providers start", () => {
     const result = run(fixture({ changedFiles: ["src/App.tsx"] }));
     expect(result.status).toBe(1);
     expect(JSON.parse(result.output)).toMatchObject({
@@ -1269,7 +1269,7 @@ describe("quality-run public orchestration", () => {
       message:
         "contract delivery claim requires product evidence for product-affecting file 'src/App.tsx'",
     });
-    expect(result.manifest.calls).not.toContain("quality-run-review.sh");
+    expect(result.manifest.calls || []).toEqual([]);
   });
 
   it("runs an evidence-free contract claim for quality-control configuration", () => {
@@ -1396,7 +1396,7 @@ describe("quality-run public orchestration", () => {
       message:
         "contract delivery claim requires product evidence for product-affecting file 'harness-config.js'",
     });
-    expect(result.manifest.calls).not.toContain("quality-run-review.sh");
+    expect(result.manifest.calls || []).toEqual([]);
   });
 
   it.each([

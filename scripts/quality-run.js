@@ -515,8 +515,7 @@ function actionRequired(manifestPath, phase, message, manifest, review) {
 
 function prepareProductAdmission(manifestPath) {
   const manifest = manifestAt(manifestPath);
-  if (deliveryClaim(manifest) === "contract") return null;
-  if (deliveryClaim(manifest) === "engineering") {
+  if (["contract", "engineering"].includes(deliveryClaim(manifest))) {
     verifyDeliveryClaim(manifest);
     return null;
   }
