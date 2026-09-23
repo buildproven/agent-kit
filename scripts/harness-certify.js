@@ -129,12 +129,23 @@ function gateEnvironment(baselineDir, scratch) {
     npm_config_userconfig: "/dev/null",
     npm_config_globalconfig: "/dev/null",
     npm_config_cache: scratch,
+    NODE_OPTIONS: "--preserve-symlinks-main",
   };
 }
 
 function isRemoteDependencySpecifier(value) {
   return /^(?:(?:git\+)?(?:https?|ssh):|git@|github:|gitlab:|bitbucket:|npm:)/i.test(
     value,
+  );
+}
+
+function hasValidIntegrity(value) {
+  return (
+    typeof value === "string" &&
+    value
+      .trim()
+      .split(/\s+/)
+      .every((entry) => /^sha(?:256|384|512)-[A-Za-z0-9+/]+={0,2}$/.test(entry))
   );
 }
 
@@ -172,6 +183,14 @@ function assertNoLocalDependencySources(directory) {
       Object.entries(value).forEach(([entryKey, entry]) =>
         visit(entry, entryKey),
       );
+      if (
+        typeof value.resolved === "string" &&
+        !hasValidIntegrity(value.integrity)
+      ) {
+        fail(
+          "package-lock.json contains a resolved dependency without integrity",
+        );
+      }
     }
   };
   for (const name of lockfiles) {
@@ -363,7 +382,16 @@ function frozenCommand(baselineDir, command) {
 }
 
 function sandboxPath(value) {
-  return String(value).replaceAll('"', '\\"');
+  const string = String(value);
+  if (
+    [...string].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  ) {
+    fail("sandbox profile path contains a control character");
+  }
+  return string.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 function snapshotSandboxProfile(baselineDir, candidateDir, scratchDirectory) {
@@ -392,11 +420,11 @@ function snapshotSandboxProfile(baselineDir, candidateDir, scratchDirectory) {
     '(import "system.sb")',
     "(allow process*)",
     "(allow sysctl-read)",
-    '(allow file-read-metadata (subpath "/"))',
     ...readRoots.map(
-      (root) => `(allow file-read* (subpath "${sandboxPath(root)}"))`,
+      (root) =>
+        `(allow file-read* file-read-metadata (subpath "${sandboxPath(root)}"))`,
     ),
-    `(allow file-read* file-write* (subpath "${sandboxPath(scratch)}"))`,
+    `(allow file-read* file-read-metadata file-write* (subpath "${sandboxPath(scratch)}"))`,
   ].join(" ");
 }
 

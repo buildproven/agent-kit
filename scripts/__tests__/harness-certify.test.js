@@ -81,6 +81,27 @@ describe("harness-certify", () => {
     }
   });
 
+  it("rejects resolved dependencies without an integrity hash", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "package-lock.json"),
+        JSON.stringify({
+          packages: {
+            "node_modules/x": {
+              resolved: "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
+            },
+          },
+        }),
+      );
+      expect(() => assertNoLocalDependencySources(root)).toThrow(
+        "without integrity",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects remote dependency versions in legacy lockfiles", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
@@ -153,6 +174,7 @@ describe("harness-certify", () => {
         TMPDIR: scratch,
         npm_config_cache: scratch,
         npm_config_userconfig: "/dev/null",
+        NODE_OPTIONS: "--preserve-symlinks-main",
       });
       expect(environment.NPM_TOKEN).toBeUndefined();
       expect(environment.AWS_ACCESS_KEY_ID).toBeUndefined();
@@ -183,6 +205,20 @@ describe("harness-certify", () => {
       githubRepository("https://github.com/buildproven/agent-kit.git"),
     ).toBe("buildproven/agent-kit");
     expect(githubRepository("https://example.test/agent-kit.git")).toBeNull();
+  });
+
+  it("escapes backslashes before quotes in sandbox profile paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const candidate = `${root}\\"quoted`;
+      fs.mkdirSync(candidate);
+      const profile = snapshotSandboxProfile(root, candidate, scratch);
+      expect(profile).toContain('\\\\\\"quoted');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it("refuses a dirty source checkout before certification", () => {
@@ -532,6 +568,31 @@ describe("harness-certify", () => {
         ]);
         expect(result).toMatchObject({ name: "node-proof", status: "success" });
       } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "denies gate metadata reads outside the declared roots",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      const sentinel = path.join(os.homedir(), ".harness-certify-metadata");
+      try {
+        fs.writeFileSync(sentinel, "sentinel\n", { mode: 0o600 });
+        const executable = path.join(root, "node_modules", ".bin", "metadata");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(
+          executable,
+          `#!/usr/bin/env node\ntry { require("fs").statSync(${JSON.stringify(sentinel)}); process.exit(1); } catch { process.exit(0); }\n`,
+          { mode: 0o755 },
+        );
+        const result = await runGate(root, root, "metadata", [
+          "node_modules/.bin/metadata",
+        ]);
+        expect(result.status).toBe("success");
+      } finally {
+        fs.rmSync(sentinel, { force: true });
         fs.rmSync(root, { recursive: true, force: true });
       }
     },
