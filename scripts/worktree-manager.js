@@ -1002,27 +1002,14 @@ function upstreamState(repoRoot, branch) {
       ["merge-base", "--is-ancestor", branch, `refs/remotes/origin/${base}`],
       { allowFailure: true },
     ).status === 0;
-  const localTree = localHead
-    ? git(repoRoot, ["rev-parse", `${localHead}^{tree}`], {
-        allowFailure: true,
-      }).stdout
-    : null;
-  // Squash merges preserve the PR tree but not its commit identity. Main can
-  // advance before cleanup, so find that tree in protected history instead of
-  // comparing only the current tip.
-  const treeMerged = Boolean(
-    localTree &&
-    git(repoRoot, ["log", "--format=%T", `refs/remotes/origin/${base}`], {
-      allowFailure: true,
-    })
-      .stdout.split("\n")
-      .includes(localTree),
-  );
   return {
     upstream: null,
     ahead: null,
-    unpushed: !(merged || treeMerged),
-    localMerged: merged || treeMerged,
+    // Tree equality is not merge evidence: an unmerged local commit can
+    // reproduce a historical default-branch tree. A squash merge is handled
+    // later only when GitHub proves that this exact branch head was merged.
+    unpushed: !merged,
+    localMerged: merged,
     localHead,
   };
 }
@@ -1400,6 +1387,9 @@ function classify(repoRoot, record, options = {}) {
     pr.state === "MERGED" &&
     Boolean(push.localHead) &&
     pr.headRefOid === push.localHead;
+  const mergedPrPush = mergedPrCapturesLocalHead
+    ? { ...push, unpushed: false, localMerged: true }
+    : push;
   if (pr.state === "OPEN") {
     return {
       ...record,
@@ -1420,10 +1410,10 @@ function classify(repoRoot, record, options = {}) {
       reason: `PR #${pr.number} closed without merge`,
     };
   }
-  if (push.unpushed && !mergedPrCapturesLocalHead) {
+  if (mergedPrPush.unpushed) {
     return {
       ...record,
-      ...push,
+      ...mergedPrPush,
       pr,
       classification: "clean with unpushed commits",
       removable: false,
@@ -1462,7 +1452,7 @@ function classify(repoRoot, record, options = {}) {
     );
     return {
       ...record,
-      ...push,
+      ...mergedPrPush,
       pr,
       mergedAgeHours,
       classification: "clean with merged PR",

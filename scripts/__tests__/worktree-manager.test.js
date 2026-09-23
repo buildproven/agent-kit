@@ -461,6 +461,42 @@ describe("worktree-manager public CLI", () => {
     ).toContain("refs/heads/feature/test");
   });
 
+  it("retains an unmerged branch that recreates a historical default-branch tree", () => {
+    const { repo } = fixture();
+    writeFileSync(path.join(repo, "historical.txt"), "historical\n");
+    git(repo, "add", "historical.txt");
+    git(repo, "commit", "-m", "historical main tree");
+    git(repo, "push", "origin", "main");
+    const historicalHead = git(repo, "rev-parse", "HEAD");
+
+    git(
+      repo,
+      "checkout",
+      "-b",
+      "feature/recreated-tree",
+      `${historicalHead}~1`,
+    );
+    writeFileSync(path.join(repo, "historical.txt"), "historical\n");
+    git(repo, "add", "historical.txt");
+    git(repo, "commit", "-m", "recreate historical tree");
+    git(repo, "checkout", "main");
+    const worktree = create(repo, "feature/recreated-tree");
+
+    const state = manager(["status", "--repo", repo, "--recent-minutes", "0"])
+      .json.worktrees[0];
+    expect(state.localMerged).toBe(false);
+    expect(state.unpushed).toBe(true);
+    expect(state.classification).toBe("clean with unpushed commits");
+    expect(state.removable).toBe(false);
+
+    const { json } = manager(
+      ["remove", "--repo", repo, "--branch", "feature/recreated-tree"],
+      { ok: false },
+    );
+    expect(json.code).toBe("UNPUSHED");
+    expect(existsSync(worktree.worktreePath)).toBe(true);
+  });
+
   it("retains local commits added after the recorded PR head was merged", () => {
     const { parent, repo } = fixture();
     const bin = fakeGh(parent);
