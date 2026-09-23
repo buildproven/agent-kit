@@ -192,6 +192,15 @@ describe("provider worker sandbox", () => {
     expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(true);
   });
 
+  it("uses the fixed receipt parser instead of a PATH-prepended replacement", () => {
+    const fx = fixture();
+    const replacement = path.join(fx.root, "jq");
+    executable(replacement, "exit 99");
+    const result = launch(fx, { PATH: `${fx.root}:${process.env.PATH}` });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(true);
+  });
+
   it("requires a clean controller receipt bound to the snapshot head", () => {
     const fx = fixture();
     unlinkSync(fx.receipt);

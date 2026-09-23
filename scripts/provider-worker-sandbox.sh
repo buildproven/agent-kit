@@ -73,11 +73,13 @@ OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
 RUNTIME_DIR=$(cd -P "$SCRIPT_DIR/../node_modules" 2>/dev/null && pwd) \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 SAFE_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
+JQ_BIN='/usr/bin/jq'
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
 reject_account_root "$TARGET_DIR" "target directory"
 reject_account_root "$OUTPUT_DIR" "output directory"
+[ -x "$JQ_BIN" ] || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 git_safe() {
   env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" 'TERM=dumb' \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
@@ -91,11 +93,11 @@ GIT_COMMON_DIR=$(git_safe -C "$TARGET_DIR" rev-parse --path-format=absolute --gi
 [ "$GIT_DIR" != "$GIT_COMMON_DIR" ] || { echo "provider-worker-sandbox: governed target must be a linked worktree" >&2; exit 78; }
 TARGET_HEAD=$(git_safe -C "$TARGET_DIR" rev-parse HEAD) || exit 78
 GOVERNED_RECEIPT="$GIT_DIR/buildproven-provider-sandbox.json"
-jq -e --arg head "$TARGET_HEAD" \
+"$JQ_BIN" -e --arg head "$TARGET_HEAD" \
   --arg output "$OUTPUT_DIR" \
   '.schemaVersion == 1 and .targetHead == $head and .outputDir == $output and (.nodeBin | type == "string")' "$GOVERNED_RECEIPT" >/dev/null 2>&1 \
   || { echo "provider-worker-sandbox: governed snapshot receipt is missing or mismatched" >&2; exit 78; }
-NODE_DECLARED=$(jq -r '.nodeBin' "$GOVERNED_RECEIPT")
+NODE_DECLARED=$("$JQ_BIN" -r '.nodeBin' "$GOVERNED_RECEIPT")
 NODE_BIN=$(cd -P "$(dirname "$NODE_DECLARED")" 2>/dev/null && pwd)/$(basename "$NODE_DECLARED")
 [ -x "$NODE_BIN" ] && [ "$NODE_BIN" = "$NODE_DECLARED" ] \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
@@ -166,7 +168,7 @@ else
   HOOKS_DENY='[]'
 fi
 
-jq -n \
+"$JQ_BIN" -n \
   --arg home "$ACCOUNT_HOME" \
   --arg target "$TARGET_DIR" \
   --arg output "$OUTPUT_DIR" \
