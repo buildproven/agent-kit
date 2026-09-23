@@ -67,11 +67,14 @@ model, or review-configuration changes are not eligible. See
 
 ### Validation cost (BUI-932)
 
-Every delivery claim, including the default `contract` claim, is validated before
-risk, panel selection, deterministic gates, or review start. Invalid or missing
-claim evidence must not consume those execution budgets (BUI-952). This preflight
-does not replace the post-gate claim check or protected merge admission, and it
-does not change the default claim or engineering policy.
+Every delivery claim, including the default `contract` claim, receives input
+preflight before risk, panel selection, deterministic gates, or review start.
+Missing contract inputs and stale evidence identity must not consume those
+execution budgets (BUI-952). For a contract with complete inputs, the full
+verifier runs once after gates, not during preflight too. Preflight does not
+replace the post-gate check or protected merge admission, and it does not
+change the default claim or engineering policy. Product claim admission keeps
+its existing full preflight.
 
 The builder owns focused red/green checks during editing. The campaign owns
 final local validation of the exact candidate. Do not run an extra full suite

@@ -499,7 +499,7 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
       options: behavior.productVerifier
         ? {
             merge,
-            deliveryClaim: "local-product",
+            deliveryClaim: behavior.deliveryClaim || "local-product",
             productPrd: path.join(root, "prd.md"),
             productTasks: path.join(root, "tasks.md"),
             deliveryEvidence: path.join(root, "evidence.json"),
@@ -1286,6 +1286,32 @@ describe("quality-run public orchestration", () => {
     expect(result.manifest.calls).toContain("quality-run-review.sh");
   });
 
+  it("runs the full contract evidence verifier only once after gates", () => {
+    const entry = fixture({
+      deliveryClaim: "contract",
+      changedFiles: ["src/App.tsx"],
+      productVerifier: `
+        const fs = require("node:fs");
+        const file = process.env.QUALITY_TEST_MANIFEST;
+        const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+        fs.appendFileSync(file + ".verifier-calls", JSON.stringify(manifest.gates) + "\\n");
+        process.stdout.write(JSON.stringify({valid:true,errors:[]}));
+      `,
+    });
+    const result = run(entry);
+    expect(result.status).toBe(0);
+    const calls = readFileSync(entry.manifestPath + ".verifier-calls", "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].map((gate) => gate.name)).toEqual([
+      "lint",
+      "test",
+      "security",
+    ]);
+  });
+
   it("runs all quality gates and review for committed dependency maintenance", () => {
     const entry = fixture({
       changedFiles: ["package.json", "package-lock.json"],
@@ -1417,25 +1443,29 @@ describe("quality-run public orchestration", () => {
     expect(JSON.parse(result.output).message).toContain(diagnostic);
   });
 
-  it("rejects a delivery-evidence index changed without a HEAD advance", () => {
-    const entry = fixture({
-      changedFiles: ["src/App.tsx"],
-      productVerifier:
-        "process.stdout.write(JSON.stringify({valid:true,errors:[]}));",
-    });
-    writeFileSync(
-      path.join(path.dirname(entry.manifestPath), "evidence.json"),
-      "changed\n",
-    );
+  it.each(["local-product", "contract"])(
+    "rejects changed %s evidence before gates",
+    (deliveryClaim) => {
+      const entry = fixture({
+        deliveryClaim,
+        changedFiles: ["src/App.tsx"],
+        productVerifier:
+          "process.stdout.write(JSON.stringify({valid:true,errors:[]}));",
+      });
+      writeFileSync(
+        path.join(path.dirname(entry.manifestPath), "evidence.json"),
+        "changed\n",
+      );
 
-    const result = run(entry);
+      const result = run(entry);
 
-    expect(result.status).toBe(1);
-    expect(JSON.parse(result.output).message).toContain(
-      "delivery evidence changed without a HEAD advance",
-    );
-    expect(result.manifest.calls || []).not.toContain("quality-run-review.sh");
-  });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.output).message).toContain(
+        "delivery evidence changed without a HEAD advance",
+      );
+      expect(result.manifest.calls || []).toEqual([]);
+    },
+  );
 
   it("classifies malformed verifier output without exposing it", () => {
     const secret = "raw-secret-value";
