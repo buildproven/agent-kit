@@ -21,6 +21,20 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.14.0](https://github.com/buildproven/agent-kit/compare/v4.13.0...v4.14.0) (2026-09-23)
+
+
+### Features
+
+* add fail-closed provider worker sandbox ([#633](https://github.com/buildproven/agent-kit/issues/633)) ([8d22505](https://github.com/buildproven/agent-kit/commit/8d22505987fdabd67eff3c698ba317a259cfc67c))
+
+
+### Bug Fixes
+
+* release proven descendant merge guard ([#634](https://github.com/buildproven/agent-kit/issues/634)) ([0085632](https://github.com/buildproven/agent-kit/commit/0085632463b48233797551e9a1b2559bd77ee2f4))
+* scope orchestrator changes to direct behavior tests ([#632](https://github.com/buildproven/agent-kit/issues/632)) ([7f75e1d](https://github.com/buildproven/agent-kit/commit/7f75e1da2f61f23c837f71d71e119996c9310496))
+* validate contract claims before running gates ([#630](https://github.com/buildproven/agent-kit/issues/630)) ([c4718d2](https://github.com/buildproven/agent-kit/commit/c4718d2ef35069c1dc06f89a67052101962aa4ae))
+
 ## [4.13.0](https://github.com/buildproven/agent-kit/compare/v4.12.3...v4.13.0) (2026-09-22)
 
 
