@@ -122,15 +122,33 @@ function assertNoLocalDependencySources(directory) {
     (name) => fs.existsSync(path.join(directory, name)),
   );
   if (lockfiles.length === 0) fail("snapshot has no npm lockfile");
-  const visit = (value) => {
+  const visit = (value, key = null) => {
     if (typeof value === "string") {
       if (/^(?:file:|link:|git\+file:|\.{1,2}[\\/]|[\\/])/.test(value)) {
         fail("package-lock.json contains a local dependency source");
       }
+      if (key === "resolved") {
+        let url;
+        try {
+          url = new URL(value);
+        } catch {
+          fail("package-lock.json contains an invalid resolved URL");
+        }
+        if (
+          url.protocol !== "https:" ||
+          url.origin !== "https://registry.npmjs.org"
+        ) {
+          fail("package-lock.json contains a non-registry resolved URL");
+        }
+      }
       return;
     }
-    if (Array.isArray(value)) return value.forEach(visit);
-    if (value && typeof value === "object") Object.values(value).forEach(visit);
+    if (Array.isArray(value)) return value.forEach((entry) => visit(entry));
+    if (value && typeof value === "object") {
+      Object.entries(value).forEach(([entryKey, entry]) =>
+        visit(entry, entryKey),
+      );
+    }
   };
   for (const name of lockfiles) {
     let lock;

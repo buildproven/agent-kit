@@ -61,6 +61,25 @@ describe("harness-certify", () => {
     }
   });
 
+  it("rejects non-registry lockfile tarball URLs", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "package-lock.json"),
+        JSON.stringify({
+          packages: {
+            "node_modules/x": { resolved: "https://example.test/x.tgz" },
+          },
+        }),
+      );
+      expect(() => assertNoLocalDependencySources(root)).toThrow(
+        "non-registry resolved URL",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects candidate npm configuration before snapshot installation", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
     try {
