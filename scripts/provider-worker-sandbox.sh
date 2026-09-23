@@ -156,24 +156,18 @@ case "$PROVIDER" in
   codex) NETWORK_DOMAINS='["api.openai.com","*.openai.com"]' ;;
 esac
 
-GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | python3 -I -c 'import json, sys; print(json.dumps([item.decode() for item in sys.stdin.buffer.read().split(b"\0") if item]))')
+GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | "$JQ_BIN" -Rs 'split("\u0000") | map(select(length > 0))')
 HOOKS_PATH=$(git_safe -C "$TARGET_DIR" config --get core.hooksPath 2>/dev/null || true)
 if [ -n "$HOOKS_PATH" ]; then
-  HOOKS_DENY=$(python3 -I - "$TARGET_DIR" "$HOOKS_PATH" <<'PY'
-import json
-import os
-import sys
-
-target, hooks = sys.argv[1:]
-resolved = hooks if os.path.isabs(hooks) else os.path.normpath(os.path.join(target, hooks))
-denied = [resolved]
-# Husky configures core.hooksPath to .husky/_ but its dispatcher executes
-# siblings in .husky. Deny the complete hook root, not only that shim path.
-if os.path.basename(resolved) == "_":
-    denied.append(os.path.dirname(resolved))
-print(json.dumps(denied))
-PY
-)
+  HOOKS_DENY=$(env -i "PATH=$SAFE_PATH" "$NODE_BIN" -e '
+const path = require("node:path");
+const [target, hooks] = process.argv.slice(1);
+const resolved = path.resolve(target, hooks);
+const denied = [resolved];
+// Husky dispatchers in .husky/_ also execute siblings in .husky.
+if (path.basename(resolved) === "_") denied.push(path.dirname(resolved));
+process.stdout.write(JSON.stringify(denied));
+' "$TARGET_DIR" "$HOOKS_PATH")
 else
   HOOKS_DENY='[]'
 fi

@@ -156,6 +156,27 @@ function launch(fx, extra = {}) {
 }
 
 describe("provider worker sandbox", () => {
+  it("constructs Git and Husky deny paths when Python is unavailable", () => {
+    const fx = fixture();
+    const result = launch(fx, {
+      "BASH_FUNC_python3%%":
+        "() { echo 'python3 unavailable' >&2; return 127; }",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(path.join(fx.output, "worker-ran"))).toBe(true);
+    const policy = JSON.parse(
+      readFileSync(path.join(fx.target, "captured-policy.json"), "utf8"),
+    );
+    const target = realpathSync(fx.target);
+    expect(policy.filesystem.denyWrite).toEqual(
+      expect.arrayContaining([
+        path.join(target, ".git"),
+        path.join(target, ".husky", "_"),
+        path.join(target, ".husky"),
+      ]),
+    );
+  });
+
   it("fails closed before launch when Sandbox Runtime is unavailable", () => {
     const fx = fixture({ runtimeAvailable: false });
     const result = spawnSync(
