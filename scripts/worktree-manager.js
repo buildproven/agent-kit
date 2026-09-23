@@ -13,6 +13,20 @@ const DEFAULT_CONTAINER = ".worktrees";
 const DEFAULT_GRACE_HOURS = 24;
 const DEFAULT_RECENT_MINUTES = 30;
 const DEFAULT_QUALITY_LOCK_STALE_HOURS = 24;
+// Keep a lifecycle lock only while a campaign may resume. These values mirror
+// quality-invocation's write-once terminal states, except `recovering`, which
+// deliberately retains ownership while a same-HEAD recovery is in progress.
+const RELEASABLE_QUALITY_TERMINAL_STATES = new Set([
+  "merged",
+  "verified-unmerged",
+  "blocked",
+  "timeout",
+  "interrupted",
+  "superseded",
+  "policy-superseded",
+  "provider-incomplete",
+  "provider-contract-failed",
+]);
 
 class ManagerError extends Error {
   constructor(message, code = "WORKTREE_ERROR", details = {}) {
@@ -1260,6 +1274,17 @@ function qualityManifestReleaseState(manifest, manifestPath, now) {
   const terminal = [...latestGateStatus.values()].some((status) =>
     ["failed", "timeout"].includes(status),
   );
+  const terminalState = manifest.terminalState;
+  const declaredTerminal =
+    terminalState &&
+    RELEASABLE_QUALITY_TERMINAL_STATES.has(terminalState.state) &&
+    Number.isFinite(Date.parse(terminalState.recordedAt || ""));
+  if (declaredTerminal) {
+    return {
+      releasable: true,
+      reason: `quality manifest records terminal state ${terminalState.state}`,
+    };
+  }
   if (terminal) {
     return {
       releasable: true,

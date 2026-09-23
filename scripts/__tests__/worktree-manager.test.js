@@ -1087,6 +1087,47 @@ esac
     expect(after.locked).toBe(false);
   });
 
+  it("releases a quality lock when required CI blocks an otherwise green campaign", () => {
+    const { parent, repo } = fixture();
+    const temporaryRoot = path.join(parent, "quality-state");
+    const invocation = "11111111-1111-5111-8111-111111111112";
+    create(repo, "feature/blocked-quality-lock", [
+      "--lock-reason",
+      `bs:quality/${invocation}`,
+      "--invocation",
+      invocation,
+    ]);
+    writeQualityManifest(repo, temporaryRoot, invocation, {
+      gates: [{ name: "test", status: "success" }],
+      terminalState: {
+        state: "blocked",
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    const env = { ...process.env, TMPDIR: temporaryRoot };
+
+    const before = manager(["status", "--repo", repo, "--skip-pr-check"], {
+      env,
+    }).json.worktrees.find(
+      (candidate) => candidate.branch === "feature/blocked-quality-lock",
+    );
+    expect(before).toMatchObject({
+      classification: "stale quality lock",
+      releasable: true,
+      reason: "quality manifest records terminal state blocked",
+    });
+
+    manager(["reconcile", "--repo", repo, "--apply", "--skip-pr-check"], {
+      env,
+    });
+    const after = manager(["status", "--repo", repo, "--skip-pr-check"], {
+      env,
+    }).json.worktrees.find(
+      (candidate) => candidate.branch === "feature/blocked-quality-lock",
+    );
+    expect(after.locked).toBe(false);
+  });
+
   it("retains a quality lock when a later result replaces a failed gate", () => {
     const { parent, repo } = fixture();
     const temporaryRoot = path.join(parent, "quality-state");
