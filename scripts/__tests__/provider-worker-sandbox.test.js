@@ -28,6 +28,10 @@ function fixture({ permissiveCanary = false } = {}) {
   const worker = path.join(bin, "worker");
   spawnSync("mkdir", ["-p", target, output, bin], { encoding: "utf8" });
   expect(spawnSync("git", ["init", "-q", target]).status).toBe(0);
+  expect(
+    spawnSync("git", ["-C", target, "config", "core.hooksPath", ".husky/_"])
+      .status,
+  ).toBe(0);
   executable(
     runtime,
     `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\nif [ "\${1:-}" = "/bin/cat" ]; then ${permissiveCanary ? 'exec "$@"' : "exit 1"}; fi\ncp "$settings" "$PWD/captured-policy.json"\n[ "\${1:-}" != "--" ] || shift\nexec "$@"`,
@@ -187,6 +191,9 @@ describe("provider worker sandbox", () => {
     expect(policy.filesystem.denyWrite).toContain("/tmp/claude");
     expect(policy.filesystem.denyWrite).toContain(
       path.join(realpathSync(fx.target), ".git"),
+    );
+    expect(policy.filesystem.denyWrite).toContain(
+      path.join(realpathSync(fx.target), ".husky", "_"),
     );
     expect(
       policy.filesystem.denyRead.some((value) => value.endsWith("/sentinel")),

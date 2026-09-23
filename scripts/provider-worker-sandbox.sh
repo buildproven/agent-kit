@@ -84,6 +84,20 @@ case "$PROVIDER" in
 esac
 
 GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | python3 -c 'import json, sys; print(json.dumps([item.decode() for item in sys.stdin.buffer.read().split(b"\0") if item]))')
+HOOKS_PATH=$(git -C "$TARGET_DIR" config --get core.hooksPath 2>/dev/null || true)
+if [ -n "$HOOKS_PATH" ]; then
+  HOOKS_DENY=$(python3 - "$TARGET_DIR" "$HOOKS_PATH" <<'PY'
+import json
+import os
+import sys
+
+target, hooks = sys.argv[1:]
+print(json.dumps([hooks if os.path.isabs(hooks) else os.path.normpath(os.path.join(target, hooks))]))
+PY
+)
+else
+  HOOKS_DENY='[]'
+fi
 
 jq -n \
   --arg home "$ACCOUNT_HOME" \
@@ -95,8 +109,9 @@ jq -n \
   --arg sentinel "$SENTINEL" \
   --arg providerHome "$PROVIDER_HOME" \
   --argjson gitDeny "$GIT_DENY" \
+  --argjson hooksDeny "$HOOKS_DENY" \
   --argjson domains "$NETWORK_DOMAINS" \
-  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$providerHome,$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:(["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug"] + $gitDeny)},network:{allowedDomains:$domains,deniedDomains:[]}}' \
+  '{filesystem:{denyRead:["/",$home,$home+"/.ssh",$home+"/.config/gh",$home+"/.git-credentials",$home+"/.netrc",$home+"/Library/Application Support/gh",$sentinel],allowRead:[$target,$output,$scripts,$runtime,$control,"/usr","/System","/Library","/opt/homebrew","/private/var/select",$providerHome,$home+"/.local/bin",$home+"/.local/share/claude",$home+"/.local/share/codex"],allowWrite:[$target,$output],denyWrite:(["/tmp/claude","/private/tmp/claude",$home+"/.claude/debug"] + $gitDeny + $hooksDeny)},network:{allowedDomains:$domains,deniedDomains:[]}}' \
   > "$SETTINGS"
 
 # A passed canary is proof that the configured runtime is enforcing its most
