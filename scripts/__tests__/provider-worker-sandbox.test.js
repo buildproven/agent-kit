@@ -240,9 +240,10 @@ describe("provider worker sandbox", () => {
       `${process.env.HOME}/.local`,
     );
     expect(policy.filesystem.denyRead).toContain("/");
-    expect(policy.filesystem.allowRead).toContain(`${process.env.HOME}/.codex`);
+    expect(policy.filesystem.denyRead).toContain(`${process.env.HOME}/.codex`);
+    expect(policy.filesystem.denyRead).toContain(`${process.env.HOME}/.claude`);
     expect(policy.filesystem.allowRead).not.toContain(
-      `${process.env.HOME}/.claude`,
+      `${process.env.HOME}/.codex`,
     );
     expect(policy.filesystem.denyWrite).toContain("/tmp/claude");
     expect(policy.filesystem.denyWrite).toContain(
@@ -250,6 +251,12 @@ describe("provider worker sandbox", () => {
     );
     expect(policy.filesystem.denyWrite).toContain(
       path.join(realpathSync(fx.target), ".husky", "_"),
+    );
+    expect(policy.filesystem.denyWrite).toContain(
+      path.join(realpathSync(fx.target), ".husky"),
+    );
+    expect(policy.filesystem.denyWrite).toContain(
+      path.join(realpathSync(fx.target), "node_modules", ".bin"),
     );
     expect(
       policy.filesystem.denyRead.some((value) => value.endsWith("/sentinel")),
@@ -295,6 +302,34 @@ describe("provider worker sandbox", () => {
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("must not contain the account home");
+  });
+
+  it("rejects a normal checkout even when the invocation marker is present", () => {
+    const fx = fixture();
+    const result = spawnSync(
+      "bash",
+      [
+        WRAPPER,
+        "--target-dir",
+        path.join(fx.root, "repo"),
+        "--output-dir",
+        fx.output,
+        "--provider",
+        "codex",
+        "--",
+        "/bin/true",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          BS_PROVIDER_SANDBOX_BIN: fx.runtime,
+          BS_GOVERNED_PROVIDER_SNAPSHOT: "1",
+        },
+      },
+    );
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("must have detached HEAD");
   });
 
   it.skipIf(process.platform !== "darwin" || !existsSync(REAL_RUNTIME))(

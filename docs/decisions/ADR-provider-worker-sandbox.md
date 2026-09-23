@@ -27,10 +27,11 @@ wrapper on macOS. Each launch:
   prevents reads from other user, volume, and temporary directories;
 - rejects a target or output root that is the account home, its ancestor, or a
   known credential location;
-- opens only the selected provider's configuration directory; and
+- denies both provider configuration directories. A later integration must
+  prove a minimal authentication broker before it opens any provider state; and
 - keeps writes allow-only, with explicit denials for shared Claude debug paths;
-- permits only the bound target, output, required provider configuration,
-  installed sandbox runtime, provider binary locations, and standard executable
+- permits only the bound target, output, installed sandbox runtime, provider
+  binary locations, and standard executable
   locations (including the macOS shell selector);
 - permits only provider-specific network domains; and
 - creates a unique denied-read sentinel and refuses launch if the runtime can
