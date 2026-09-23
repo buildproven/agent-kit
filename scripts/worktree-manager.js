@@ -1002,20 +1002,21 @@ function upstreamState(repoRoot, branch) {
       ["merge-base", "--is-ancestor", branch, `refs/remotes/origin/${base}`],
       { allowFailure: true },
     ).status === 0;
-  const defaultTree = git(
-    repoRoot,
-    ["rev-parse", `refs/remotes/origin/${base}^{tree}`],
-    {
-      allowFailure: true,
-    },
-  ).stdout;
   const localTree = localHead
     ? git(repoRoot, ["rev-parse", `${localHead}^{tree}`], {
         allowFailure: true,
       }).stdout
     : null;
+  // Squash merges preserve the PR tree but not its commit identity. Main can
+  // advance before cleanup, so find that tree in protected history instead of
+  // comparing only the current tip.
   const treeMerged = Boolean(
-    defaultTree && localTree && defaultTree === localTree,
+    localTree &&
+    git(repoRoot, ["log", "--format=%T", `refs/remotes/origin/${base}`], {
+      allowFailure: true,
+    })
+      .stdout.split("\n")
+      .includes(localTree),
   );
   return {
     upstream: null,
