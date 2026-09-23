@@ -69,13 +69,21 @@ OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
 RUNTIME_DIR=$(cd -P "$SCRIPT_DIR/../node_modules" 2>/dev/null && pwd) \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 SAFE_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
-NODE_BIN=$(PATH="$SAFE_PATH" command -v node 2>/dev/null) \
+NODE_BIN=$(command -v node 2>/dev/null) \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
 reject_account_root "$TARGET_DIR" "target directory"
 reject_account_root "$OUTPUT_DIR" "output directory"
+case "$NODE_BIN" in
+  /*) ;;
+  *) echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74 ;;
+esac
+if is_same_or_ancestor "$TARGET_DIR" "$NODE_BIN" || is_same_or_ancestor "$OUTPUT_DIR" "$NODE_BIN"; then
+  echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2
+  exit 74
+fi
 
 GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || { echo "provider-worker-sandbox: governed target must be a Git worktree" >&2; exit 78; }
 GIT_COMMON_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 78
