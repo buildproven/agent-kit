@@ -276,7 +276,11 @@ describe("harness-certify", () => {
         fs.writeFileSync(executable, "#!/bin/sh\nprintf changed > marker\n", {
           mode: 0o755,
         });
-        expect(snapshotSandboxProfile(root, root)).toContain("deny file-write");
+        const scratch = path.join(root, "scratch");
+        fs.mkdirSync(scratch);
+        expect(snapshotSandboxProfile(root, root, scratch)).toContain(
+          "(deny default)",
+        );
         const result = await runGate(root, root, "mutation", [
           "node_modules/.bin/mutate",
         ]);
@@ -312,19 +316,36 @@ describe("harness-certify", () => {
           `#!/bin/sh\nprintf original > '${path.join(original, "marker")}'\nprintf receipt > '${path.join(receipts, "receipt.json")}'\n`,
           { mode: 0o755 },
         );
-        const result = await runGate(
-          baseline,
-          candidate,
-          "escape",
-          ["node_modules/.bin/escape"],
-          { protectedDirectories: [original, receipts] },
-        );
-        expect(
-          snapshotSandboxProfile(baseline, candidate, [original, receipts]),
-        ).toContain(fs.realpathSync(original));
+        const result = await runGate(baseline, candidate, "escape", [
+          "node_modules/.bin/escape",
+        ]);
         expect(result.status).toBe("failed");
         expect(fs.existsSync(path.join(original, "marker"))).toBe(false);
         expect(fs.existsSync(path.join(receipts, "receipt.json"))).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "permits a gate write only in its private scratch directory",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const executable = path.join(root, "node_modules", ".bin", "scratch");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(
+          executable,
+          '#!/bin/sh\nprintf ok > "$TMPDIR/marker"\n',
+          {
+            mode: 0o755,
+          },
+        );
+        const result = await runGate(root, root, "scratch", [
+          "node_modules/.bin/scratch",
+        ]);
+        expect(result.status).toBe("success");
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }

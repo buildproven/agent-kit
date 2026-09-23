@@ -253,24 +253,21 @@ function sandboxPath(value) {
   return String(value).replaceAll('"', '\\"');
 }
 
-function snapshotSandboxProfile(
-  baselineDir,
-  candidateDir,
-  protectedDirectories = [],
-) {
-  const roots = [
-    ...new Set(
-      [baselineDir, candidateDir, ...protectedDirectories].map((dir) =>
-        fs.realpathSync(dir),
-      ),
-    ),
-  ];
+function snapshotSandboxProfile(baselineDir, candidateDir, scratchDirectory) {
+  if (!scratchDirectory)
+    fail("gate sandbox requires a private scratch directory");
+  fs.realpathSync(baselineDir);
+  fs.realpathSync(candidateDir);
+  const scratch = fs.realpathSync(scratchDirectory);
   return [
     "(version 1)",
-    "(allow default)",
-    ...roots.map(
-      (root) => `(deny file-write* (subpath "${sandboxPath(root)}"))`,
-    ),
+    "(deny default)",
+    "(allow process*)",
+    "(allow sysctl-read)",
+    "(allow network-outbound)",
+    '(allow file-read-metadata (subpath "/"))',
+    '(allow file-read* (subpath "/"))',
+    `(allow file-read* file-write* (subpath "${sandboxPath(scratch)}"))`,
   ].join(" ");
 }
 
@@ -279,11 +276,7 @@ function runGate(
   candidateDir,
   name,
   command,
-  {
-    timeoutMs = 15 * 60 * 1000,
-    killGraceMs = 5_000,
-    protectedDirectories = [],
-  } = {},
+  { timeoutMs = 15 * 60 * 1000, killGraceMs = 5_000 } = {},
 ) {
   const [file, ...args] = frozenCommand(baselineDir, command);
   if (
@@ -292,11 +285,10 @@ function runGate(
   ) {
     fail("immutable certification requires macOS sandbox-exec");
   }
-  const profile = snapshotSandboxProfile(
-    baselineDir,
-    candidateDir,
-    protectedDirectories,
+  const scratch = fs.mkdtempSync(
+    path.join(os.tmpdir(), "harness-certify-gate-"),
   );
+  const profile = snapshotSandboxProfile(baselineDir, candidateDir, scratch);
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
     let output = "";
@@ -314,6 +306,11 @@ function runGate(
           npm_config_ignore_scripts: "true",
           npm_config_registry: "https://registry.npmjs.org",
           npm_config_userconfig: "/dev/null",
+          npm_config_cache: scratch,
+          TMPDIR: scratch,
+          TMP: scratch,
+          TEMP: scratch,
+          HOME: scratch,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -341,6 +338,13 @@ function runGate(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      try {
+        fs.rmSync(scratch, { recursive: true, force: true });
+      } catch (error) {
+        output += `\nfailed to remove gate scratch: ${error.message}`;
+        result.outputSha256 = sha256(output);
+        result.status = "failed";
+      }
       resolve(result);
     };
     child.on("error", (error) => {
@@ -576,9 +580,7 @@ async function main() {
       ...testPlan.gates,
     ]) {
       receipt.gates.push(
-        await runGate(baselineSnapshot, candidateSnapshot, name, command, {
-          protectedDirectories: [baselineDir, candidateDir, path.dirname(out)],
-        }),
+        await runGate(baselineSnapshot, candidateSnapshot, name, command),
       );
       writeReceipt(out, receipt);
     }
