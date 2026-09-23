@@ -25,7 +25,7 @@ wrapper on macOS. Each launch:
   from the password database, and `TERM`;
 - resolves the sandbox runtime only from this package's installed dependency;
 - accepts only a clean, detached linked worktree with a controller receipt that
-  binds its exact HEAD; and
+  binds its exact HEAD and an empty controller-owned output directory; and
 - denies `/`, then opens only the bound paths and required system paths; this
   prevents reads from other user, volume, and temporary directories;
 - rejects a target or output root that is the account home, its ancestor, or a

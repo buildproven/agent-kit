@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Run one provider worker with an explicit environment and OS sandbox.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG GIT_CONFIG_COUNT
+for git_env in $(env | sed -n 's/^\(GIT_CONFIG_KEY_[0-9][0-9]*\|GIT_CONFIG_VALUE_[0-9][0-9]*\)=.*/\1/p'); do
+  unset "$git_env"
+done
 
 SOURCE=${BASH_SOURCE[0]}
 while [ -L "$SOURCE" ]; do
@@ -62,8 +66,11 @@ case "$PROVIDER" in claude|codex) ;; *) echo "provider-worker-sandbox: provider 
 
 TARGET_DIR=$(cd -P "$TARGET_DIR" && pwd)
 OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
-RUNTIME_DIR=$(cd "$SCRIPT_DIR/../node_modules" && pwd)
+RUNTIME_DIR=$(cd -P "$SCRIPT_DIR/../node_modules" 2>/dev/null && pwd) \
+  || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 SAFE_PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
+NODE_BIN=$(PATH="$SAFE_PATH" command -v node 2>/dev/null) \
+  || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
@@ -77,10 +84,13 @@ GIT_COMMON_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-com
 TARGET_HEAD=$(git -C "$TARGET_DIR" rev-parse HEAD) || exit 78
 GOVERNED_RECEIPT="$GIT_DIR/buildproven-provider-sandbox.json"
 jq -e --arg head "$TARGET_HEAD" \
-  '.schemaVersion == 1 and .targetHead == $head' "$GOVERNED_RECEIPT" >/dev/null 2>&1 \
+  --arg output "$OUTPUT_DIR" \
+  '.schemaVersion == 1 and .targetHead == $head and .outputDir == $output' "$GOVERNED_RECEIPT" >/dev/null 2>&1 \
   || { echo "provider-worker-sandbox: governed snapshot receipt is missing or mismatched" >&2; exit 78; }
 [ -z "$(git -C "$TARGET_DIR" status --porcelain=v1 --untracked-files=all)" ] \
   || { echo "provider-worker-sandbox: governed target must be clean" >&2; exit 78; }
+[ -z "$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ] \
+  || { echo "provider-worker-sandbox: governed output directory must be empty" >&2; exit 78; }
 for protected in "$GIT_DIR" "$GIT_COMMON_DIR" "$SCRIPT_DIR" "$RUNTIME_DIR"; do
   if is_same_or_ancestor "$TARGET_DIR" "$protected" || is_same_or_ancestor "$protected" "$TARGET_DIR" || is_same_or_ancestor "$OUTPUT_DIR" "$protected" || is_same_or_ancestor "$protected" "$OUTPUT_DIR"; then
     echo "provider-worker-sandbox: target or output overlaps controller metadata" >&2
@@ -104,9 +114,13 @@ CONTROL_DIR=$(cd -P "$CONTROL_DIR" && pwd)
 SETTINGS="$CONTROL_DIR/settings.json"
 SENTINEL="$CONTROL_DIR/sentinel"
 POSITIVE_CONTROL="$CONTROL_DIR/allowed"
-cleanup() { rm -f "$SETTINGS" "$SENTINEL" "$POSITIVE_CONTROL"; rmdir "$CONTROL_DIR" 2>/dev/null || true; }
+OUTSIDE_CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-sandbox-outside.XXXXXX") || exit 2
+OUTSIDE_CONTROL_DIR=$(cd -P "$OUTSIDE_CONTROL_DIR" && pwd)
+OUTSIDE_SENTINEL="$OUTSIDE_CONTROL_DIR/sentinel"
+cleanup() { rm -f "$SETTINGS" "$SENTINEL" "$POSITIVE_CONTROL" "$OUTSIDE_SENTINEL"; rmdir "$CONTROL_DIR" "$OUTSIDE_CONTROL_DIR" 2>/dev/null || true; }
 trap cleanup EXIT
 printf '%s\n' 'sandbox canary' > "$SENTINEL"
+printf '%s\n' 'sandbox outside' > "$OUTSIDE_SENTINEL"
 printf '%s\n' 'sandbox allowed' > "$POSITIVE_CONTROL"
 
 case "$PROVIDER" in
@@ -152,16 +166,24 @@ jq -n \
 
 # A positive and a negative probe prove that the runtime can execute under the
 # same minimal environment and specifically enforces this denied path.
-if [ "$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" "TERM=${TERM:-dumb}" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$POSITIVE_CONTROL" 2>/dev/null)" != 'sandbox allowed' ]; then
+if [ "$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" 'TERM=dumb' "$NODE_BIN" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$POSITIVE_CONTROL" 2>/dev/null)" != 'sandbox allowed' ]; then
   echo "provider-worker-sandbox: positive sandbox probe failed" >&2
   exit 78
 fi
 set +e
-DENY_ERROR=$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" "TERM=${TERM:-dumb}" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$SENTINEL" 2>&1)
+DENY_ERROR=$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" 'TERM=dumb' "$NODE_BIN" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$SENTINEL" 2>&1)
 DENY_STATUS=$?
 set -e
 if [ "$DENY_STATUS" -eq 0 ] || ! printf '%s' "$DENY_ERROR" | grep -q 'Operation not permitted'; then
   echo "provider-worker-sandbox: denied-read canary was not enforced" >&2
+  exit 78
+fi
+set +e
+OUTSIDE_ERROR=$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" 'TERM=dumb' "$NODE_BIN" "$SRT_BIN" --settings "$SETTINGS" -- /bin/cat "$OUTSIDE_SENTINEL" 2>&1)
+OUTSIDE_STATUS=$?
+set -e
+if [ "$OUTSIDE_STATUS" -eq 0 ] || ! printf '%s' "$OUTSIDE_ERROR" | grep -q 'Operation not permitted'; then
+  echo "provider-worker-sandbox: root deny probe was not enforced" >&2
   exit 78
 fi
 
@@ -170,6 +192,6 @@ fi
   env -i \
     "PATH=$SAFE_PATH" \
     "HOME=$ACCOUNT_HOME" \
-    "TERM=${TERM:-dumb}" \
-    "$SRT_BIN" --settings "$SETTINGS" -- "$@"
+    'TERM=dumb' \
+    "$NODE_BIN" "$SRT_BIN" --settings "$SETTINGS" -- "$@"
 )

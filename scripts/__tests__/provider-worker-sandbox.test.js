@@ -77,13 +77,34 @@ function fixture({ permissiveCanary = false, runtimeAvailable = true } = {}) {
   const receipt = path.join(gitDir, "buildproven-provider-sandbox.json");
   writeFileSync(
     receipt,
-    JSON.stringify({ schemaVersion: 1, targetHead: head }),
+    JSON.stringify({
+      schemaVersion: 1,
+      targetHead: head,
+      outputDir: realpathSync(output),
+    }),
   );
   if (runtimeAvailable) {
-    executable(
+    writeFileSync(
       runtime,
-      `settings=""\nif [ "\${1:-}" = "--settings" ]; then settings="$2"; shift 2; fi\n[ -s "$settings" ] || exit 70\n[ "\${1:-}" != "--" ] || shift\nif [ "\${1:-}" = "/bin/cat" ]; then\n  if ${permissiveCanary ? "true" : '[ "${2##*/}" != "sentinel" ]'}; then exec "$@"; fi\n  echo "Operation not permitted" >&2\n  exit 1\nfi\ncp "$settings" "$PWD/captured-policy.json"\nexec "$@"`,
+      `#!/usr/bin/env node
+const { copyFileSync, readFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+let args = process.argv.slice(2);
+let settings = "";
+if (args[0] === "--settings") { settings = args[1]; args = args.slice(2); }
+if (!settings) process.exit(70);
+if (args[0] === "--") args = args.slice(1);
+if (args[0] === "/bin/cat") {
+  if (${permissiveCanary ? "true" : '!args[1].endsWith("sentinel")'}) process.stdout.write(readFileSync(args[1]));
+  else process.stderr.write("Operation not permitted\\n");
+  process.exit(${permissiveCanary ? "0" : 'args[1].endsWith("sentinel") ? 1 : 0'});
+}
+copyFileSync(settings, process.cwd() + "/captured-policy.json");
+const child = spawnSync(args[0], args.slice(1), { stdio: "inherit", env: process.env });
+process.exit(child.status ?? 1);
+`,
     );
+    chmodSync(runtime, 0o755);
   }
   executable(
     worker,
@@ -178,6 +199,7 @@ describe("provider worker sandbox", () => {
         targetHead: spawnSync("git", ["-C", fx.target, "rev-parse", "HEAD"], {
           encoding: "utf8",
         }).stdout.trim(),
+        outputDir: realpathSync(fx.output),
       }),
     );
     result = launch(fx);
