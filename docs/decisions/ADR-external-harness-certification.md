@@ -40,6 +40,8 @@ the exact merge read-back. It returns one terminal state: `MERGED`,
    cannot replace, redirect, or reuse certification evidence.
 8. Agent-setup updates its `core` pin only after the certified agent-kit release
    is merged and tagged. Its own certification runs from a frozen setup baseline.
+9. Immutable gate execution requires macOS `sandbox-exec`. On another platform,
+   certification fails closed; CI tests the unavailable-platform failure path.
 
 ## Alternatives considered
 

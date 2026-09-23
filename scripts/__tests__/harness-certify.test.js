@@ -5,6 +5,8 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
+const HAS_IMMUTABLE_GATE_SANDBOX =
+  process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec");
 const {
   frozenCommand,
   assertCleanCheckout,
@@ -235,65 +237,100 @@ describe("harness-certify", () => {
     }
   });
 
-  it("terminates a timed-out fixed gate and reports the timeout", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    try {
-      const executable = path.join(root, "node_modules", ".bin", "hang");
-      fs.mkdirSync(path.dirname(executable), { recursive: true });
-      fs.writeFileSync(executable, "#!/bin/sh\nsleep 60 &\nwait\n", {
-        mode: 0o755,
-      });
-      const result = await runGate(
-        root,
-        root,
-        "bounded",
-        ["node_modules/.bin/hang"],
-        { timeoutMs: 40, killGraceMs: 10 },
-      );
-      expect(result).toMatchObject({
-        name: "bounded",
-        status: "failed",
-        timedOut: true,
-      });
-      expect(result.signal).toBeTruthy();
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "terminates a timed-out fixed gate and reports the timeout",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const executable = path.join(root, "node_modules", ".bin", "hang");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(executable, "#!/bin/sh\nsleep 60 &\nwait\n", {
+          mode: 0o755,
+        });
+        const result = await runGate(
+          root,
+          root,
+          "bounded",
+          ["node_modules/.bin/hang"],
+          { timeoutMs: 40, killGraceMs: 10 },
+        );
+        expect(result).toMatchObject({
+          name: "bounded",
+          status: "failed",
+          timedOut: true,
+        });
+        expect(result.signal).toBeTruthy();
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
-  it("denies candidate gate writes to the immutable snapshots", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    try {
-      const executable = path.join(root, "node_modules", ".bin", "mutate");
-      fs.mkdirSync(path.dirname(executable), { recursive: true });
-      fs.writeFileSync(executable, "#!/bin/sh\nprintf changed > marker\n", {
-        mode: 0o755,
-      });
-      expect(snapshotSandboxProfile(root, root)).toContain("deny file-write");
-      const result = await runGate(root, root, "mutation", [
-        "node_modules/.bin/mutate",
-      ]);
-      expect(result.status).toBe("failed");
-      expect(fs.existsSync(path.join(root, "marker"))).toBe(false);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "denies candidate gate writes to the immutable snapshots",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const executable = path.join(root, "node_modules", ".bin", "mutate");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(executable, "#!/bin/sh\nprintf changed > marker\n", {
+          mode: 0o755,
+        });
+        expect(snapshotSandboxProfile(root, root)).toContain("deny file-write");
+        const result = await runGate(root, root, "mutation", [
+          "node_modules/.bin/mutate",
+        ]);
+        expect(result.status).toBe("failed");
+        expect(fs.existsSync(path.join(root, "marker"))).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
-  it("runs a frozen executable whose interpreter is the pinned Node runtime", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
-    try {
-      const executable = path.join(root, "node_modules", ".bin", "node-proof");
-      fs.mkdirSync(path.dirname(executable), { recursive: true });
-      fs.writeFileSync(executable, "#!/usr/bin/env node\nprocess.exit(0);\n", {
-        mode: 0o755,
-      });
-      const result = await runGate(root, root, "node-proof", [
-        "node_modules/.bin/node-proof",
-      ]);
-      expect(result).toMatchObject({ name: "node-proof", status: "success" });
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "runs a frozen executable whose interpreter is the pinned Node runtime",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const executable = path.join(
+          root,
+          "node_modules",
+          ".bin",
+          "node-proof",
+        );
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(
+          executable,
+          "#!/usr/bin/env node\nprocess.exit(0);\n",
+          {
+            mode: 0o755,
+          },
+        );
+        const result = await runGate(root, root, "node-proof", [
+          "node_modules/.bin/node-proof",
+        ]);
+        expect(result).toMatchObject({ name: "node-proof", status: "success" });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(HAS_IMMUTABLE_GATE_SANDBOX)(
+    "fails closed when immutable gate isolation is unavailable",
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const executable = path.join(root, "node_modules", ".bin", "safe");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+        expect(() =>
+          runGate(root, root, "unsupported", ["node_modules/.bin/safe"]),
+        ).toThrow("requires macOS sandbox-exec");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
