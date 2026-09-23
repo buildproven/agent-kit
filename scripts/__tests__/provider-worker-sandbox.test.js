@@ -21,13 +21,37 @@ function executable(file, body) {
 
 function fixture({ permissiveCanary = false } = {}) {
   const root = makeTempDir("provider-worker-sandbox-");
+  const repo = path.join(root, "repo");
   const target = path.join(root, "target");
   const output = path.join(root, "output");
   const bin = path.join(root, "bin");
   const runtime = path.join(bin, "srt");
   const worker = path.join(bin, "worker");
-  spawnSync("mkdir", ["-p", target, output, bin], { encoding: "utf8" });
-  expect(spawnSync("git", ["init", "-q", target]).status).toBe(0);
+  spawnSync("mkdir", ["-p", repo, output, bin], { encoding: "utf8" });
+  expect(spawnSync("git", ["init", "-q", repo]).status).toBe(0);
+  expect(
+    spawnSync("git", ["-C", repo, "config", "user.email", "tests@example.test"])
+      .status,
+  ).toBe(0);
+  expect(
+    spawnSync("git", ["-C", repo, "config", "user.name", "Tests"]).status,
+  ).toBe(0);
+  expect(
+    spawnSync("git", ["-C", repo, "commit", "--allow-empty", "-qm", "fixture"])
+      .status,
+  ).toBe(0);
+  expect(
+    spawnSync("git", [
+      "-C",
+      repo,
+      "worktree",
+      "add",
+      "--detach",
+      "-q",
+      target,
+      "HEAD",
+    ]).status,
+  ).toBe(0);
   expect(
     spawnSync("git", ["-C", target, "config", "core.hooksPath", ".husky/_"])
       .status,

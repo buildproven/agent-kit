@@ -62,16 +62,28 @@ case "$PROVIDER" in claude|codex) ;; *) echo "provider-worker-sandbox: provider 
 
 TARGET_DIR=$(cd -P "$TARGET_DIR" && pwd)
 OUTPUT_DIR=$(cd -P "$OUTPUT_DIR" && pwd)
+RUNTIME_DIR=$(cd "$SCRIPT_DIR/../node_modules" && pwd)
 ACCOUNT_HOME=$(account_home)
 [ -n "$ACCOUNT_HOME" ] && [ -d "$ACCOUNT_HOME" ] || { echo "provider-worker-sandbox: cannot resolve account home" >&2; exit 74; }
 ACCOUNT_HOME=$(cd -P "$ACCOUNT_HOME" && pwd)
 reject_account_root "$TARGET_DIR" "target directory"
 reject_account_root "$OUTPUT_DIR" "output directory"
 
+GIT_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null) || { echo "provider-worker-sandbox: governed target must be a Git worktree" >&2; exit 78; }
+GIT_COMMON_DIR=$(git -C "$TARGET_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 78
+[ "$(git -C "$TARGET_DIR" symbolic-ref -q --short HEAD 2>/dev/null || true)" = "" ] || { echo "provider-worker-sandbox: governed target must have detached HEAD" >&2; exit 78; }
+[ "$GIT_DIR" != "$GIT_COMMON_DIR" ] || { echo "provider-worker-sandbox: governed target must be a linked worktree" >&2; exit 78; }
+for protected in "$GIT_DIR" "$GIT_COMMON_DIR" "$SCRIPT_DIR" "$RUNTIME_DIR"; do
+  if is_same_or_ancestor "$TARGET_DIR" "$protected" || is_same_or_ancestor "$OUTPUT_DIR" "$protected" || is_same_or_ancestor "$protected" "$OUTPUT_DIR"; then
+    echo "provider-worker-sandbox: target or output overlaps controller metadata" >&2
+    exit 78
+  fi
+done
+[ "$TARGET_DIR" != "$OUTPUT_DIR" ] || { echo "provider-worker-sandbox: output directory must differ from target" >&2; exit 78; }
+
 SRT_BIN="${BS_PROVIDER_SANDBOX_BIN:-$SCRIPT_DIR/../node_modules/.bin/srt}"
 [ -x "$SRT_BIN" ] || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 
-RUNTIME_DIR=$(cd "$SCRIPT_DIR/../node_modules" && pwd)
 CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-sandbox.XXXXXX") || exit 2
 SETTINGS="$CONTROL_DIR/settings.json"
 SENTINEL="$CONTROL_DIR/sentinel"
