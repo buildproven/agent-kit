@@ -7,6 +7,10 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const CERTIFY = path.join(ROOT, "scripts", "harness-certify.js");
 const {
   frozenCommand,
+  assertCleanCheckout,
+  checkoutSnapshot,
+  sealSnapshot,
+  unsealSnapshot,
   githubRepository,
   receiptPath,
   runGate,
@@ -51,6 +55,44 @@ describe("harness-certify", () => {
       githubRepository("https://github.com/buildproven/agent-kit.git"),
     ).toBe("buildproven/agent-kit");
     expect(githubRepository("https://example.test/agent-kit.git")).toBeNull();
+  });
+
+  it("refuses a dirty source checkout before certification", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      initRepository(root);
+      fs.writeFileSync(path.join(root, "README"), "changed\n");
+      expect(() => assertCleanCheckout(root, "candidate")).toThrow(
+        "candidate checkout is dirty",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs from a detached snapshot that does not observe later source edits", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    const snapshots = fs.mkdtempSync(
+      path.join(os.tmpdir(), "harness-certify-"),
+    );
+    try {
+      const head = initRepository(root);
+      const snapshot = checkoutSnapshot(root, head, "candidate", snapshots);
+      fs.writeFileSync(path.join(root, "README"), "changed after snapshot\n");
+      expect(fs.readFileSync(path.join(snapshot, "README"), "utf8")).toBe(
+        "fixture\n",
+      );
+      expect(git(snapshot, ["rev-parse", "HEAD"])).toBe(head);
+      sealSnapshot(snapshot);
+      expect(fs.statSync(path.join(snapshot, "README")).mode & 0o222).toBe(0);
+      unsealSnapshot(snapshot);
+      execFileSync("git", ["worktree", "remove", "--force", snapshot], {
+        cwd: root,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(snapshots, { recursive: true, force: true });
+    }
   });
 
   it("rejects a candidate-controlled or pre-existing receipt path", () => {

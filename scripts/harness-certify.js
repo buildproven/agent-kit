@@ -8,6 +8,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 
@@ -64,6 +65,85 @@ function git(cwd, args) {
       env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
     },
   ).trim();
+}
+
+function assertCleanCheckout(directory, label) {
+  const changes = git(directory, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+  ]);
+  if (changes)
+    fail(
+      `${label} checkout is dirty; certification requires an immutable source`,
+    );
+}
+
+function checkoutSnapshot(directory, sha, label, root) {
+  const snapshot = path.join(root, label);
+  execFileSync(
+    "/usr/bin/git",
+    ["worktree", "add", "--detach", "--no-checkout", snapshot, sha],
+    { cwd: directory, stdio: "ignore" },
+  );
+  execFileSync("/usr/bin/git", ["checkout", "--detach", sha], {
+    cwd: snapshot,
+    stdio: "ignore",
+  });
+  if (git(snapshot, ["rev-parse", "HEAD"]) !== sha) {
+    fail(`${label} snapshot does not match declared commit`);
+  }
+  assertCleanCheckout(snapshot, `${label} snapshot`);
+  return snapshot;
+}
+
+function installSnapshotDependencies(directory) {
+  execFileSync("npm", ["ci", "--ignore-scripts"], {
+    cwd: directory,
+    stdio: "ignore",
+    timeout: 5 * 60 * 1000,
+    env: { ...process.env, npm_config_ignore_scripts: "true" },
+  });
+}
+
+function sealSnapshot(directory) {
+  const seal = (entry) => {
+    const stat = fs.lstatSync(entry);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) {
+      for (const child of fs.readdirSync(entry)) seal(path.join(entry, child));
+      fs.chmodSync(entry, 0o555);
+      return;
+    }
+    if (stat.isFile()) fs.chmodSync(entry, 0o444);
+  };
+  seal(directory);
+}
+
+function unsealSnapshot(directory) {
+  const unseal = (entry) => {
+    const stat = fs.lstatSync(entry);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) {
+      fs.chmodSync(entry, 0o755);
+      for (const child of fs.readdirSync(entry))
+        unseal(path.join(entry, child));
+      return;
+    }
+    if (stat.isFile()) fs.chmodSync(entry, stat.mode & 0o111 ? 0o755 : 0o644);
+  };
+  unseal(directory);
+}
+
+function removeSnapshot(directory, snapshot) {
+  try {
+    execFileSync("/usr/bin/git", ["worktree", "remove", "--force", snapshot], {
+      cwd: directory,
+      stdio: "ignore",
+    });
+  } catch {
+    // The outer temporary directory is retained only if Git cannot prove removal.
+  }
 }
 
 function sha256(value) {
@@ -325,12 +405,14 @@ async function main() {
     );
   }
   assertFrozenRunner(baselineDir);
+  assertCleanCheckout(baselineDir, "baseline");
   const candidateHead = git(candidateDir, ["rev-parse", "HEAD"]);
   if (candidateHead !== options["candidate-head"]) {
     fail(
       `candidate HEAD ${candidateHead} does not equal declared ${options["candidate-head"]}`,
     );
   }
+  assertCleanCheckout(candidateDir, "candidate");
   const candidateRepository = githubRepository(
     git(candidateDir, ["remote", "get-url", "origin"]),
   );
@@ -391,51 +473,86 @@ async function main() {
     );
   }
 
-  const testPlan = selectedTestGates(
-    baselineDir,
-    candidateDir,
-    options["base-sha"],
-    candidateHead,
+  const snapshotRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "harness-certify-"),
   );
-  const out = receiptPath(candidateDir, options.out);
-  const receipt = {
-    schemaVersion: 1,
-    kind: "frozen-harness-certification",
-    recordedAt: new Date().toISOString(),
-    baseline: { directory: baselineDir, sha: baselineHead },
-    candidate: {
-      directory: candidateDir,
-      sha: candidateHead,
-      baseSha: options["base-sha"],
-      profile: options.profile,
-      claim: options.claim,
-      githubRepository: options["github-repo"],
-      pullRequest: Number(options.pr),
-    },
-    testPlan: {
-      mode: testPlan.mode,
-      reason: testPlan.reason,
-      files: testPlan.files,
-    },
-    owner: processIdentity(process.pid),
-    state: "RUNNING",
-    gates: [],
-  };
-  writeReceipt(out, receipt, { create: true });
-  for (const [name, command] of [
-    ...PROFILES[options.profile],
-    ...testPlan.gates,
-  ]) {
-    receipt.gates.push(await runGate(baselineDir, candidateDir, name, command));
+  let baselineSnapshot;
+  let candidateSnapshot;
+  try {
+    baselineSnapshot = checkoutSnapshot(
+      baselineDir,
+      baselineHead,
+      "baseline",
+      snapshotRoot,
+    );
+    candidateSnapshot = checkoutSnapshot(
+      candidateDir,
+      candidateHead,
+      "candidate",
+      snapshotRoot,
+    );
+    installSnapshotDependencies(baselineSnapshot);
+    installSnapshotDependencies(candidateSnapshot);
+    sealSnapshot(baselineSnapshot);
+    sealSnapshot(candidateSnapshot);
+    const testPlan = selectedTestGates(
+      baselineSnapshot,
+      candidateSnapshot,
+      options["base-sha"],
+      candidateHead,
+    );
+    const out = receiptPath(candidateDir, options.out);
+    const receipt = {
+      schemaVersion: 1,
+      kind: "frozen-harness-certification",
+      recordedAt: new Date().toISOString(),
+      baseline: { directory: baselineDir, sha: baselineHead },
+      candidate: {
+        directory: candidateDir,
+        sha: candidateHead,
+        baseSha: options["base-sha"],
+        profile: options.profile,
+        claim: options.claim,
+        githubRepository: options["github-repo"],
+        pullRequest: Number(options.pr),
+      },
+      testPlan: {
+        mode: testPlan.mode,
+        reason: testPlan.reason,
+        files: testPlan.files,
+      },
+      owner: processIdentity(process.pid),
+      state: "RUNNING",
+      gates: [],
+    };
+    writeReceipt(out, receipt, { create: true });
+    for (const [name, command] of [
+      ...PROFILES[options.profile],
+      ...testPlan.gates,
+    ]) {
+      receipt.gates.push(
+        await runGate(baselineSnapshot, candidateSnapshot, name, command),
+      );
+      writeReceipt(out, receipt);
+    }
+    receipt.state = receipt.gates.every((gate) => gate.status === "success")
+      ? "passed"
+      : "failed";
+    receipt.completedAt = new Date().toISOString();
     writeReceipt(out, receipt);
+    process.stdout.write(`${JSON.stringify({ status: receipt.state, out })}\n`);
+    process.exitCode = receipt.state === "passed" ? 0 : 1;
+  } finally {
+    if (candidateSnapshot) {
+      unsealSnapshot(candidateSnapshot);
+      removeSnapshot(candidateDir, candidateSnapshot);
+    }
+    if (baselineSnapshot) {
+      unsealSnapshot(baselineSnapshot);
+      removeSnapshot(baselineDir, baselineSnapshot);
+    }
+    fs.rmSync(snapshotRoot, { recursive: true, force: true });
   }
-  receipt.state = receipt.gates.every((gate) => gate.status === "success")
-    ? "passed"
-    : "failed";
-  receipt.completedAt = new Date().toISOString();
-  writeReceipt(out, receipt);
-  process.stdout.write(`${JSON.stringify({ status: receipt.state, out })}\n`);
-  process.exitCode = receipt.state === "passed" ? 0 : 1;
 }
 
 if (require.main === module) {
@@ -447,6 +564,10 @@ if (require.main === module) {
 
 module.exports = {
   frozenCommand,
+  assertCleanCheckout,
+  checkoutSnapshot,
+  sealSnapshot,
+  unsealSnapshot,
   githubRepository,
   receiptPath,
   parse,
