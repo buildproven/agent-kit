@@ -141,8 +141,9 @@ function removeSnapshot(directory, snapshot) {
       cwd: directory,
       stdio: "ignore",
     });
+    return true;
   } catch {
-    // The outer temporary directory is retained only if Git cannot prove removal.
+    return false;
   }
 }
 
@@ -571,15 +572,19 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ status: receipt.state, out })}\n`);
     process.exitCode = receipt.state === "passed" ? 0 : 1;
   } finally {
+    let snapshotsRemoved = true;
     if (candidateSnapshot) {
       unsealSnapshot(candidateSnapshot);
-      removeSnapshot(candidateDir, candidateSnapshot);
+      snapshotsRemoved &&= removeSnapshot(candidateDir, candidateSnapshot);
     }
     if (baselineSnapshot) {
       unsealSnapshot(baselineSnapshot);
-      removeSnapshot(baselineDir, baselineSnapshot);
+      snapshotsRemoved &&= removeSnapshot(baselineDir, baselineSnapshot);
     }
-    fs.rmSync(snapshotRoot, { recursive: true, force: true });
+    if (snapshotsRemoved)
+      fs.rmSync(snapshotRoot, { recursive: true, force: true });
+    else
+      fail(`snapshot cleanup failed; preserved ${snapshotRoot} for recovery`);
   }
 }
 
