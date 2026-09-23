@@ -1,6 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Run one provider worker with an explicit environment and OS sandbox.
 set -euo pipefail
+PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin'
+export PATH
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG GIT_CONFIG_COUNT
 for git_env in $(env | sed -n 's/^\(GIT_CONFIG_KEY_[0-9][0-9]*\|GIT_CONFIG_VALUE_[0-9][0-9]*\)=.*/\1/p'); do
   unset "$git_env"
@@ -135,7 +138,8 @@ POSITIVE_CONTROL="$CONTROL_DIR/allowed"
 OUTSIDE_CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-sandbox-outside.XXXXXX") || exit 2
 OUTSIDE_CONTROL_DIR=$(cd -P "$OUTSIDE_CONTROL_DIR" && pwd)
 OUTSIDE_SENTINEL="$OUTSIDE_CONTROL_DIR/sentinel"
-cleanup() { rm -f "$SETTINGS" "$SENTINEL" "$POSITIVE_CONTROL" "$OUTSIDE_SENTINEL"; rmdir "$CONTROL_DIR" "$OUTSIDE_CONTROL_DIR" 2>/dev/null || true; }
+WRITE_SENTINEL="$OUTSIDE_CONTROL_DIR/write-sentinel"
+cleanup() { rm -f "$SETTINGS" "$SENTINEL" "$POSITIVE_CONTROL" "$OUTSIDE_SENTINEL" "$WRITE_SENTINEL"; rmdir "$CONTROL_DIR" "$OUTSIDE_CONTROL_DIR" 2>/dev/null || true; }
 trap cleanup EXIT
 printf '%s\n' 'sandbox canary' > "$SENTINEL"
 printf '%s\n' 'sandbox outside' > "$OUTSIDE_SENTINEL"
@@ -146,10 +150,10 @@ case "$PROVIDER" in
   codex) NETWORK_DOMAINS='["api.openai.com","*.openai.com"]' ;;
 esac
 
-GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | python3 -c 'import json, sys; print(json.dumps([item.decode() for item in sys.stdin.buffer.read().split(b"\0") if item]))')
+GIT_DENY=$(find "$TARGET_DIR" -name .git -prune -print0 | python3 -I -c 'import json, sys; print(json.dumps([item.decode() for item in sys.stdin.buffer.read().split(b"\0") if item]))')
 HOOKS_PATH=$(git_safe -C "$TARGET_DIR" config --get core.hooksPath 2>/dev/null || true)
 if [ -n "$HOOKS_PATH" ]; then
-  HOOKS_DENY=$(python3 - "$TARGET_DIR" "$HOOKS_PATH" <<'PY'
+  HOOKS_DENY=$(python3 -I - "$TARGET_DIR" "$HOOKS_PATH" <<'PY'
 import json
 import os
 import sys
@@ -202,6 +206,14 @@ OUTSIDE_STATUS=$?
 set -e
 if [ "$OUTSIDE_STATUS" -eq 0 ] || ! printf '%s' "$OUTSIDE_ERROR" | grep -q 'Operation not permitted'; then
   echo "provider-worker-sandbox: root deny probe was not enforced" >&2
+  exit 78
+fi
+set +e
+WRITE_ERROR=$(env -i "PATH=$SAFE_PATH" "HOME=$ACCOUNT_HOME" 'TERM=dumb' "$NODE_BIN" "$SRT_BIN" --settings "$SETTINGS" -- /usr/bin/touch "$WRITE_SENTINEL" 2>&1)
+WRITE_STATUS=$?
+set -e
+if [ "$WRITE_STATUS" -eq 0 ] || [ -e "$WRITE_SENTINEL" ] || ! printf '%s' "$WRITE_ERROR" | grep -q 'Operation not permitted'; then
+  echo "provider-worker-sandbox: denied-write canary was not enforced" >&2
   exit 78
 fi
 

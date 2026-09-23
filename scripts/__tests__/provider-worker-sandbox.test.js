@@ -100,6 +100,10 @@ if (args[0] === "/bin/cat") {
   else process.stderr.write("Operation not permitted\\n");
   process.exit(${permissiveCanary ? "0" : 'args[1].endsWith("sentinel") ? 1 : 0'});
 }
+if (args[0] === "/usr/bin/touch" && args[1].endsWith("write-sentinel")) {
+  process.stderr.write("Operation not permitted\\n");
+  process.exit(1);
+}
 copyFileSync(settings, process.cwd() + "/captured-policy.json");
 const child = spawnSync(args[0], args.slice(1), { stdio: "inherit", env: process.env });
 process.exit(child.status ?? 1);
