@@ -21,6 +21,15 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.14.2](https://github.com/buildproven/agent-kit/compare/v4.14.1...v4.14.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* bind squash cleanup to exact PR head ([#637](https://github.com/buildproven/agent-kit/issues/637)) ([855e6ce](https://github.com/buildproven/agent-kit/commit/855e6ce98088abc53aeae20d8e6f7d296d3b7b3c))
+* release terminal quality campaign locks ([#640](https://github.com/buildproven/agent-kit/issues/640)) ([cbcf31a](https://github.com/buildproven/agent-kit/commit/cbcf31a936152458ee89bb17974054e5c0cd5e28))
+* stabilize dispatcher timeout proof in CI ([#639](https://github.com/buildproven/agent-kit/issues/639)) ([54982c9](https://github.com/buildproven/agent-kit/commit/54982c921e3c5b8ea8b0393c04880c0ec5d9fffb))
+
 ## [4.14.1](https://github.com/buildproven/agent-kit/compare/v4.14.0...v4.14.1) (2026-09-23)
 
 
