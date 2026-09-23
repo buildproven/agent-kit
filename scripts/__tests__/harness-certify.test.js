@@ -10,6 +10,7 @@ const {
   assertCleanCheckout,
   checkoutSnapshot,
   sealSnapshot,
+  snapshotSandboxProfile,
   unsealSnapshot,
   githubRepository,
   receiptPath,
@@ -255,6 +256,25 @@ describe("harness-certify", () => {
         timedOut: true,
       });
       expect(result.signal).toBeTruthy();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("denies candidate gate writes to the immutable snapshots", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+    try {
+      const executable = path.join(root, "node_modules", ".bin", "mutate");
+      fs.mkdirSync(path.dirname(executable), { recursive: true });
+      fs.writeFileSync(executable, "#!/bin/sh\nprintf changed > marker\n", {
+        mode: 0o755,
+      });
+      expect(snapshotSandboxProfile(root, root)).toContain("deny file-write");
+      const result = await runGate(root, root, "mutation", [
+        "node_modules/.bin/mutate",
+      ]);
+      expect(result.status).toBe("failed");
+      expect(fs.existsSync(path.join(root, "marker"))).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -248,6 +248,23 @@ function frozenCommand(baselineDir, command) {
   fail(`frozen policy does not permit executable '${file}'`);
 }
 
+function sandboxPath(value) {
+  return String(value).replaceAll('"', '\\"');
+}
+
+function snapshotSandboxProfile(baselineDir, candidateDir) {
+  const roots = [
+    ...new Set([baselineDir, candidateDir].map((dir) => fs.realpathSync(dir))),
+  ];
+  return [
+    "(version 1)",
+    "(allow default)",
+    ...roots.map(
+      (root) => `(deny file-write* (subpath "${sandboxPath(root)}"))`,
+    ),
+  ].join(" ");
+}
+
 function runGate(
   baselineDir,
   candidateDir,
@@ -256,23 +273,34 @@ function runGate(
   { timeoutMs = 15 * 60 * 1000, killGraceMs = 5_000 } = {},
 ) {
   const [file, ...args] = frozenCommand(baselineDir, command);
+  if (
+    process.platform !== "darwin" ||
+    !fs.existsSync("/usr/bin/sandbox-exec")
+  ) {
+    fail("immutable certification requires macOS sandbox-exec");
+  }
+  const profile = snapshotSandboxProfile(baselineDir, candidateDir);
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
     let output = "";
     let timedOut = false;
     let settled = false;
-    const child = spawn(file, args, {
-      cwd: candidateDir,
-      detached: true,
-      env: {
-        ...process.env,
-        PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
-        npm_config_ignore_scripts: "true",
-        npm_config_registry: "https://registry.npmjs.org",
-        npm_config_userconfig: "/dev/null",
+    const child = spawn(
+      "/usr/bin/sandbox-exec",
+      ["-p", profile, file, ...args],
+      {
+        cwd: candidateDir,
+        detached: true,
+        env: {
+          ...process.env,
+          PATH: `${path.join(baselineDir, "node_modules", ".bin")}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          npm_config_ignore_scripts: "true",
+          npm_config_registry: "https://registry.npmjs.org",
+          npm_config_userconfig: "/dev/null",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
       },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    );
     child.stdout.on("data", (chunk) => {
       output += chunk;
     });
@@ -564,6 +592,7 @@ if (require.main === module) {
 
 module.exports = {
   frozenCommand,
+  snapshotSandboxProfile,
   assertCleanCheckout,
   checkoutSnapshot,
   sealSnapshot,
