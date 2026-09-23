@@ -18,6 +18,34 @@ const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
   it.each([
+    "scripts/quality-run.js",
+    "scripts/__tests__/quality-run.test.js",
+    "docs/quality-run-orchestrator.md",
+  ])("selects direct orchestration coverage for %s", (source) => {
+    const selected = plan([source], loadPolicy(ROOT), { root: ROOT });
+    expect(selected.mode).toBe("focused");
+    expect(selected.commands).toEqual([
+      {
+        executable: "npx",
+        args: ["vitest", "run", "scripts/__tests__/quality-run.test.js"],
+      },
+    ]);
+  });
+
+  it("retains dependency coverage for a mixed orchestrator and ownership change", () => {
+    const selected = plan(
+      ["scripts/quality-run.js", "scripts/quality-runner-ownership.js"],
+      loadPolicy(ROOT),
+      { root: ROOT },
+    );
+    expect(selected.mode).toBe("focused");
+    const tests = selected.commands.flatMap((command) => command.args);
+    expect(tests).toContain("scripts/__tests__/quality-run.test.js");
+    expect(tests).toContain("scripts/__tests__/quality-invocation.test.js");
+    expect(tests).toContain("scripts/__tests__/quality-merge-gates.test.js");
+  });
+
+  it.each([
     ["scripts/quality-run-bounded.sh", "quality-provider-runtime.test.js"],
     [
       ".github/workflows/product-admission-public-key.yml",

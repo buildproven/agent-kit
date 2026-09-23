@@ -310,14 +310,24 @@
     },
     {
       "paths": [
-        "scripts/engineering-delivery-policy.js",
         "scripts/quality-run.js",
+        "scripts/__tests__/quality-run.test.js",
+        "docs/quality-run-orchestrator.md"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": ["vitest", "run", "scripts/__tests__/quality-run.test.js"]
+        }
+      ]
+    },
+    {
+      "paths": [
+        "scripts/engineering-delivery-policy.js",
         "scripts/quality-start-trusted-release-ci.sh",
         "scripts/quality-runner-ownership.js",
         "scripts/quality-runner-reconcile.js",
-        "scripts/__tests__/quality-run.test.js",
         "scripts/__tests__/engineering-delivery-policy.test.js",
-        "docs/quality-run-orchestrator.md",
         "docs/decisions/ADR-quality-runner-ownership.md",
         "docs/decisions/ADR-quality-runner-reconciliation.md",
         "skills/quality/SKILL.md",
