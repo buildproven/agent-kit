@@ -1,95 +1,35 @@
-const { execFileSync } = require("child_process");
+const { spawnSync } = require("child_process");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
+const { makeTempDir } = require("./helpers/tmp.js");
 
-const ROOT = path.resolve(__dirname, "..", "..");
-const { recoveryInvocation } = require("../harness-certification-recover.js");
+const RECOVER = path.resolve(__dirname, "../harness-certification-recover.js");
 
-function git(directory, args) {
-  return execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
-}
-
-function receipt(directory, state = "RUNNING") {
-  return {
-    schemaVersion: 1,
-    kind: "frozen-harness-certification",
-    state,
-    owner: {
-      pid: 999999,
-      started: "Thu Jan  1 00:00:00 1970",
-      command: "dead",
-    },
-    baseline: { directory: ROOT, sha: git(ROOT, ["rev-parse", "HEAD"]) },
-    candidate: {
-      directory,
-      sha: "a".repeat(40),
-      baseSha: "b".repeat(40),
-      profile: "agent-kit",
-      claim: "engineering",
-      githubRepository: "buildproven/agent-kit",
-      pullRequest: 624,
-    },
-    gates: [],
-  };
-}
-
-describe("harness-certification-recover", () => {
-  it("restarts only from the recorded immutable baseline and identity", () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "harness-recover-"),
-    );
-    try {
-      const candidate = path.join(directory, "candidate");
-      fs.mkdirSync(candidate);
-      const prior = path.join(directory, "prior.json");
-      const out = path.join(directory, "new.json");
-      fs.writeFileSync(prior, JSON.stringify(receipt(candidate)));
-      const invocation = recoveryInvocation(prior, out);
-      expect(invocation.runner).toBe(
-        path.join(ROOT, "scripts", "harness-certify.js"),
+describe("retired certification recovery", () => {
+  it.each(["RUNNING", "passed"])(
+    "refuses restart and preserves a %s historical receipt",
+    (state) => {
+      const root = makeTempDir("retired-recovery-");
+      const prior = path.join(root, "prior.json");
+      const out = path.join(root, "next.json");
+      const original = JSON.stringify({
+        schemaVersion: 1,
+        kind: "frozen-harness-certification",
+        state,
+        owner: { pid: 999999 },
+      });
+      fs.writeFileSync(prior, original);
+      const result = spawnSync(
+        process.execPath,
+        [RECOVER, "--receipt", prior, "--out", out],
+        { cwd: root, encoding: "utf8", timeout: 5_000 },
       );
-      expect(invocation.args).toContain("--candidate-head");
-      expect(invocation.args).toContain("a".repeat(40));
-      expect(invocation.args).toContain("--pr");
-      expect(invocation.args).toContain("624");
-      expect(() =>
-        recoveryInvocation(prior, path.join(candidate, "new.json")),
-      ).toThrow("outside the baseline and candidate checkouts");
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses a live or completed prior certification", () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "harness-recover-"),
-    );
-    try {
-      const prior = path.join(directory, "prior.json");
-      fs.writeFileSync(prior, JSON.stringify(receipt(directory, "passed")));
-      expect(() =>
-        recoveryInvocation(prior, path.join(directory, "new.json")),
-      ).toThrow("not safely recoverable");
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses a baseline outside the executing checkout", () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "harness-recover-"),
-    );
-    try {
-      const prior = path.join(directory, "prior.json");
-      const value = receipt(directory);
-      value.baseline.directory = directory;
-      fs.writeFileSync(prior, JSON.stringify(value));
-      expect(() =>
-        recoveryInvocation(prior, path.join(directory, "new.json")),
-      ).toThrow("does not match the executing checkout");
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
-  });
+      expect(result.status, result.stderr).toBe(78);
+      expect(result.stderr).toContain("retired");
+      expect(result.stderr).toContain("harness-certification-status.js");
+      expect(result.stdout).toBe("");
+      expect(fs.readFileSync(prior, "utf8")).toBe(original);
+      expect(fs.existsSync(out)).toBe(false);
+    },
+  );
 });
