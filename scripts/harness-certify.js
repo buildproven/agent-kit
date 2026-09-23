@@ -253,9 +253,17 @@ function sandboxPath(value) {
   return String(value).replaceAll('"', '\\"');
 }
 
-function snapshotSandboxProfile(baselineDir, candidateDir) {
+function snapshotSandboxProfile(
+  baselineDir,
+  candidateDir,
+  protectedDirectories = [],
+) {
   const roots = [
-    ...new Set([baselineDir, candidateDir].map((dir) => fs.realpathSync(dir))),
+    ...new Set(
+      [baselineDir, candidateDir, ...protectedDirectories].map((dir) =>
+        fs.realpathSync(dir),
+      ),
+    ),
   ];
   return [
     "(version 1)",
@@ -271,7 +279,11 @@ function runGate(
   candidateDir,
   name,
   command,
-  { timeoutMs = 15 * 60 * 1000, killGraceMs = 5_000 } = {},
+  {
+    timeoutMs = 15 * 60 * 1000,
+    killGraceMs = 5_000,
+    protectedDirectories = [],
+  } = {},
 ) {
   const [file, ...args] = frozenCommand(baselineDir, command);
   if (
@@ -280,7 +292,11 @@ function runGate(
   ) {
     fail("immutable certification requires macOS sandbox-exec");
   }
-  const profile = snapshotSandboxProfile(baselineDir, candidateDir);
+  const profile = snapshotSandboxProfile(
+    baselineDir,
+    candidateDir,
+    protectedDirectories,
+  );
   const startedAt = new Date().toISOString();
   return new Promise((resolve) => {
     let output = "";
@@ -560,7 +576,9 @@ async function main() {
       ...testPlan.gates,
     ]) {
       receipt.gates.push(
-        await runGate(baselineSnapshot, candidateSnapshot, name, command),
+        await runGate(baselineSnapshot, candidateSnapshot, name, command, {
+          protectedDirectories: [baselineDir, candidateDir, path.dirname(out)],
+        }),
       );
       writeReceipt(out, receipt);
     }

@@ -42,6 +42,8 @@ the exact merge read-back. It returns one terminal state: `MERGED`,
    is merged and tagged. Its own certification runs from a frozen setup baseline.
 9. Immutable gate execution requires macOS `sandbox-exec`. On another platform,
    certification fails closed; CI tests the unavailable-platform failure path.
+10. Gate sandboxes deny writes to the frozen snapshots, original checkouts, and
+    receipt directory. Gate output can never modify certification evidence.
 
 ## Alternatives considered
 

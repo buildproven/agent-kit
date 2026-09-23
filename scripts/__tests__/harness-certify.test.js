@@ -289,6 +289,49 @@ describe("harness-certify", () => {
   );
 
   it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
+    "denies a gate write to the original checkout and receipt directory",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
+      try {
+        const baseline = path.join(root, "baseline");
+        const candidate = path.join(root, "candidate");
+        const original = path.join(root, "original");
+        const receipts = path.join(root, "receipts");
+        const executable = path.join(
+          baseline,
+          "node_modules",
+          ".bin",
+          "escape",
+        );
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.mkdirSync(candidate);
+        fs.mkdirSync(original);
+        fs.mkdirSync(receipts);
+        fs.writeFileSync(
+          executable,
+          `#!/bin/sh\nprintf original > '${path.join(original, "marker")}'\nprintf receipt > '${path.join(receipts, "receipt.json")}'\n`,
+          { mode: 0o755 },
+        );
+        const result = await runGate(
+          baseline,
+          candidate,
+          "escape",
+          ["node_modules/.bin/escape"],
+          { protectedDirectories: [original, receipts] },
+        );
+        expect(
+          snapshotSandboxProfile(baseline, candidate, [original, receipts]),
+        ).toContain(fs.realpathSync(original));
+        expect(result.status).toBe("failed");
+        expect(fs.existsSync(path.join(original, "marker"))).toBe(false);
+        expect(fs.existsSync(path.join(receipts, "receipt.json"))).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!HAS_IMMUTABLE_GATE_SANDBOX)(
     "runs a frozen executable whose interpreter is the pinned Node runtime",
     async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness-certify-"));
