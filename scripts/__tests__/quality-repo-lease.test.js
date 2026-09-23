@@ -1796,11 +1796,24 @@ printf '%s\\n' '${JSON.stringify({
     }
   });
 
-  it("releases a quarantined lease only when GitHub merged a local descendant", () => {
+  it("releases a quarantined lease after GitHub merged a local descendant despite a prior guard token", () => {
     const candidate = fixture("merged-descendant-reconcile");
     const owner = lease.acquire(candidate.manifestPath);
     lease.acquireMergeGuard(candidate.manifestPath, owner.token);
     const { manifest } = invocation.loadManifest(candidate.manifestPath);
+    // A retry may renew the PR-scoped lease while preserving a guard made by
+    // the earlier candidate. This is the production shape: the later merge
+    // must retire the old guard only when GitHub proves the descendant merge.
+    const guardPath = lease._pathsFor(FIXTURE_REPOSITORY, manifest).mergeGuard;
+    const guardOwner = JSON.parse(
+      fs.readFileSync(path.join(guardPath, "owner.json"), "utf8"),
+    );
+    guardOwner.token = "prior-candidate-token";
+    fs.writeFileSync(
+      path.join(guardPath, "owner.json"),
+      `${JSON.stringify(guardOwner)}\n`,
+      { mode: 0o600 },
+    );
     fs.writeFileSync(path.join(candidate.root, "successor.txt"), "successor\n");
     git(candidate.root, ["add", "successor.txt"]);
     git(candidate.root, ["commit", "-q", "-m", "successor"]);

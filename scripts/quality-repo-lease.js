@@ -208,12 +208,17 @@ function pathsFor(identity, manifest = null) {
   };
 }
 
-function relatedMergeGuard(paths, record) {
+function relatedMergeGuard(
+  paths,
+  record,
+  { allowPriorCandidate = false } = {},
+) {
   if (!fs.existsSync(paths.mergeGuard)) return null;
   const owner = guardOwner(paths.mergeGuard);
   if (owner.repository !== record.repository || owner.pr !== record.pr)
     return null;
   if (owner.token !== record.token || owner.head !== record.mergeIntent?.head) {
+    if (allowPriorCandidate) return owner;
     throw new Error("merge operation guard does not match this exact campaign");
   }
   return owner;
@@ -1903,15 +1908,27 @@ function reconcileMergeOutcome(manifestPath, presentedToken, options = {}) {
   const { manifest } = loadManifest(manifestPath);
   const remote = remotePullRequest(manifest, { repositoryScoped: true });
   const paths = pathsFor(repositoryIdentity(manifest), manifest);
-  const guard = relatedMergeGuard(paths, credential);
   let outcome =
     exactRemoteOutcome(manifest, remote) ??
     descendantMergedRemoteOutcome(manifest, remote);
+  // A retry can renew the PR lease after a prior candidate has already
+  // created its merge guard. A different guard token is safe to retire only
+  // after the immutable same-PR descendant merge proof below.
+  const guard = relatedMergeGuard(paths, credential, {
+    allowPriorCandidate: outcome === "merged-descendant",
+  });
   const refCasIntent = refCasIntentMatches(credential, manifest);
   if (
     outcome === "merged" &&
     (guard?.mode === "protected-nonstrict-ref-cas" || refCasIntent) &&
     !refCasIntegrated(manifest, remote, { repositoryScoped: true })
+  ) {
+    outcome = null;
+  }
+  if (
+    outcome === "merged-descendant" &&
+    guard?.head !== mergeHead(manifest) &&
+    !localAncestor(manifest.repo.realpath, guard.head, remote.headRefOid)
   ) {
     outcome = null;
   }
@@ -1927,7 +1944,9 @@ function reconcileMergeOutcome(manifestPath, presentedToken, options = {}) {
     // later exact reconciliation will make the same idempotent observation.
     recordDescendantMergedOutcome(manifestPath, remote);
   }
-  releaseVerifiedOutcome(manifestPath, credential.token, outcome);
+  releaseVerifiedOutcome(manifestPath, credential.token, outcome, {
+    allowPriorCandidate: outcome === "merged-descendant",
+  });
   return { reconciled: true, outcome, remote };
 }
 
@@ -2000,7 +2019,12 @@ function recordDescendantMergedOutcome(manifestPath, remote) {
   );
 }
 
-function releaseVerifiedOutcome(manifestPath, presentedToken, outcome) {
+function releaseVerifiedOutcome(
+  manifestPath,
+  presentedToken,
+  outcome,
+  { allowPriorCandidate = false } = {},
+) {
   const loaded = loadManifest(manifestPath);
   const tuple = ownerTuple(loaded.manifest, loaded.manifestPath);
   const released = withOwnershipTransaction(loaded.manifest, (paths) => {
@@ -2014,14 +2038,17 @@ function releaseVerifiedOutcome(manifestPath, presentedToken, outcome) {
         "verified remote outcome does not belong to the active repository lease",
       );
     }
-    const ownGuard = relatedMergeGuard(paths, record);
+    const ownGuard = relatedMergeGuard(paths, record, {
+      allowPriorCandidate,
+    });
     if (ownGuard) {
       const owner = ownGuard;
       if (
-        owner.token !== presentedToken ||
         owner.repository !== repositoryIdentity(loaded.manifest) ||
         owner.pr !== loaded.manifest.repo.pr ||
-        owner.head !== mergeHead(loaded.manifest)
+        (!allowPriorCandidate &&
+          (owner.token !== presentedToken ||
+            owner.head !== mergeHead(loaded.manifest)))
       ) {
         throw new Error(
           "merge operation guard does not match this exact campaign",
