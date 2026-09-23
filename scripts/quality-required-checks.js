@@ -1046,6 +1046,9 @@ function dispatchRepositoryEvent(repository, eventType, payload, deadline) {
   } catch (error) {
     // The local and GitHub-backed claims are one-use. Retrying the same
     // signed request after an ambiguous API failure could create a duplicate.
+    // Preserve a typed write-transport failure so the caller can retain the
+    // persisted intent and reconcile it through the required-check deadline.
+    if (error instanceof GhWriteTransportError) throw error;
     throw new Error(
       `repository dispatch failed after nonce claim: ${error.message}`,
       { cause: error },
