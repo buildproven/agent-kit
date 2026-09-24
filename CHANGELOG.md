@@ -21,6 +21,23 @@ All notable changes to claude-kit are documented here.
   artifact inventory, and fail-closed merge evidence as Claude and Codex
   (#139).
 
+## [4.16.0](https://github.com/buildproven/agent-kit/compare/v4.15.0...v4.16.0) (2026-09-24)
+
+
+### Features
+
+* select bounded worker models by task scope ([#648](https://github.com/buildproven/agent-kit/issues/648)) ([47d7709](https://github.com/buildproven/agent-kit/commit/47d77090b064e3c0103d06d699fe38135b77c042))
+
+
+### Bug Fixes
+
+* isolate mutation child environments ([#652](https://github.com/buildproven/agent-kit/issues/652)) ([c8e6ca4](https://github.com/buildproven/agent-kit/commit/c8e6ca40739ed4b789ac36f3e2d9c65f44c87149))
+* pin selector policy during mutation experiments ([#655](https://github.com/buildproven/agent-kit/issues/655)) ([4671fae](https://github.com/buildproven/agent-kit/commit/4671fae6dbce8f19f5e5fdc35371dc80773e334d))
+* preserve campaign identity across exact main merges ([#653](https://github.com/buildproven/agent-kit/issues/653)) ([5ac32d3](https://github.com/buildproven/agent-kit/commit/5ac32d32ff240e8204bd2be2b71c3a96b872734c))
+* remove undeclared Python sandbox dependency ([#645](https://github.com/buildproven/agent-kit/issues/645)) ([4f15613](https://github.com/buildproven/agent-kit/commit/4f1561394ecdb1c6861d0e9cce7beccf2cc54906))
+* retain mutation base across carry descendants ([#654](https://github.com/buildproven/agent-kit/issues/654)) ([4f04776](https://github.com/buildproven/agent-kit/commit/4f04776e4c173beef8dd4c9990779cde2309492e))
+* retire unsafe experimental harness certification ([#644](https://github.com/buildproven/agent-kit/issues/644)) ([5e3ea47](https://github.com/buildproven/agent-kit/commit/5e3ea4705f678ec2e1cbb2638e2b33bbddcb48b7))
+
 ## [4.15.0](https://github.com/buildproven/agent-kit/compare/v4.14.2...v4.15.0) (2026-09-23)
 
 
