@@ -47,6 +47,9 @@ prior reviews, findings, provider use, and budgets, then continues only the
 unfinished exact-head phases. If HEAD advanced, the runner archives the stale
 interruption and reruns descendant-bound gates, mutation evidence, and review.
 
+Base integration must preserve exact-tree replay evidence, whether history is
+rebased or merged. See [the main-merge carry decision](decisions/ADR-main-merge-campaign-carry.md).
+
 Test-only remediation replays the prior killed source mutation in a fresh
 current-head sandbox. It must not substitute another candidate or report saved
 execution time. A weakened test remains blocked. Separately, a valid explicit
