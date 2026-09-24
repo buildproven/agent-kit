@@ -168,6 +168,7 @@
     {
       "paths": [
         "scripts/quality-mutation-check.sh",
+        "scripts/quality-repository-command.js",
         "scripts/quality-invocation.js",
         "scripts/quality-git-identity.js"
       ],

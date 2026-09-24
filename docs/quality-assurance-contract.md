@@ -67,6 +67,12 @@ persisted test plan; that test must fail to produce red-capable evidence. A
 pointer-only submodule update has no candidate-owned behavioral subject and is
 recorded separately as `gitlink-skip`.
 
+Mutation test commands, repository-owned selector execution, dependency installs,
+and Stryker use the same environment allowlist as ordinary repository gates.
+Controller identity and credential variables stay outside those child processes.
+The bounded supervisor keeps its own environment for deadlines and cancellation.
+This is environment separation, not filesystem or network confinement.
+
 The task-completion hook uses this same selector for staged, unstaged and
 untracked working-tree paths. It reports an unmapped or failed selection early,
 but it is local feedback only; exact-head quality and product-completion evidence
