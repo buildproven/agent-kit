@@ -15,6 +15,172 @@ const { spawn, spawnSync } = require("node:child_process");
 const SOURCE_RUNNER = path.resolve(__dirname, "..", "quality-run.js");
 const { writeAllSync } = require(SOURCE_RUNNER);
 const { ownershipSchemaVersion } = require("../quality-runner-ownership");
+const { supervise } = require("../quality-process-supervisor");
+
+describe("owned deadline process boundary", () => {
+  it("caps a nested legacy wrapper at the inherited deadline", async () => {
+    const result = await supervise(
+      "bash",
+      [
+        path.resolve(__dirname, "..", "quality-run-bounded.sh"),
+        "--timeout",
+        "60",
+        "--",
+        process.execPath,
+        "-e",
+        "process.stdout.write(String(process.pid)); setInterval(()=>{},1000)",
+      ],
+      { stopAt: Date.now() + 500, forwardOutput: false },
+    );
+    expect(result.deadlineExpired || result.code === 124).toBe(true);
+    expect(result.terminationError).toBeUndefined();
+    const pid = Number(result.stdout);
+    expect(pid).toBeGreaterThan(0);
+    // Nested guardians receive the same deadline and parent-disconnect signal,
+    // but OS process removal is asynchronous across their separate groups.
+    // Bound observation; do not kill the payload to make this assertion pass.
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(pid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 200, interval: 10 },
+    );
+  });
+
+  it("retains cancel-file behavior through the supervised legacy wrapper", async () => {
+    const entry = fixture();
+    const cancelFile = entry.manifestPath + ".cancel";
+    writeFileSync(cancelFile, "cancel");
+    const result = await supervise(
+      "bash",
+      [
+        path.resolve(__dirname, "..", "quality-run-bounded.sh"),
+        "--timeout",
+        "60",
+        "--cancel-file",
+        cancelFile,
+        "--",
+        process.execPath,
+        "-e",
+        "setInterval(()=>{},1000)",
+      ],
+      { stopAt: Date.now() + 2000, forwardOutput: false },
+    );
+    expect(result.code).toBe(143);
+    expect(result.deadlineExpired).toBe(false);
+    expect(result.terminationError).toBeUndefined();
+  });
+
+  it("preserves target exit code and argument boundaries", async () => {
+    const result = await supervise(
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write(JSON.stringify(process.argv.slice(1))); process.exitCode=7",
+        "space value",
+        "$(not-a-command)",
+        'quote"value',
+      ],
+      {
+        stopAt: Date.now() + 2000,
+        forwardOutput: false,
+      },
+    );
+    expect(result.code).toBe(7);
+    expect(result.terminationError).toBeUndefined();
+    expect(JSON.parse(result.stdout)).toEqual([
+      "space value",
+      "$(not-a-command)",
+      'quote"value',
+    ]);
+  });
+
+  it("does not start a payload when ownership publication fails", async () => {
+    const entry = fixture();
+    const marker = entry.manifestPath + ".unpublished-payload";
+    let supervisorPid;
+    await expect(
+      supervise(
+        process.execPath,
+        [
+          "-e",
+          `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`,
+        ],
+        {
+          stopAt: Date.now() + 500,
+          forwardOutput: false,
+          onChild(child) {
+            if (child) {
+              supervisorPid = child.pid;
+              throw new Error("publication failed");
+            }
+          },
+        },
+      ),
+    ).rejects.toThrow("publication failed");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(() => process.kill(supervisorPid, 0)).toThrow();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("cancels the payload when its parent disconnects", async () => {
+    const entry = fixture();
+    const marker = entry.manifestPath + ".orphan-pid";
+    const supervisor = path.resolve(
+      __dirname,
+      "..",
+      "quality-process-supervisor.js",
+    );
+    const payload = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(()=>{}, 1000)`;
+    const controller = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `
+      const fs=require('node:fs');
+      require(${JSON.stringify(supervisor)}).supervise(process.execPath, ['-e', ${JSON.stringify(payload)}],
+        {stopAt:Date.now()+2000, forwardOutput:false});
+      const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(marker)})) process.exit(0)}, 10);
+    `,
+      ],
+      { encoding: "utf8", timeout: 3000 },
+    );
+    expect(controller.status, controller.stderr).toBe(0);
+    const pid = Number(readFileSync(marker, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("cleans same-group descendants after the target exits", async () => {
+    const result = await supervise(
+      process.execPath,
+      [
+        "-e",
+        `
+      const {spawn}=require('node:child_process');
+      const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+      process.stdout.write(String(child.pid)); child.unref();
+    `,
+      ],
+      { stopAt: Date.now() + 2000, forwardOutput: false },
+    );
+    expect(result.code).toBe(0);
+    expect(result.terminationError).toBeUndefined();
+    expect(() => process.kill(Number(result.stdout), 0)).toThrow();
+  });
+
+  it("keeps target code off the supervisor deadline event loop", async () => {
+    const started = Date.now();
+    const result = await supervise(process.execPath, ["-e", "while(true) {}"], {
+      stopAt: started + 300,
+      forwardOutput: false,
+    });
+    expect(result.deadlineExpired).toBe(true);
+    expect(result.terminationError).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+});
 
 const FAKE_INVOCATION = `
 "use strict";
@@ -35,6 +201,7 @@ function withManifestLock(file, mutation) {
   return manifest;
 }
 function validateIdentity(manifest) {
+  if (manifest.behavior?.stallMetadata) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000);
   if (manifest.behavior?.stale) throw new Error("manifest HEAD identity is stale");
 }
 function terminalEpoch(manifest) { return manifest.terminalEpoch || 0; }
@@ -322,6 +489,8 @@ if (step === "quality-run-governor.js") {
   manifest.governor.remediationStartedAtEpoch ||= 1;
 }
 if (step === "quality-run-review.sh" && manifest.behavior?.holdReview) {
+  if (manifest.behavior?.ignoreReviewTerm) process.on("SIGTERM", () => {});
+  fs.writeFileSync(file + ".review-pid", String(process.pid));
   manifest.governor.activeExecution = {
     kind: "provider", name: "review", startedAt: new Date().toISOString(), timeoutSeconds: 30,
   };
@@ -423,6 +592,10 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   const runtime = path.join(root, "scripts");
   mkdirSync(runtime);
   copyFileSync(SOURCE_RUNNER, path.join(runtime, "quality-run.js"));
+  copyFileSync(
+    path.resolve(__dirname, "..", "quality-process-supervisor.js"),
+    path.join(runtime, "quality-process-supervisor.js"),
+  );
   copyFileSync(
     path.resolve(__dirname, "..", "quality-runner-ownership.js"),
     path.join(runtime, "quality-runner-ownership.js"),
@@ -544,19 +717,24 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   };
 }
 
-function run(entry) {
-  const env = { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath };
+function run(entry, extraArgs = [], timeout = 30_000) {
+  const env = {
+    ...process.env,
+    QUALITY_TEST_MANIFEST: entry.manifestPath,
+    ...entry.environment,
+  };
   delete env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
   const result = spawnSync(
     process.execPath,
-    [entry.runner, "--manifest", entry.manifestPath],
+    [entry.runner, "--manifest", entry.manifestPath, ...extraArgs],
     {
       encoding: "utf8",
       env,
       // The repository allows subprocess-heavy integration cases 60 seconds
       // under its eight-worker pool. Keep this fixture below that bound while
       // avoiding a machine-load-dependent false timeout.
-      timeout: 30_000,
+      timeout,
+      killSignal: entry.timeoutSignal || "SIGTERM",
     },
   );
   return {
@@ -624,6 +802,194 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("bounds standalone metadata validation by the absolute deadline", () => {
+    const entry = fixture({ stallMetadata: true });
+    entry.timeoutSignal = "SIGKILL";
+    const result = run(
+      entry,
+      ["--stop-at", new Date(Date.now() + 2000).toISOString()],
+      4000,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+    });
+    expect(result.manifest.calls || []).toEqual([]);
+  });
+  it("starts no campaign work after an absolute stop-at deadline", () => {
+    const entry = fixture();
+    const before = readFileSync(entry.manifestPath, "utf8");
+    const result = run(entry, ["--stop-at", "2020-01-01T00:00:00.000Z"]);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+    });
+    expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+  });
+
+  it("retains ordinary behavior before an absolute stop-at deadline", () => {
+    const entry = fixture();
+    const result = run(entry, [
+      "--stop-at",
+      new Date(Date.now() + 30_000).toISOString(),
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "complete" });
+  });
+
+  it.each([false, true])(
+    "stops an active owned review at the absolute deadline (ignores TERM: %s)",
+    (ignoreReviewTerm) => {
+      const entry = fixture({ holdReview: true, ignoreReviewTerm });
+      let result;
+      try {
+        result = run(
+          entry,
+          ["--stop-at", new Date(Date.now() + 3000).toISOString()],
+          6000,
+        );
+      } finally {
+        writeFileSync(entry.manifestPath + ".review-release", "release");
+      }
+      expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true);
+      expect(result.status, result.stderr).toBe(1);
+      expect(JSON.parse(result.output)).toMatchObject({
+        status: "terminal",
+        state: "blocked",
+        reason: "stop-at-expired",
+        quiescence: "confirmed",
+      });
+      const reviewPid = Number(
+        readFileSync(entry.manifestPath + ".review-pid", "utf8"),
+      );
+      expect(() => process.kill(reviewPid, 0)).toThrow();
+      expect(result.manifest.reviews).toEqual([]);
+      expect(result.manifest.governor.activeExecution).toMatchObject({
+        name: "review",
+      });
+      expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(true);
+      expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
+    },
+  );
+
+  it("reports unknown quiescence and preserves ownership when deadline termination is denied", () => {
+    const entry = fixture({ holdReview: true });
+    const shim = entry.manifestPath + ".deny-kill.cjs";
+    writeFileSync(
+      shim,
+      `const original = process.kill.bind(process);
+process.kill = (pid, signal) => {
+  if (pid < 0 && signal === "SIGKILL" && require("node:fs").existsSync(${JSON.stringify(entry.manifestPath + ".review-ready")})) throw Object.assign(new Error("injected kill denial"), { code: "EPERM" });
+  return original(pid, signal);
+};\n`,
+    );
+    entry.environment = { NODE_OPTIONS: "--require " + JSON.stringify(shim) };
+    let result;
+    let heldGroup;
+    try {
+      result = run(
+        entry,
+        ["--stop-at", new Date(Date.now() + 3000).toISOString()],
+        6000,
+      );
+      const reviewPid = readFileSync(
+        entry.manifestPath + ".review-pid",
+        "utf8",
+      ).trim();
+      heldGroup = Number(
+        spawnSync("ps", ["-o", "pgid=", "-p", reviewPid], {
+          encoding: "utf8",
+        }).stdout.trim(),
+      );
+    } finally {
+      writeFileSync(entry.manifestPath + ".review-release", "release");
+    }
+    expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      quiescence: "unknown",
+      terminationError: "EPERM",
+    });
+    const owner = JSON.parse(
+      readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+    );
+    expect(owner.childInFlight).toBe(true);
+    expect(heldGroup).toBeGreaterThan(0);
+    expect(owner.child.processGroupId).toBe(heldGroup);
+    expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
+  });
+
+  it.each(["verifier", "admission"])(
+    "bounds a hanging product %s by the same absolute deadline",
+    (phase) => {
+      const heldVerification = `
+const fs = require("node:fs");
+const file = process.env.QUALITY_TEST_MANIFEST;
+fs.writeFileSync(file + ".verifier-started", "started");
+const end = Date.now() + 15000;
+while (!fs.existsSync(file + ".verifier-release") && Date.now() < end) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+process.stdout.write("fixture verified");
+`;
+      const entry = fixture(
+        phase === "verifier"
+          ? { productVerifier: heldVerification }
+          : {
+              productVerifier:
+                "process.stdout.write(JSON.stringify({valid:true,errors:[]}));",
+              productAdmission: heldVerification,
+            },
+        { merge: phase === "admission" },
+      );
+      entry.timeoutSignal = "SIGKILL";
+      let result;
+      try {
+        result = run(
+          entry,
+          ["--stop-at", new Date(Date.now() + 3000).toISOString()],
+          6000,
+        );
+      } finally {
+        writeFileSync(entry.manifestPath + ".verifier-release", "release");
+      }
+      expect(existsSync(entry.manifestPath + ".verifier-started")).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(1);
+      expect(JSON.parse(result.output)).toMatchObject({
+        status: "terminal",
+        state: "blocked",
+        reason: "stop-at-expired",
+      });
+      expect(result.manifest.calls || []).not.toContain(
+        "quality-stamp-and-merge.sh",
+      );
+    },
+  );
+
+  it.each(["tomorrow", "2026-09-24T00:00:00", "-1", "2026-02-30T00:00:00Z"])(
+    "rejects invalid absolute deadline %s before campaign work",
+    (stopAt) => {
+      const entry = fixture();
+      const before = readFileSync(entry.manifestPath, "utf8");
+      const result = run(entry, ["--stop-at", stopAt]);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("absolute UTC timestamp");
+      expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+      expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    },
+  );
+
   it("re-enters one typed pre-review selector failure after the selector is repaired", () => {
     const entry = fixture({ failPanel: true }, { merge: true, tier: "medium" });
     const failed = run(entry);

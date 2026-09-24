@@ -4,7 +4,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const quality = require("./quality-invocation");
 const runnerOwnership = require("./quality-runner-ownership");
 const { productionCodeChange } = require("./product-completion");
@@ -19,10 +19,36 @@ const RELEASE_PLEASE_HEAD =
   /^release-please--branches--[A-Za-z0-9._/-]+--components--[A-Za-z0-9._/-]+$/;
 
 function parseArgs(argv) {
-  if (argv.length !== 2 || argv[0] !== "--manifest" || !argv[1]) {
-    throw new Error("usage: quality-run.js --manifest <exact-path>");
+  if (
+    ![2, 4].includes(argv.length) ||
+    argv[0] !== "--manifest" ||
+    !argv[1] ||
+    (argv.length === 4 && argv[2] !== "--stop-at")
+  ) {
+    throw new Error(
+      "usage: quality-run.js --manifest <exact-path> [--stop-at <UTC timestamp>]",
+    );
   }
-  return path.resolve(argv[1]);
+  return { manifestPath: path.resolve(argv[1]), stopAt: parseStopAt(argv[3]) };
+}
+
+function parseStopAt(value) {
+  if (value === undefined || value === null) return null;
+  const timestamp = typeof value === "number" ? value : Date.parse(value);
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    timestamp < 0 ||
+    timestamp > 8640000000000000
+  ) {
+    throw new Error("stopAt must be an absolute UTC timestamp");
+  }
+  if (typeof value !== "number") {
+    const canonical = new Date(timestamp).toISOString();
+    if (value !== canonical && value !== canonical.replace(".000Z", "Z")) {
+      throw new Error("stopAt must be an absolute UTC timestamp");
+    }
+  }
+  return timestamp;
 }
 
 function manifestAt(manifestPath) {
@@ -88,6 +114,12 @@ function emit(result) {
 }
 
 function runProcess(command, args, options = {}) {
+  if (options.stopAt != null)
+    return require("./quality-process-supervisor").supervise(
+      command,
+      args,
+      options,
+    );
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
@@ -99,17 +131,26 @@ function runProcess(command, args, options = {}) {
     });
     options.onChild?.(child);
     child.stdout.on("data", (chunk) => {
-      process.stdout.write(chunk);
+      if (options.forwardOutput !== false) process.stdout.write(chunk);
       stdout = `${stdout}${chunk}`.slice(-32768);
     });
     child.stderr.on("data", (chunk) => {
-      process.stderr.write(chunk);
+      if (options.forwardOutput !== false) process.stderr.write(chunk);
       stderr = `${stderr}${chunk}`.slice(-32768);
     });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      reject(error);
+    });
     child.once("exit", (code, signal) => {
       options.onChild?.(null);
-      resolve({ code: code ?? 1, signal, stdout, stderr });
+      resolve({
+        code: code ?? 1,
+        signal,
+        stdout,
+        stderr,
+        deadlineExpired: false,
+        childPid: child.pid,
+      });
     });
   });
 }
@@ -215,7 +256,7 @@ function verifyDeliveryEvidenceDigest(manifest, evidencePath) {
   }
 }
 
-function verifyProtectedProductAdmission(manifest) {
+async function verifyProtectedProductAdmission(context, manifest) {
   const evidencePath = manifest.options?.deliveryEvidence;
   verifyDeliveryEvidenceDigest(manifest, evidencePath);
   const requirementsDigest = crypto
@@ -233,7 +274,7 @@ function verifyProtectedProductAdmission(manifest) {
       }),
     )
     .digest("hex");
-  const result = spawnSync(
+  const result = await context.execute(
     process.execPath,
     [
       script("product-admission.js"),
@@ -244,14 +285,18 @@ function verifyProtectedProductAdmission(manifest) {
       requirementsDigest,
       manifest.deliveryEvidenceBinding.sha256,
     ],
-    { cwd: manifest.repo.realpath, encoding: "utf8" },
+    {
+      cwd: manifest.repo.realpath,
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
+    },
   );
   if (result.error) {
     throw new Error(
       `protected product admission could not start: ${result.error.message}`,
     );
   }
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
     throw new Error(
       `protected product admission rejected this exact head${detail ? `: ${detail}` : ""}`,
@@ -275,7 +320,7 @@ function verifyProtectedProductAdmission(manifest) {
   }
 }
 
-function trackedRepositoryPath(manifest, file, label) {
+async function trackedRepositoryPath(context, manifest, file, label) {
   const relative = path.relative(manifest.repo.realpath, path.resolve(file));
   if (
     !relative ||
@@ -286,15 +331,16 @@ function trackedRepositoryPath(manifest, file, label) {
       `${label} must be a tracked file inside the candidate repository`,
     );
   }
-  const tracked = spawnSync(
+  const tracked = await context.execute(
     "git",
     ["ls-files", "--error-unmatch", "--", relative],
     {
       cwd: manifest.repo.realpath,
-      encoding: "utf8",
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
     },
   );
-  if (tracked.status !== 0) {
+  if (tracked.code !== 0) {
     throw new Error(
       `${label} must be committed on the candidate head before protected admission`,
     );
@@ -302,13 +348,15 @@ function trackedRepositoryPath(manifest, file, label) {
   return relative;
 }
 
-function requestProtectedProductAdmission(manifest) {
-  const prd = trackedRepositoryPath(
+async function requestProtectedProductAdmission(context, manifest) {
+  const prd = await trackedRepositoryPath(
+    context,
     manifest,
     manifest.options.productPrd,
     "product PRD",
   );
-  const tasks = trackedRepositoryPath(
+  const tasks = await trackedRepositoryPath(
+    context,
     manifest,
     manifest.options.productTasks,
     "product tasks",
@@ -335,7 +383,7 @@ function requestProtectedProductAdmission(manifest) {
     return false;
   }
   const nonce = crypto.randomBytes(16).toString("hex");
-  const result = spawnSync(
+  const result = await context.execute(
     "gh",
     [
       "api",
@@ -357,9 +405,13 @@ function requestProtectedProductAdmission(manifest) {
       "-f",
       `client_payload[nonce]=${nonce}`,
     ],
-    { cwd: manifest.repo.realpath, encoding: "utf8" },
+    {
+      cwd: manifest.repo.realpath,
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
+    },
   );
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     throw new Error(
       `could not request protected product admission: ${(result.stderr || "").trim()}`,
     );
@@ -375,7 +427,7 @@ function verifierFailure(result) {
     return `product verifier terminated by signal ${result.signal}`;
   }
   if (!result.stdout?.trim()) {
-    return `product verifier process failed with status ${result.status}`;
+    return `product verifier process failed with status ${result.code}`;
   }
   let output;
   try {
@@ -414,7 +466,11 @@ function verifyEngineeringDeliveryClaim(manifest, productInputs) {
   return `declared engineering at protected policy ${policy.policyRevision}; product acceptance not established`;
 }
 
-function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
+async function verifyDeliveryClaim(
+  context,
+  manifest,
+  { inputsOnly = false } = {},
+) {
   const claim = deliveryClaim(manifest);
   const { productPrd, productTasks, deliveryEvidence } = manifest.options || {};
   const changedFiles = quality.changedFiles(
@@ -464,7 +520,7 @@ function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
     "delivery-changed-files.json",
   );
   fs.writeFileSync(changedFilesPath, JSON.stringify(changedFiles));
-  const result = spawnSync(
+  const result = await context.execute(
     process.execPath,
     [
       script("product-completion.js"),
@@ -492,9 +548,13 @@ function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
       "--repository-id",
       deliveryRepositoryId(manifest),
     ],
-    { cwd: manifest.repo.realpath, encoding: "utf8" },
+    {
+      cwd: manifest.repo.realpath,
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
+    },
   );
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     throw new Error(
       `delivery claim verification failed: ${verifierFailure(result)}`,
     );
@@ -514,10 +574,10 @@ function actionRequired(manifestPath, phase, message, manifest, review) {
   };
 }
 
-function prepareProductAdmission(manifestPath) {
+async function prepareProductAdmission(context, manifestPath) {
   const manifest = manifestAt(manifestPath);
   if (["contract", "engineering"].includes(deliveryClaim(manifest))) {
-    verifyDeliveryClaim(manifest, { inputsOnly: true });
+    await verifyDeliveryClaim(context, manifest, { inputsOnly: true });
     return null;
   }
 
@@ -525,16 +585,18 @@ function prepareProductAdmission(manifestPath) {
   // budget. Protected admission is still authoritative, but its request can
   // run while deterministic gates execute instead of being discovered after
   // all local work has already finished.
-  verifyDeliveryClaim(manifest);
+  await verifyDeliveryClaim(context, manifest);
   if (manifest.options?.merge !== true) return null;
   try {
-    verifyProtectedProductAdmission(manifest);
+    await verifyProtectedProductAdmission(context, manifest);
     return null;
   } catch (error) {
+    if (error.deadlineExpired) throw error;
     let request;
     try {
-      request = requestProtectedProductAdmission(manifest);
+      request = await requestProtectedProductAdmission(context, manifest);
     } catch (requestError) {
+      if (requestError.deadlineExpired) throw requestError;
       return actionRequired(
         manifestPath,
         "product-admission",
@@ -619,8 +681,8 @@ function invocationRuntime(manifestPath, execute) {
   return { assertNotInterrupted, invoke, onChild, onSignal };
 }
 
-async function runDeterministicPhases(manifestPath, invoke) {
-  const admission = prepareProductAdmission(manifestPath);
+async function runDeterministicPhases(context, manifestPath, invoke) {
+  const admission = await prepareProductAdmission(context, manifestPath);
   if (admission) return admission;
   let manifest = manifestAt(manifestPath);
   if (manifest.risk?.resolved !== true) {
@@ -659,7 +721,7 @@ async function runDeterministicPhases(manifestPath, invoke) {
     manifestPath,
     "delivery-claim",
     "success",
-    verifyDeliveryClaim(manifestAfterGates),
+    await verifyDeliveryClaim(context, manifestAfterGates),
   );
   const gated = manifestAt(manifestPath);
   if (
@@ -742,11 +804,15 @@ async function finishWithoutMerge(manifestPath, invoke, manifest, review) {
 async function finishWithMerge(context, manifestPath, manifest, review) {
   if (!["contract", "engineering"].includes(deliveryClaim(manifest))) {
     try {
-      verifyProtectedProductAdmission(manifest);
+      await verifyProtectedProductAdmission(context, manifest);
     } catch (error) {
+      if (error.deadlineExpired) throw error;
       let requested = false;
       try {
-        const request = requestProtectedProductAdmission(manifest);
+        const request = await requestProtectedProductAdmission(
+          context,
+          manifest,
+        );
         if (request) {
           quality.withManifestLock(manifestPath, (current) => {
             current.productAdmissionRequest = {
@@ -758,6 +824,7 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
           requested = true;
         }
       } catch (requestError) {
+        if (requestError.deadlineExpired) throw requestError;
         return actionRequired(
           manifestPath,
           "product-admission",
@@ -916,6 +983,27 @@ async function recordFailure(context, manifestPath, error) {
     manifest = manifestAt(manifestPath);
   } catch {
     throw error;
+  }
+  if (error.deadlineExpired) {
+    // No new child is permitted after the deadline, including a CLI used only
+    // to record failure. Use the same locked terminal-state API directly.
+    const campaignState = quality.recordTerminalState(
+      manifestPath,
+      "blocked",
+      "stop-at-expired",
+    );
+    return {
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      campaignState,
+      quiescence: error.quiescence,
+      ...(error.terminationError
+        ? { terminationError: error.terminationError }
+        : {}),
+      message: "absolute wake deadline expired; campaign remains incomplete",
+      head: manifest.revisions.currentHead,
+    };
   }
   if (
     manifest.terminalState?.recovery?.kind === "merge-read-failure" &&
@@ -1112,6 +1200,7 @@ function dispositionArtifactMatches(artifact, judge, context) {
 async function runOpenCampaign(context, manifestPath, manifest) {
   updateOrchestration(manifestPath, "validate", "success");
   const admission = await runDeterministicPhases(
+    context,
     manifestPath,
     context.runtime.invoke,
   );
@@ -1138,8 +1227,73 @@ async function runOpenCampaign(context, manifestPath, manifest) {
 }
 
 async function runManifest(manifestPath, dependencies = {}) {
+  const stopAt = parseStopAt(dependencies.stopAt);
+  if (stopAt === null) return runManifestOwned(manifestPath, dependencies);
+  if (dependencies.runProcess)
+    throw new Error(
+      "deadline execution cannot transfer an injected process callback",
+    );
+  let reply;
+  const result = await require("./quality-process-supervisor").supervise(
+    process.execPath,
+    [
+      __filename,
+      "--deadline-worker",
+      "--manifest",
+      path.resolve(manifestPath),
+      "--stop-at",
+      new Date(stopAt).toISOString(),
+    ],
+    {
+      stopAt,
+      onMessage: (value) => {
+        reply = value;
+      },
+    },
+  );
+  if (result.deadlineExpired) {
+    // Do not re-enter metadata/transaction code after expiry. Preserve the
+    // exact saved state; the supported recovery path will reconcile it later.
+    let quiescent;
+    const until = Date.now() + 200;
+    do {
+      quiescent = runnerOwnership.runnerQuiescent(manifestPath);
+      if (!quiescent) await new Promise((resolve) => setTimeout(resolve, 10));
+    } while (!quiescent && Date.now() < until);
+    return {
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      quiescence:
+        quiescent && !result.terminationError ? "confirmed" : "unknown",
+      ...(result.terminationError
+        ? { terminationError: result.terminationError }
+        : {}),
+      message:
+        "absolute deadline expired; saved campaign state was preserved for recovery",
+    };
+  }
+  if (result.terminationError)
+    throw new Error(`runner supervisor incomplete: ${result.terminationError}`);
+  if (reply?.error) throw new Error(reply.error);
+  if (result.code !== 0 || !reply?.result)
+    throw new Error("runner worker returned no result");
+  return reply.result;
+}
+
+async function runManifestOwned(manifestPath, dependencies = {}) {
+  const stopAt = parseStopAt(dependencies.stopAt);
   // Validate before canonicalizing: a symlinked manifest remains forbidden.
   const initial = quality.loadManifest(manifestPath);
+  if (stopAt !== null && Date.now() >= stopAt) {
+    return {
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      message: "absolute wake deadline expired; no campaign work started",
+      head: initial.manifest.revisions.currentHead,
+    };
+  }
   manifestPath = fs.realpathSync(initial.manifestPath);
   const ownership = runnerOwnership.acquireRunner(manifestPath);
   if (!ownership)
@@ -1158,8 +1312,33 @@ async function runManifest(manifestPath, dependencies = {}) {
       head: initial.manifest.revisions.currentHead,
     };
   }
-  const execute = (...args) =>
-    ownership.execute(dependencies.runProcess || runProcess, ...args);
+  const deadlineError = (quiescence, terminationError = null) =>
+    Object.assign(new Error("absolute wake deadline expired"), {
+      deadlineExpired: true,
+      quiescence,
+      terminationError,
+    });
+  const execute = async (command, args, options = {}) => {
+    if (stopAt !== null && Date.now() >= stopAt)
+      throw deadlineError("not-started");
+    const result = await ownership.execute(
+      dependencies.runProcess || runProcess,
+      command,
+      args,
+      { ...options, stopAt },
+    );
+    if (result.deadlineExpired || (stopAt !== null && Date.now() >= stopAt)) {
+      const quiescent =
+        Number.isInteger(result.childPid) &&
+        runnerOwnership.processAbsent(result.childPid) &&
+        runnerOwnership.processGroupAbsent(result.childPid);
+      throw deadlineError(
+        quiescent ? "confirmed" : "unknown",
+        result.terminationError,
+      );
+    }
+    return result;
+  };
   const runtime = invocationRuntime(manifestPath, execute);
   const context = { execute, runtime, ownership };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -1277,8 +1456,20 @@ async function runManifest(manifestPath, dependencies = {}) {
 
 async function main() {
   try {
-    const manifestPath = parseArgs(process.argv.slice(2));
-    const result = await runManifest(manifestPath);
+    const worker = process.argv[2] === "--deadline-worker";
+    if (worker && !process.send)
+      throw new Error("runner worker requires private IPC");
+    const { manifestPath, stopAt } = parseArgs(
+      process.argv.slice(worker ? 3 : 2),
+    );
+    const result = await (worker ? runManifestOwned : runManifest)(
+      manifestPath,
+      { stopAt },
+    );
+    if (worker) {
+      process.send({ result }, () => process.disconnect());
+      return;
+    }
     emit(result);
     if (result.status === "busy") {
       process.exitCode = BUSY_EXIT;
@@ -1295,6 +1486,10 @@ async function main() {
       process.exitCode = 1;
     }
   } catch (error) {
+    if (process.argv[2] === "--deadline-worker" && process.connected) {
+      process.send({ error: error.message }, () => process.disconnect());
+      return;
+    }
     process.stderr.write(`quality-run: ${error.message}\n`);
     process.exitCode = 2;
   }
@@ -1305,6 +1500,7 @@ module.exports = {
   WORK_REQUIRED_EXIT,
   ORCHESTRATION_SCHEMA_VERSION,
   parseArgs,
+  parseStopAt,
   pinRepositoryLease,
   reviewSummary,
   trustedReleaseCiEligible,

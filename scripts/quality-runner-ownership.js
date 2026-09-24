@@ -347,7 +347,25 @@ function reconcileRunner({
   }
 }
 
+function runnerQuiescent(manifestPath) {
+  const file = `${manifestPath}.runner-lock`;
+  const owner = readOwner(file)?.record;
+  if (!fs.existsSync(file)) return true;
+  if (
+    !owner ||
+    owner.hostname !== os.hostname() ||
+    !processAbsent(owner.pid) ||
+    owner.schemaVersion !== 2
+  )
+    return false;
+  return owner.child
+    ? processAbsent(owner.child.pid) &&
+        processGroupAbsent(owner.child.processGroupId)
+    : !owner.childInFlight;
+}
+
 module.exports = {
+  runnerQuiescent,
   acquireRunner,
   ownershipSchemaVersion,
   processAbsent,

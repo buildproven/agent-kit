@@ -23,6 +23,32 @@ It never discovers a campaign by session, glob, timestamp, environment
 inheritance, or a “latest” pointer. The manifest is the complete state machine
 and every phase records an identity-bound result before the next one begins.
 
+An optional `--stop-at <UTC timestamp>` bounds one runner invocation by an
+absolute deadline. `runManifest` accepts the same deadline through `stopAt`.
+The value does not extend any campaign or provider budget. An already expired
+deadline starts no work and leaves the manifest unchanged. During execution,
+expiry kills the owned process group, prevents further child launches, and
+returns `blocked` with reason `stop-at-expired`. The result reports whether
+process quiescence was confirmed or remains unknown. It never reports campaign
+success from deadline expiry. Existing active-execution and ownership evidence
+is retained for the supported reconciliation path; expiry does not reset it.
+If the OS refuses group termination, the runner reports the termination error,
+disconnects its output pipes and retains ownership of the possibly live child.
+It returns a blocked result without waiting indefinitely or claiming the child
+was stopped. With a deadline, a separate POSIX group supervisor also bounds
+synchronous metadata checks. Each supervisor signals only its own live group;
+payload execution starts after the nested ownership record is saved. Worker
+death cancels its foreground group. A blocked invocation can leave the durable
+campaign in its prior nonterminal state: expiry does not run a potentially
+blocking metadata transaction just to write a terminal marker. The existing
+recovery path must reconcile that preserved evidence before more work starts.
+Nested `quality-run-bounded.sh` calls inherit the supervisor deadline and use
+the same parent-disconnect cancellation path. Their own phase cap can shorten,
+but cannot extend, the inherited deadline. Calls outside supervised execution
+keep the existing standalone wrapper behavior.
+Calls without the option retain their existing behavior. Automatic wake
+registration and scheduling are separate from this runner input.
+
 ```
 bootstrap → policy → gates → review → lead disposition → [remediate → gates → verify] → authorize/merge → telemetry
 ```

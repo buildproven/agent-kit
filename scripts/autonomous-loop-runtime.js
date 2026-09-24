@@ -636,10 +636,22 @@ function freshLaunch(options, environment = process.env) {
   return { launched: true, handoff, targetDir, workflow };
 }
 
-function runCli() {
+async function runCli() {
   const { command, options } = parseArguments(process.argv.slice(2));
   let result;
   switch (command) {
+    case "render-quality-wake":
+      result = require("./quality-wake").renderQualityWake(options);
+      break;
+    case "reconcile-quality":
+      result = await require("./quality-wake").reconcileQuality(options);
+      break;
+    case "register-quality":
+      result = require("./quality-wake").registerQuality(
+        options,
+        path.join(runtimeDirectory(), "quality-wakes"),
+      );
+      break;
     case "admit":
       result = admit(options);
       break;
@@ -657,7 +669,7 @@ function runCli() {
       break;
     default:
       throw new RuntimeError(
-        "usage: autonomous-loop-runtime.js admit|release|repair|context-break|fresh-launch [--option value]",
+        "usage: autonomous-loop-runtime.js admit|release|repair|context-break|fresh-launch|register-quality|reconcile-quality|render-quality-wake [--option value]",
         "INVALID_COMMAND",
       );
   }
@@ -665,16 +677,14 @@ function runCli() {
 }
 
 if (require.main === module) {
-  try {
-    runCli();
-  } catch (error) {
+  runCli().catch((error) => {
     const code =
       error instanceof RuntimeError ? error.code : "UNEXPECTED_ERROR";
     process.stderr.write(
       `${JSON.stringify({ ok: false, code, error: error.message })}\n`,
     );
     process.exitCode = 1;
-  }
+  });
 }
 
 module.exports = {

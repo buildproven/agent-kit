@@ -67,11 +67,12 @@ async function expectProcessToStop(
   }
 }
 
-function runWithLivenessDeadline(command, args, timeoutMs) {
+function runWithLivenessDeadline(command, args, timeoutMs, environment = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...environment },
     });
     let stdout = "";
     let stderr = "";
@@ -504,11 +505,21 @@ describe("provider review runtime", () => {
     );
   });
 
-  it("kills the provider tree when the wrapper itself is cancelled", async () => {
-    const dir = makeTempDir("bounded-cancel-");
-    const pidFile = path.join(dir, "child.pid");
-    const startFile = path.join(dir, "child.start");
-    const script = `
+  it.each([false, true])(
+    "kills the provider tree when the wrapper itself is cancelled (publication delay=%s)",
+    async (publicationDelay) => {
+      const dir = makeTempDir("bounded-cancel-");
+      const pidFile = path.join(dir, "child.pid");
+      const startFile = path.join(dir, "child.start");
+      const bashEnv = path.join(dir, "bash-env");
+      writeFileSync(
+        bashEnv,
+        `case "$0" in */quality-run-bounded.sh)
+set -T
+trap 'if [[ "$BASH_COMMAND" == CHILD_PID=* ]]; then sleep 0.3; fi' DEBUG
+;; esac\n`,
+      );
+      const script = `
 "$1" --timeout 20 -- bash -c 'trap "" TERM; echo $$ > "$1"; while :; do sleep 1; done' child "$2" &
 wrapper=$!
 while [ ! -s "$2" ]; do sleep 0.05; done
@@ -517,21 +528,38 @@ ps -o lstart= -p "$child" | sed 's/[[:space:]]*$//' > "$3"
 kill -TERM "$wrapper"
 wait "$wrapper" 2>/dev/null || true
 `;
-    const result = await runWithLivenessDeadline(
-      "bash",
-      ["-c", script, "cancel", BOUNDED, pidFile, startFile],
-      10000,
-    );
-    expect(result.code, result.stderr).toBe(0);
-    // Cancellation must wait for the wrapper's TERM/KILL escalation and the
-    // runner's process reaper. A child that survives is an infinite loop, so
-    // this remains a hard liveness bound rather than a timing exemption.
-    await expectProcessToStop(
-      Number(readFileSync(pidFile, "utf8").trim()),
-      10000,
-      readFileSync(startFile, "utf8").trim(),
-    );
-  });
+      let result;
+      try {
+        result = await runWithLivenessDeadline(
+          "bash",
+          ["-c", script, "cancel", BOUNDED, pidFile, startFile],
+          10000,
+          publicationDelay ? { BASH_ENV: bashEnv } : {},
+        );
+        expect(result.code, result.stderr).toBe(0);
+        await expectProcessToStop(
+          Number(readFileSync(pidFile, "utf8").trim()),
+          10000,
+          readFileSync(startFile, "utf8").trim(),
+        );
+      } finally {
+        // A failed publication probe can leave the fixture payload outside the
+        // test driver's group. Signal only that exact captured process identity.
+        if (existsSync(pidFile) && existsSync(startFile)) {
+          const pid = Number(readFileSync(pidFile, "utf8").trim());
+          const expected = readFileSync(startFile, "utf8").trim();
+          if (expected && processStart(pid) === expected) {
+            const args = spawnSync(
+              "ps",
+              ["-o", "command=", "-p", String(pid)],
+              { encoding: "utf8" },
+            ).stdout;
+            if (args.includes(pidFile)) process.kill(pid, "SIGKILL");
+          }
+        }
+      }
+    },
+  );
 
   it("does not name active state by Claude or Codex session IDs", () => {
     const source = spawnSync("cat", [LOAD_ROOT], { encoding: "utf8" }).stdout;
