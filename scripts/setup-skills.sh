@@ -2,7 +2,7 @@
 # =============================================================================
 # Setup Claude Code Skills - Official Anthropic Office Skills
 # =============================================================================
-# Part of claude-kit - portable Claude Code configuration
+# Part of agent-kit - portable Claude Code configuration
 #
 # Usage:
 #   ./scripts/setup-skills.sh           # Install all recommended skills

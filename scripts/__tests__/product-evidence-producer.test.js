@@ -12,7 +12,7 @@ import path from "node:path";
 import { verifyReceipt } from "../product-evidence.js";
 import { produce } from "../product-evidence-producer.js";
 
-const REPOSITORY = "buildproven/claude-kit";
+const REPOSITORY = "buildproven/agent-kit";
 const REPOSITORY_ID = "123456";
 const HEAD = "a".repeat(40);
 

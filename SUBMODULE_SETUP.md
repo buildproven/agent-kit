@@ -16,7 +16,7 @@ This approach creates a **single source of truth** that works in Web UI, CLI, an
 
 ```bash
 # Run the install script
-bash <(curl -sL https://raw.githubusercontent.com/buildproven/claude-kit/main/scripts/install-via-submodule.sh)
+bash <(curl -sL https://raw.githubusercontent.com/buildproven/agent-kit/main/scripts/install-via-submodule.sh)
 
 # Commit and push
 git commit -m "Add Claude commands via submodule"
@@ -29,7 +29,7 @@ That's it! Commands now work everywhere.
 
 ```
 your-repo/
-├── .claude-kit/                ← Submodule (claude-kit repo)
+├── .agent-kit/                ← Submodule (agent-kit repo)
 │   ├── commands/
 │   │   ├── bs/
 │   │   ├── gh/
@@ -39,10 +39,10 @@ your-repo/
 │   └── skills/
 │
 ├── .claude/                    ← Symlinks to submodule
-│   ├── commands → ../.claude-kit/commands
-│   ├── CLAUDE.md → ../.claude-kit/config/CLAUDE.md
-│   ├── scripts → ../.claude-kit/scripts
-│   └── skills → ../.claude-kit/skills
+│   ├── commands → ../.agent-kit/commands
+│   ├── CLAUDE.md → ../.agent-kit/config/CLAUDE.md
+│   ├── scripts → ../.agent-kit/scripts
+│   └── skills → ../.agent-kit/skills
 │
 └── .gitmodules                 ← Git submodule config
 ```
@@ -55,10 +55,10 @@ your-repo/
 git clone your-repo
 cd your-repo
 
-# Initialize submodules (brings in claude-kit)
+# Initialize submodules (brings in agent-kit)
 git submodule update --init --recursive
 
-# Symlinks now work! .claude/commands points to .claude-kit/commands
+# Symlinks now work! .claude/commands points to .agent-kit/commands
 # Try: /bs:help
 ```
 
@@ -84,12 +84,12 @@ git submodule update --init --recursive
 ### Pull Latest Commands
 
 ```bash
-cd .claude-kit
+cd .agent-kit
 git pull origin main
 cd ..
 
 # Commit the submodule update
-git add .claude-kit
+git add .agent-kit
 git commit -m "Update Claude commands to latest"
 git push
 ```
@@ -97,19 +97,19 @@ git push
 ### Edit Commands Directly
 
 ```bash
-cd .claude-kit
+cd .agent-kit
 
 # Make changes to commands
 vim commands/bs/dev.md
 
-# Commit to claude-kit
+# Commit to agent-kit
 git add commands/bs/dev.md
 git commit -m "Update bs:dev command"
 git push
 
 # Back to main repo, update submodule reference
 cd ..
-git add .claude-kit
+git add .agent-kit
 git commit -m "Update Claude commands"
 git push
 ```
@@ -118,7 +118,7 @@ git push
 
 ✅ **Single Source of Truth**
 
-- All repos use the same claude-kit
+- All repos use the same agent-kit
 - Update once, applies everywhere
 
 ✅ **Works Everywhere**
@@ -145,7 +145,7 @@ git push
 
 ```bash
 cd new-repo
-bash <(curl -sL https://raw.githubusercontent.com/buildproven/claude-kit/main/scripts/install-via-submodule.sh)
+bash <(curl -sL https://raw.githubusercontent.com/buildproven/agent-kit/main/scripts/install-via-submodule.sh)
 git commit -m "Add Claude commands via submodule"
 git push
 ```
@@ -154,8 +154,8 @@ git push
 
 ```bash
 # In each repo:
-cd .claude-kit && git pull && cd ..
-git add .claude-kit
+cd .agent-kit && git pull && cd ..
+git add .agent-kit
 git commit -m "Update commands"
 git push
 ```
@@ -163,8 +163,8 @@ git push
 ### Remove Commands from Repo
 
 ```bash
-git submodule deinit .claude-kit
-git rm .claude-kit
+git submodule deinit .agent-kit
+git rm .agent-kit
 rm -rf .claude
 git commit -m "Remove Claude commands"
 ```
@@ -172,10 +172,10 @@ git commit -m "Remove Claude commands"
 ### Use Different Version of Commands
 
 ```bash
-cd .claude-kit
+cd .agent-kit
 git checkout v1.0.0  # or specific commit
 cd ..
-git add .claude-kit
+git add .agent-kit
 git commit -m "Pin commands to v1.0.0"
 ```
 
@@ -189,7 +189,7 @@ git submodule update --init --recursive
 
 # Verify symlink
 ls -la .claude/commands
-# Should show: commands -> ../.claude-kit/commands
+# Should show: commands -> ../.agent-kit/commands
 
 # Check submodule status
 git submodule status
@@ -211,7 +211,7 @@ git submodule update --init --recursive --force
 ```bash
 # Remove and recreate
 rm .claude/commands
-ln -s ../.claude-kit/commands .claude/commands
+ln -s ../.agent-kit/commands .claude/commands
 git add .claude/commands
 git commit -m "Fix commands symlink"
 ```
@@ -228,7 +228,7 @@ A: Yes! Edit `.gitmodules` to specify branch.
 A: Create `.claude/commands-local/` for repo-specific commands.
 
 **Q: Does this work with private repos?**
-A: Yes, as long as you have access to claude-kit.
+A: Yes, as long as you have access to agent-kit.
 
 **Q: Can I use this with the CLI setup too?**
 A: Yes! They work together. CLI uses `~/.claude/`, submodule works in repos.
@@ -238,8 +238,8 @@ A: Yes! They work together. CLI uses `~/.claude/`, submodule works in repos.
 Set your own repo URL:
 
 ```bash
-export CLAUDE_KIT_REPO="https://github.com/buildproven/your-claude-kit.git"
-bash <(curl -sL https://raw.githubusercontent.com/buildproven/claude-kit/main/scripts/install-via-submodule.sh)
+export AGENT_KIT_REPO="https://github.com/buildproven/your-agent-kit.git"
+bash <(curl -sL https://raw.githubusercontent.com/buildproven/agent-kit/main/scripts/install-via-submodule.sh)
 ```
 
 Or edit the script to change the default.

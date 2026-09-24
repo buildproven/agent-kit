@@ -1,14 +1,14 @@
 {
   "name": "bs",
-  "displayName": "claude-kit",
+  "displayName": "agent-kit",
   "version": "4.15.0",
   "description": "Quality automation, autonomous backlog execution, multi-LLM strategy panels, and fleet auditing. Free and open source.",
   "author": {
     "name": "buildproven",
     "url": "https://github.com/buildproven"
   },
-  "homepage": "https://github.com/buildproven/claude-kit",
-  "repository": "https://github.com/buildproven/claude-kit",
+  "homepage": "https://github.com/buildproven/agent-kit",
+  "repository": "https://github.com/buildproven/agent-kit",
   "license": "MIT AND Apache-2.0",
   "keywords": [
     "quality",

@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 KIT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+# shellcheck source=../lib/state-dir-name.sh
+source "$SCRIPT_DIR/../lib/state-dir-name.sh"
 CONFIG="${BS_FLEET_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/buildproven/fleet.json}"
 MODE="audit"
 MAX_REPOS=10
@@ -25,7 +27,8 @@ done
 [ -f "$CONFIG" ] || { echo "fleet config missing: $CONFIG" >&2; exit 2; }
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/buildproven/steward"
-BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-dispatch"
+STEWARD_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+BUILDER_STATE_DIR="$STEWARD_STATE_HOME/$(state_dir_name "$STEWARD_STATE_HOME")/builder-dispatch"
 mkdir -p "$STATE_DIR"
 DISCOVERY="$STATE_DIR/active-repos.json"
 SUMMARY="$STATE_DIR/latest.json"

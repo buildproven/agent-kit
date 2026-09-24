@@ -168,7 +168,7 @@ describe("quality runtime planning", () => {
     );
   });
 
-  it("BUI-822: funds claude-kit's measured native test gate", () => {
+  it("BUI-822: funds agent-kit's measured native test gate", () => {
     const harnessConfig = JSON.parse(
       fs.readFileSync(path.join(__dirname, "..", "..", "harness-config.json")),
     );

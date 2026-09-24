@@ -673,9 +673,9 @@ record_metrics() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     local metrics_script="$script_dir/pattern-metrics.sh"
 
-    # Also check claude-kit location
+    # Also check agent-kit location
     if [[ ! -f "$metrics_script" ]]; then
-        metrics_script="${SETUP_REPO:-$HOME/Projects/claude-kit}/scripts/pattern-metrics.sh"
+        metrics_script="${SETUP_REPO:-$HOME/Projects/agent-kit}/scripts/pattern-metrics.sh"
     fi
 
     if [[ ! -f "$metrics_script" ]] || [[ ! -x "$metrics_script" ]]; then

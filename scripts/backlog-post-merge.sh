@@ -2,7 +2,7 @@
 # backlog-post-merge.sh - Close every Linear issue cited by a merged change.
 #
 # Run manually or from a local post-merge hook when native Linear integration is
-# unavailable. The hosted claude-kit repository uses Linear's native GitHub
+# unavailable. The hosted agent-kit repository uses Linear's native GitHub
 # integration and explicit `Closes TEAM-123` statements in pull request bodies.
 
 set -euo pipefail

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Inlined rather than sourced from lib/state-dir-name.sh: this script is
+# tested by copying its content standalone into synthetic harness dirs
+# without its siblings, so it must not depend on another repo file at runtime.
+state_dir_name() {
+  local parent_dir="$1"
+  if [ -d "$parent_dir/agent-kit" ] || [ ! -d "$parent_dir/claude-kit" ]; then
+    echo "agent-kit"
+  else
+    echo "claude-kit"
+  fi
+}
 MANIFEST=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -117,7 +128,8 @@ fi
 # without requiring each shell to source a secret-bearing dotfile.
 if [ -z "${QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY:-}" ] && \
   [ -z "${QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY_FILE:-}" ]; then
-  DEFAULT_REVIEW_EVIDENCE_KEY="${XDG_CONFIG_HOME:-$HOME/.config}/claude-kit/quality-review-evidence.key"
+  REVIEW_EVIDENCE_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  DEFAULT_REVIEW_EVIDENCE_KEY="$REVIEW_EVIDENCE_CONFIG_HOME/$(state_dir_name "$REVIEW_EVIDENCE_CONFIG_HOME")/quality-review-evidence.key"
   if [ -r "$DEFAULT_REVIEW_EVIDENCE_KEY" ]; then
     export QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY_FILE="$DEFAULT_REVIEW_EVIDENCE_KEY"
   fi

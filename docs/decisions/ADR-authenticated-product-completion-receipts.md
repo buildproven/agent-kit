@@ -19,9 +19,9 @@ environment or deployment identity, and artifact digest. The admission
 verifier uses a trusted installed verifier, schema, and Ed25519 public key from
 a system-owned absolute
 trust-root file:
-`/Library/Application Support/claude-kit/product-evidence-public-key` on macOS,
-`/etc/claude-kit/product-evidence-public-key` on Linux, and
-`C:\ProgramData\claude-kit\product-evidence-public-key` on Windows. Unsupported
+`/Library/Application Support/agent-kit/product-evidence-public-key` on macOS,
+`/etc/agent-kit/product-evidence-public-key` on Linux, and
+`C:\ProgramData\agent-kit\product-evidence-public-key` on Windows. Unsupported
 platforms fail closed. A repository path, command option, home directory, or
 environment variable cannot replace that key.
 

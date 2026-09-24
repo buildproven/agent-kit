@@ -9396,7 +9396,7 @@ exit 1
   });
 
   it("does not require mypy for a JS/TS-first repo whose diff never touches .py (BUI-467)", () => {
-    // Reproduces the claude-kit real-world shape: pyproject.toml declares
+    // Reproduces the agent-kit real-world shape: pyproject.toml declares
     // [tool.mypy] for a handful of scripts/ .py files (committed on the
     // base branch), but a given PR's diff never touches any .py file. mypy
     // must not become a required, blocking gate for that PR — it's an

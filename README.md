@@ -1,4 +1,4 @@
-# claude-kit
+# agent-kit
 
 **A Claude Code + Codex toolkit whose quality gate reads your diff, scores its risk, and
 scales its own review depth to match.**
@@ -88,7 +88,7 @@ are skipped — everything else works.
 Install as a Claude Code plugin:
 
 ```
-/plugin marketplace add buildproven/claude-kit
+/plugin marketplace add buildproven/agent-kit
 /plugin install bs@buildproven
 ```
 
@@ -112,8 +112,8 @@ enforced by Claude Code, not a naming convention:
 <summary>Legacy install (symlinks) — still works, not recommended</summary>
 
 ```bash
-git clone https://github.com/buildproven/claude-kit.git ~/Projects/claude-kit
-cd ~/Projects/claude-kit
+git clone https://github.com/buildproven/agent-kit.git ~/Projects/agent-kit
+cd ~/Projects/agent-kit
 ./install.sh
 ```
 

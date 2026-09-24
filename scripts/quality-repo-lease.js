@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync, spawnSync } = require("child_process");
+const { resolveStateDirName } = require("./state-dir-name.js");
 
 const SCHEMA_VERSION = 1;
 const PR_SCOPE = "pull-request-v2";
@@ -59,11 +60,10 @@ function accountHome() {
 }
 
 function stateRoot() {
+  const stateHome = path.join(accountHome(), ".local", "state");
   const root = path.join(
-    accountHome(),
-    ".local",
-    "state",
-    "claude-kit",
+    stateHome,
+    resolveStateDirName(stateHome),
     "repository-leases",
   );
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });

@@ -2,7 +2,7 @@
 # Wrapper script to run Perplexity MCP server with env from central .env file
 
 # Load environment variables from central .env
-ENV_FILE="$HOME/Projects/claude-kit/.env"
+ENV_FILE="$HOME/Projects/agent-kit/.env"
 
 if [ -f "$ENV_FILE" ]; then
   # Export the Perplexity API key

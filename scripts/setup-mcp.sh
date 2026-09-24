@@ -2,7 +2,7 @@
 # =============================================================================
 # Setup MCP Servers - High-Priority Claude Code Extensions
 # =============================================================================
-# Part of claude-kit - portable Claude Code configuration
+# Part of agent-kit - portable Claude Code configuration
 #
 # Usage:
 #   ./scripts/setup-mcp.sh           # Install all recommended MCPs

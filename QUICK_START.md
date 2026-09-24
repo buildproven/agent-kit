@@ -2,14 +2,14 @@
 
 Use this guide to add the `/bs:*` commands to any repository.
 
-> **Prefer the plugin.** For most people, `/plugin marketplace add buildproven/claude-kit`
+> **Prefer the plugin.** For most people, `/plugin marketplace add buildproven/agent-kit`
 > then `/plugin install bs@buildproven` is simpler than the submodule flow below.
 > Use this guide when you want the commands vendored into a specific repo (so
 > teammates and the Web UI pick them up automatically).
 
 ## Prerequisites
 
-Git, and a repo you can push to. claude-kit is a public MIT repo, so cloning it
+Git, and a repo you can push to. agent-kit is a public MIT repo, so cloning it
 needs no credentials.
 
 ## Add Commands to a New Repo
@@ -20,14 +20,14 @@ needs no credentials.
 # 1. Navigate to your repo
 cd /path/to/your-repo
 
-# 2. Add claude-kit as a submodule
-git submodule add https://github.com/buildproven/claude-kit.git .claude-kit
+# 2. Add agent-kit as a submodule
+git submodule add https://github.com/buildproven/agent-kit.git .agent-kit
 
 # 3. Create symlinks
 mkdir -p .claude
-ln -s ../.claude-kit/commands .claude/commands
-ln -s ../.claude-kit/scripts .claude/scripts
-ln -s ../.claude-kit/skills .claude/skills
+ln -s ../.agent-kit/commands .claude/commands
+ln -s ../.agent-kit/scripts .claude/scripts
+ln -s ../.agent-kit/skills .claude/skills
 
 # NOTE: Do NOT symlink CLAUDE.md - each repo should have its own
 
@@ -35,7 +35,7 @@ ln -s ../.claude-kit/skills .claude/skills
 ls -la .claude/commands/bs/
 
 # 5. Commit and push
-git add .gitmodules .claude-kit .claude
+git add .gitmodules .agent-kit .claude
 git commit -m "Add Claude commands via submodule"
 git push
 ```
@@ -58,15 +58,15 @@ Open the repo in Claude Code Web UI and try `/bs:help`
 
 ## Update Commands in All Repos
 
-When you update claude-kit:
+When you update agent-kit:
 
 ```bash
 # In any repo using the submodule
 cd your-repo
-cd .claude-kit
+cd .agent-kit
 git pull origin main
 cd ..
-git add .claude-kit
+git add .agent-kit
 git commit -m "Update Claude commands"
 git push
 ```
@@ -83,26 +83,26 @@ git submodule update --init --recursive
 
 ```bash
 ls -la .claude/
-# Should show symlinks pointing to ../.claude-kit/
+# Should show symlinks pointing to ../.agent-kit/
 ```
 
 **Commands not showing in Web UI?**
 
 - Make sure you pushed the commit to GitHub
 - Close and reopen the repo in Web UI
-- Check that submodule cloned: `ls .claude-kit/`
+- Check that submodule cloned: `ls .agent-kit/`
 
 ## One-Liner (Copy-Paste)
 
 ```bash
-git submodule add https://github.com/buildproven/claude-kit.git .claude-kit && mkdir -p .claude && ln -s ../.claude-kit/commands .claude/commands && ln -s ../.claude-kit/scripts .claude/scripts && ln -s ../.claude-kit/skills .claude/skills && git add .gitmodules .claude-kit .claude && git commit -m "Add Claude commands via submodule" && git push
+git submodule add https://github.com/buildproven/agent-kit.git .agent-kit && mkdir -p .claude && ln -s ../.agent-kit/commands .claude/commands && ln -s ../.agent-kit/scripts .claude/scripts && ln -s ../.agent-kit/skills .claude/skills && git add .gitmodules .agent-kit .claude && git commit -m "Add Claude commands via submodule" && git push
 ```
 
 ## What Gets Added
 
 ```
 your-repo/
-├── .claude-kit/          # Submodule (claude-kit)
+├── .agent-kit/          # Submodule (agent-kit)
 │   ├── commands/
 │   ├── config/
 │   ├── scripts/
@@ -110,9 +110,9 @@ your-repo/
 │
 ├── .claude/
 │   ├── CLAUDE.md           # Repo-specific (DO NOT symlink)
-│   ├── commands → ../.claude-kit/commands
-│   ├── scripts → ../.claude-kit/scripts
-│   └── skills → ../.claude-kit/skills
+│   ├── commands → ../.agent-kit/commands
+│   ├── scripts → ../.agent-kit/scripts
+│   └── skills → ../.agent-kit/skills
 │
 └── .gitmodules             # Git submodule config
 ```

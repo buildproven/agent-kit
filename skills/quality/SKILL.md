@@ -367,7 +367,7 @@ complete-suite rates:
 
 ```bash
 node "$QUALITY_SCRIPTS_DIR/quality-telemetry-report.js" \
-  --input "$HOME/.local/state/claude-kit/quality-telemetry" \
+  --input "$HOME/.local/state/agent-kit/quality-telemetry" \
   --ci-snapshot /path/to/ci-budget-snapshot.json
 ```
 

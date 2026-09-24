@@ -21,7 +21,7 @@ missing=()
 
 # Check for pending steward findings
 steward_msg=""
-STATE_FILE="${SETUP_REPO:-$HOME/Projects/claude-kit}/data/steward-state.json"
+STATE_FILE="${SETUP_REPO:-$HOME/Projects/agent-kit}/data/steward-state.json"
 if [ -f "$STATE_FILE" ]; then
   steward_msg=$(python3 -c "
 import json

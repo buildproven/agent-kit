@@ -149,8 +149,8 @@ describe("overnight loop", () => {
         join(fx.bin, "curl"),
         `
       case "$*" in
-        *'query($identifier:'*) printf '%s' '{"data":{"issue":{"identifier":"BUI-42","state":{"name":"Backlog"},"project":{"name":"claude-kit"}}}}' ;;
-        *) printf '%s' '{"data":{"issues":{"nodes":[{"identifier":"BUI-42","priority":1,"project":{"name":"claude-kit"}}],"pageInfo":{"hasNextPage":false}}}}' ;;
+        *'query($identifier:'*) printf '%s' '{"data":{"issue":{"identifier":"BUI-42","state":{"name":"Backlog"},"project":{"name":"agent-kit"}}}}' ;;
+        *) printf '%s' '{"data":{"issues":{"nodes":[{"identifier":"BUI-42","priority":1,"project":{"name":"agent-kit"}}],"pageInfo":{"hasNextPage":false}}}}' ;;
       esac
     `,
       );
@@ -160,7 +160,7 @@ describe("overnight loop", () => {
           "-c",
           `
       test_loop="$2"
-      set -- --linear-project claude-kit --target-dir "$1" --max-hours 1
+      set -- --linear-project agent-kit --target-dir "$1" --max-hours 1
       OVERNIGHT_LOOP_LIB_ONLY=1 source "$test_loop"
       main
     `,
@@ -225,7 +225,7 @@ describe("overnight loop", () => {
   it("keeps default governed evidence outside the target worktree", () => {
     const fx = fixture();
     const stateHome = join(fx.root, "state");
-    const command = `set -- --linear-project claude-setup --target-dir '${fx.target}'; OVERNIGHT_LOOP_LIB_ONLY=1 source '${loop}'; printf '%s\n' "$LOG_DIR"`;
+    const command = `set -- --linear-project agent-setup --target-dir '${fx.target}'; OVERNIGHT_LOOP_LIB_ONLY=1 source '${loop}'; printf '%s\n' "$LOG_DIR"`;
     const logDir = execFileSync("bash", ["-c", command], {
       encoding: "utf8",
       env: {
@@ -259,14 +259,14 @@ describe("overnight loop", () => {
     const requestLog = join(fx.root, "curl-request.txt");
     executable(
       join(fx.bin, "curl"),
-      `printf '%s\\n' "$*" > '${requestLog}'\nprintf '%s' '{"data":{"issues":{"nodes":[{"identifier":"BUI-42","priority":1,"createdAt":"2026-01-01","project":{"name":"claude-setup"}},{"identifier":"OTHER-1","priority":1,"createdAt":"2025-01-01","project":{"name":"other"}}]}}}'`,
+      `printf '%s\\n' "$*" > '${requestLog}'\nprintf '%s' '{"data":{"issues":{"nodes":[{"identifier":"BUI-42","priority":1,"createdAt":"2026-01-01","project":{"name":"agent-setup"}},{"identifier":"OTHER-1","priority":1,"createdAt":"2025-01-01","project":{"name":"other"}}]}}}'`,
     );
     const result = spawnSync(
       "bash",
       [
         loop,
         "--linear-project",
-        "claude-setup",
+        "agent-setup",
         "--target-dir",
         fx.target,
         "--dry-run",
@@ -290,10 +290,10 @@ describe("overnight loop", () => {
     expect(
       execFileSync(
         "grep",
-        ["-o", '\\"project\\": \\"claude-setup\\"', requestLog],
+        ["-o", '\\"project\\": \\"agent-setup\\"', requestLog],
         { encoding: "utf8" },
       ),
-    ).toContain("claude-setup");
+    ).toContain("agent-setup");
   });
 
   it("attributes completion to exactly one reviewed commit for the selected issue", () => {
@@ -328,7 +328,7 @@ describe("overnight loop", () => {
       cwd: fx.target,
       encoding: "utf8",
     }).trim();
-    const sourceAndCall = `issue_arg="$1"; set -- --linear-project claude-setup --target-dir '${fx.target}'; OVERNIGHT_LOOP_LIB_ONLY=1 source '${loop}'; issue_receipt '${before}' '${after}' "$issue_arg"`;
+    const sourceAndCall = `issue_arg="$1"; set -- --linear-project agent-setup --target-dir '${fx.target}'; OVERNIGHT_LOOP_LIB_ONLY=1 source '${loop}'; issue_receipt '${before}' '${after}' "$issue_arg"`;
 
     expect(
       execFileSync("bash", ["-c", sourceAndCall, "receipt-test", "BUI-42"], {

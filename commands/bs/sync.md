@@ -1,7 +1,7 @@
 ---
 name: bs:sync
 standalone: true
-description: "Check/repair Claude config symlinks (claude-kit → ~/.claude)"
+description: "Check/repair Claude config symlinks (agent-kit → ~/.claude)"
 argument-hint: "/bs:sync --mode check → verify symlinks | repair → fix broken"
 category: maintenance
 model: haiku
@@ -71,7 +71,7 @@ and skips rather than deleting your work.
 ## New Computer Setup
 
 ```bash
-git clone https://github.com/buildproven/claude-kit.git ~/Projects/claude-kit
-cd ~/Projects/claude-kit
+git clone https://github.com/buildproven/agent-kit.git ~/Projects/agent-kit
+cd ~/Projects/agent-kit
 ./install.sh
 ```

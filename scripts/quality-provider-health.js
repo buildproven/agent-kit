@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { resolveStateDirName } = require("./state-dir-name.js");
 
 const SCHEMA_VERSION = 1;
 const PROVIDERS = new Set(["claude", "codex", "gemini"]);
@@ -16,7 +17,11 @@ const PROBE_DELAYS_MS = {
 function defaultStateFile() {
   const stateHome =
     process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-  return path.join(stateHome, "claude-kit", "quality-provider-health.json");
+  return path.join(
+    stateHome,
+    resolveStateDirName(stateHome),
+    "quality-provider-health.json",
+  );
 }
 
 function validateProvider(provider) {

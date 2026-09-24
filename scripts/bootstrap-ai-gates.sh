@@ -14,11 +14,11 @@
 #
 # USAGE:
 #   cd ~/Projects/my-project
-#   bash ~/Projects/claude-kit/scripts/bootstrap-ai-gates.sh
+#   bash ~/Projects/agent-kit/scripts/bootstrap-ai-gates.sh
 #
 #   Or with options:
-#   bash ~/Projects/claude-kit/scripts/bootstrap-ai-gates.sh --dry-run
-#   bash ~/Projects/claude-kit/scripts/bootstrap-ai-gates.sh --skip-install
+#   bash ~/Projects/agent-kit/scripts/bootstrap-ai-gates.sh --dry-run
+#   bash ~/Projects/agent-kit/scripts/bootstrap-ai-gates.sh --skip-install
 #
 # IDEMPOTENT: Safe to run multiple times. Existing configs are preserved.
 # =============================================================================
@@ -33,7 +33,7 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Source directory (where claude-kit lives)
+# Source directory (where agent-kit lives)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_SETUP_DIR="$(dirname "$SCRIPT_DIR")"
 
@@ -78,7 +78,7 @@ if [[ ! -f "$TARGET_DIR/package.json" ]]; then
 fi
 
 if [[ "$TARGET_DIR" == "$CLAUDE_SETUP_DIR" ]]; then
-  log_err "Cannot bootstrap claude-kit itself (it already has all gates)"
+  log_err "Cannot bootstrap agent-kit itself (it already has all gates)"
   exit 1
 fi
 

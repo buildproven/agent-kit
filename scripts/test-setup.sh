@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CS-112: Setup Smoke Test Script
-# Verifies that claude-kit installation is complete and functional.
+# Verifies that agent-kit installation is complete and functional.
 # Run after install.sh or after system updates.
 #
 # CS-139: --ci flag for headless CI validation on Linux/Ubuntu.

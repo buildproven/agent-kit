@@ -101,8 +101,10 @@ done
 
 MCP_SYNC_PY="$(dirname "$SETUP_MCP_PARITY_REAL_PATH")/mcp-sync.py"
 MCP_CACHE_HELPER="$(dirname "$SETUP_MCP_PARITY_REAL_PATH")/mcp-parity-cache.py"
+# shellcheck source=lib/state-dir-name.sh
+source "$SETUP_MCP_PARITY_SCRIPTS_DIR/lib/state-dir-name.sh"
 MCP_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
-MCP_CACHE_DIR="$MCP_STATE_HOME/claude-kit"
+MCP_CACHE_DIR="$MCP_STATE_HOME/$(state_dir_name "$MCP_STATE_HOME")"
 MCP_PROFILE_KEY="$(printf '%s' "$PROFILE" | python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
 MCP_CACHE="$MCP_CACHE_DIR/mcp-parity-$MCP_PROFILE_KEY.json"
 MCP_CACHE_LOCK="$MCP_CACHE.lock"

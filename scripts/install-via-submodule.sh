@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# claude-kit submodule installer
-# Adds claude-kit as a submodule and wires up .claude/ symlinks
+# agent-kit submodule installer
+# Adds agent-kit as a submodule and wires up .claude/ symlinks
 # =============================================================================
 # Usage:
-#   bash <(curl -sL https://raw.githubusercontent.com/buildproven/claude-kit/main/scripts/install-via-submodule.sh)
+#   bash <(curl -sL https://raw.githubusercontent.com/buildproven/agent-kit/main/scripts/install-via-submodule.sh)
 #
 # Or locally:
-#   bash ~/Projects/claude-kit/scripts/install-via-submodule.sh
+#   bash ~/Projects/agent-kit/scripts/install-via-submodule.sh
 # =============================================================================
 
 set -euo pipefail
@@ -23,12 +23,16 @@ success() { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 error() { echo -e "${RED}✗${NC} $1"; exit 1; }
 
-CLAUDE_KIT_REPO="${CLAUDE_KIT_REPO:-https://github.com/buildproven/claude-kit.git}"
-SUBMODULE_PATH=".claude-kit"
+AGENT_KIT_REPO="${AGENT_KIT_REPO:-${CLAUDE_KIT_REPO:-https://github.com/buildproven/agent-kit.git}}"
+# Reuse an existing legacy submodule checkout in place rather than adding a
+# second one at the new path — .claude-kit only exists here if this installer
+# already ran against this repo under the old name.
+SUBMODULE_PATH=".agent-kit"
+[[ -d ".agent-kit" ]] || [[ ! -d ".claude-kit" ]] || SUBMODULE_PATH=".claude-kit"
 CLAUDE_DIR=".claude"
 
 echo ""
-echo "claude-kit submodule installer"
+echo "agent-kit submodule installer"
 echo "============================================================"
 echo ""
 
@@ -42,8 +46,8 @@ cd "$REPO_ROOT"
 
 # Add submodule if not already present
 if [[ ! -d "$SUBMODULE_PATH" ]]; then
-    log "Adding claude-kit as submodule at $SUBMODULE_PATH..."
-    git submodule add "$CLAUDE_KIT_REPO" "$SUBMODULE_PATH"
+    log "Adding agent-kit as submodule at $SUBMODULE_PATH..."
+    git submodule add "$AGENT_KIT_REPO" "$SUBMODULE_PATH"
     success "Submodule added"
 else
     log "$SUBMODULE_PATH already exists — updating..."
@@ -87,7 +91,7 @@ echo "============================================================"
 success "Done! Commit these changes to share with teammates:"
 echo ""
 echo "  git add .gitmodules $SUBMODULE_PATH $CLAUDE_DIR"
-echo "  git commit -m \"Add Claude commands via claude-kit submodule\""
+echo "  git commit -m \"Add Claude commands via agent-kit submodule\""
 echo "  git push"
 echo ""
 echo "Teammates run:  git submodule update --init --recursive"

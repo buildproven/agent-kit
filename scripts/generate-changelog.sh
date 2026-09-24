@@ -9,7 +9,7 @@
 #   ./scripts/generate-changelog.sh --dry-run          # Preview without writing (default)
 #
 # Requires: git, conventional commit messages (feat:, fix:, docs:, etc.)
-# Works in any repo with conventional commits — not specific to claude-kit.
+# Works in any repo with conventional commits — not specific to agent-kit.
 
 set -euo pipefail
 

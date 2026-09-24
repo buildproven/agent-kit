@@ -81,7 +81,7 @@ fi
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
       countFile,
     });
     if (result.status !== 0) {
@@ -102,7 +102,7 @@ echo "genuinely0different0000000000000000000"
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("after 3 attempts");
@@ -116,7 +116,7 @@ echo "matching000000000000000000000000000000"
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
     });
     expect(result.status).toBe(0);
     expect(result.stderr).not.toContain("retrying");
@@ -145,7 +145,7 @@ fi
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
       countFile,
     });
     if (result.status !== 0) {
@@ -172,7 +172,7 @@ echo "matching000000000000000000000000000000"
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
     });
     if (result.status !== 0) {
       console.error(result.stdout, result.stderr);
@@ -202,7 +202,7 @@ exit 1
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
       countFile,
     });
     expect(result.status).not.toBe(0);
@@ -227,7 +227,7 @@ exit 1
         bin,
         stampHead: "matching000000000000000000000000000000",
         pr: "42",
-        repository: "buildproven/claude-kit",
+        repository: "buildproven/agent-kit",
         env: { QUALITY_STAMP_PR_HEAD_RETRIES: value },
       });
       expect(result.status).not.toBe(0);
@@ -248,7 +248,7 @@ exit 1
         bin,
         stampHead: "matching000000000000000000000000000000",
         pr: "42",
-        repository: "buildproven/claude-kit",
+        repository: "buildproven/agent-kit",
         env: { QUALITY_STAMP_PR_HEAD_RETRY_DELAY: value },
       });
       expect(result.status).not.toBe(0);
@@ -281,7 +281,7 @@ fi
       bin,
       stampHead: "matching000000000000000000000000000000",
       pr: "42",
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
       countFile,
     });
     expect(result.status).toBe(0);
@@ -306,7 +306,7 @@ fi
       "#!/usr/bin/env bash",
       "set -euo pipefail",
       `PR=${JSON.stringify("42")}`,
-      `EXPECTED_REPOSITORY=${JSON.stringify("buildproven/claude-kit")}`,
+      `EXPECTED_REPOSITORY=${JSON.stringify("buildproven/agent-kit")}`,
       `STAMP_HEAD=${JSON.stringify("matching000000000000000000000000000000")}`,
       extractRetryLoop(),
       `echo "$PR_HEAD_ERR_FILE" > ${JSON.stringify(observeFile)}`,

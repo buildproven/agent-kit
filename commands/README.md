@@ -1,6 +1,6 @@
 ---
 name: README
-description: BS Commands — public command reference for claude-kit
+description: BS Commands — public command reference for agent-kit
 tags: [help, reference, overview]
 category: meta
 model: haiku
@@ -8,7 +8,7 @@ model: haiku
 
 # BS Commands
 
-Public command reference for the curated `claude-kit` surface.
+Public command reference for the curated `agent-kit` surface.
 
 Commands use prefixes: `/bs:` (workflow), `/gh:` (GitHub), `/cc:` (Claude Code), or no prefix (utilities).
 

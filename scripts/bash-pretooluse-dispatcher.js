@@ -37,7 +37,7 @@ const scriptDir = __dirname;
 const repositoryRoot = path.resolve(scriptDir, "..", "..");
 
 function resolveGuard(name) {
-  // A private claude-setup overlay may intentionally replace a kit guard.
+  // A private agent-setup overlay may intentionally replace a kit guard.
   // Prefer that overlay when this dispatcher is running from setup/core.
   const overlay = path.join(repositoryRoot, "scripts", name);
   if (

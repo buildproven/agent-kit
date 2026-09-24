@@ -1,13 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# claude-kit installer
+# agent-kit installer
 # =============================================================================
 # Usage:
-#   curl -sL https://raw.githubusercontent.com/buildproven/claude-kit/main/install.sh | bash
+#   curl -sL https://raw.githubusercontent.com/buildproven/agent-kit/main/install.sh | bash
 #
 # Or clone and run:
-#   git clone https://github.com/buildproven/claude-kit.git ~/Projects/claude-kit
-#   ~/Projects/claude-kit/install.sh
+#   git clone https://github.com/buildproven/agent-kit.git ~/Projects/agent-kit
+#   ~/Projects/agent-kit/install.sh
 # =============================================================================
 
 set -euo pipefail
@@ -21,19 +21,19 @@ log() { echo -e "${BLUE}→${NC} $1"; }
 success() { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 
-REPO_URL="https://github.com/buildproven/claude-kit.git"
-PROJECT_DIR="${CLAUDE_KIT_DIR:-$HOME/Projects/claude-kit}"
+REPO_URL="https://github.com/buildproven/agent-kit.git"
+PROJECT_DIR="${AGENT_KIT_DIR:-$HOME/Projects/agent-kit}"
 CLAUDE_DIR="$HOME/.claude"
 CODEX_DIR="$HOME/.codex"
 
 echo ""
-echo "claude-kit installer"
+echo "agent-kit installer"
 echo "============================================================"
 echo ""
 
 # Clone if not already present
 if [[ ! -d "$PROJECT_DIR" ]]; then
-    log "Cloning claude-kit..."
+    log "Cloning agent-kit..."
     mkdir -p "$(dirname "$PROJECT_DIR")"
     git clone "$REPO_URL" "$PROJECT_DIR"
     success "Cloned to $PROJECT_DIR"

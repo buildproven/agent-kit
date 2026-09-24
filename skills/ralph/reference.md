@@ -58,7 +58,7 @@ computer as described in `../../docs/provider-usage.md`. It prints only:
 
 The default gate refuses a new loop at 70% on any reported window, refuses a third
 loop across all repositories for the operator, and records only sanitized
-percentages/outcomes under `$XDG_STATE_HOME/claude-kit/autonomous-loops/`.
+percentages/outcomes under `$XDG_STATE_HOME/agent-kit/autonomous-loops/`.
 Never put account credentials, raw usage responses, or that telemetry in a
 repository.
 
@@ -75,7 +75,7 @@ receipt before the fresh worker starts. It binds the exact prompt and revision,
 then reserves the attempt from its campaign's shared 900-second wall budget:
 
 ```bash
-BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-dispatch"
+BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-kit/builder-dispatch"
 node "$SCRIPT_DIR/builder-dispatch.js" create \
   --receipt "$EVIDENCE_DIR/builder-receipt.json" \
   --request "$EVIDENCE_DIR/item-phase-request.json" \
@@ -158,8 +158,8 @@ EVIDENCE_DIR=".claude/ralph-next"
 ### Inline-backlog detection (auto)
 
 Before talking to Linear, check whether `$ARGUMENTS` contains an inline markdown list.
-The parser ships with claude-kit; resolve via several candidates so this works whether
-ralph is invoked from claude-kit (parser at `scripts/`) or a downstream consumer.
+The parser ships with agent-kit; resolve via several candidates so this works whether
+ralph is invoked from agent-kit (parser at `scripts/`) or a downstream consumer.
 
 ```bash
 resolve_parser() {
@@ -189,7 +189,7 @@ INLINE_IS_LIST=$(echo "$LIST_JSON" | jq -r '.isList')
 if [[ "$ARGUMENTS" == *"--inline"* ]]; then INLINE_IS_LIST=true; fi
 ```
 
-Detection rules (see `scripts/inline-list-parser.js` in claude-kit for the canonical
+Detection rules (see `scripts/inline-list-parser.js` in agent-kit for the canonical
 implementation and `scripts/__tests__/inline-list-parser.test.js` for tests):
 
 - Requires **2+** items. A single bullet is treated as a normal task description.

@@ -51,7 +51,7 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 # If we did not land in a real checkout, refuse — better than symlinking things
 # relative to a misresolved root.
 if [[ ! -f "$REPO_ROOT/config/settings.json" ]]; then
-  err "cannot locate the claude-kit checkout (resolved REPO_ROOT=$REPO_ROOT)"
+  err "cannot locate the agent-kit checkout (resolved REPO_ROOT=$REPO_ROOT)"
   exit 1
 fi
 
@@ -122,7 +122,7 @@ want_link() {
 }
 
 echo ""
-echo "claude-kit sync (${MODE})"
+echo "agent-kit sync (${MODE})"
 echo "  repo:   $REPO_ROOT"
 echo "  target: $CLAUDE_DIR"
 echo "------------------------------------------------------------"
@@ -223,7 +223,7 @@ fi
 
 echo "------------------------------------------------------------"
 if [[ $FAILURES -eq 0 ]]; then
-  success "claude-kit sync OK"
+  success "agent-kit sync OK"
   exit 0
 fi
 

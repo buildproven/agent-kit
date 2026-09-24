@@ -38,7 +38,7 @@ function commissioningWorkflow() {
 }
 
 const expected = {
-  repository: "buildproven/claude-kit",
+  repository: "buildproven/agent-kit",
   repositoryId: "123456",
   head: "a".repeat(40),
   requirementsDigest: "b".repeat(64),
@@ -448,7 +448,7 @@ describe("protected product workflow transport", () => {
               ...process.env,
               PAYLOAD: JSON.stringify(payload),
               REPOSITORY_ID: "123456",
-              GITHUB_REPOSITORY: "buildproven/claude-kit",
+              GITHUB_REPOSITORY: "buildproven/agent-kit",
             },
           },
         );
@@ -533,15 +533,15 @@ describe("protected product workflow transport", () => {
         candidate.name ===
         "Install fixed verifier trust root and create admission",
     );
-    expect(step?.run).toContain("sudo install -d -m 0755 /etc/claude-kit");
+    expect(step?.run).toContain("sudo install -d -m 0755 /etc/agent-kit");
     expect(step?.run).toContain(
-      "| sudo tee /etc/claude-kit/product-evidence-public-key >/dev/null",
+      "| sudo tee /etc/agent-kit/product-evidence-public-key >/dev/null",
     );
     expect(step?.run).toContain(
-      "sudo chmod 0644 /etc/claude-kit/product-evidence-public-key",
+      "sudo chmod 0644 /etc/agent-kit/product-evidence-public-key",
     );
     expect(step?.run).not.toContain(
-      "> /etc/claude-kit/product-evidence-public-key",
+      "> /etc/agent-kit/product-evidence-public-key",
     );
   });
 
@@ -600,7 +600,7 @@ describe("protected product workflow transport", () => {
             ...process.env,
             PRODUCT_EVIDENCE_PRIVATE_KEY: evidencePrivateMaterial,
             PRODUCT_ADMISSION_PRIVATE_KEY: admissionPrivateMaterial,
-            GITHUB_REPOSITORY: "buildproven/claude-kit",
+            GITHUB_REPOSITORY: "buildproven/agent-kit",
             GITHUB_REPOSITORY_ID: "1175614110",
             GITHUB_SHA: "a".repeat(40),
             GITHUB_RUN_ID: "101",
@@ -653,7 +653,7 @@ describe("protected product workflow transport", () => {
               .digest("hex"),
           },
         },
-        repository: "buildproven/claude-kit",
+        repository: "buildproven/agent-kit",
         repositoryId: "1175614110",
         workflowCommit: "a".repeat(40),
         runId: "101",

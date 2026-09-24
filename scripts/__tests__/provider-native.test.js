@@ -1211,7 +1211,7 @@ describe("provider-native platform", () => {
     const config = path.join(setup, "config");
     const bin = path.join(dir, "bin");
     const state = path.join(dir, "state");
-    const cacheDir = path.join(state, "claude-kit");
+    const cacheDir = path.join(state, "agent-kit");
     const defaultProfileKey = createHash("sha256")
       .update("default")
       .digest("hex");
@@ -1356,7 +1356,7 @@ describe("provider-native platform", () => {
     const config = path.join(setup, "config");
     const bin = path.join(dir, "bin");
     const state = path.join(dir, "state");
-    const cacheDir = path.join(state, "claude-kit");
+    const cacheDir = path.join(state, "agent-kit");
     const cache = path.join(cacheDir, "mcp-parity-default.json");
     mkdirSync(config, { recursive: true });
     mkdirSync(bin);

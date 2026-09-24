@@ -11,6 +11,7 @@ const {
   signDispatchAuthorization,
   signingKeyFromEnvironment,
 } = require("./quality-review-evidence.js");
+const { resolveStateDirName } = require("./state-dir-name.js");
 
 const ACCEPTED_CONCLUSIONS = new Set(["success"]);
 const MAX_HISTORICAL_CHECK_COMMITS = 3;
@@ -187,7 +188,8 @@ function dispatchClaimDirectory() {
   const stateHome =
     process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
   const directory =
-    configured || path.join(stateHome, "claude-kit", "dispatch-claims");
+    configured ||
+    path.join(stateHome, resolveStateDirName(stateHome), "dispatch-claims");
   if (!path.isAbsolute(directory))
     throw new Error("dispatch claim directory must be an absolute path");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

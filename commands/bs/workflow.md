@@ -36,7 +36,7 @@ drafted at the normal profile, then receives a bounded high-effort review before
 implementation; routine plans and reversible refactors stay on the normal
 medium-effort profile.
 
-Quick reference for the public `claude-kit` workflow.
+Quick reference for the public `agent-kit` workflow.
 
 ## Core loop
 
@@ -214,4 +214,4 @@ reader. Install CodexBar and sign in locally on each computer; see
 ## Notes
 
 - This public workflow stops at a clean PR and merge path.
-- Deployment, posting, product operations, and internal service workflows are intentionally out of scope for `claude-kit`.
+- Deployment, posting, product operations, and internal service workflows are intentionally out of scope for `agent-kit`.

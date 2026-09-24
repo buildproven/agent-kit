@@ -3,7 +3,7 @@
 ## Status
 
 Accepted for the quality-runtime simplification change. This decision applies
-to `claude-kit` and the `core/` submodule consumed by `claude-setup`.
+to `agent-kit` and the `core/` submodule consumed by `agent-setup`.
 
 ## Problem
 

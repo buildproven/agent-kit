@@ -115,7 +115,7 @@ of the target repository. It reserves from one 900-second campaign budget and
 binds the plan to the exact prompt and clean target revision:
 
 ```bash
-BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/claude-kit/builder-dispatch"
+BUILDER_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-kit/builder-dispatch"
 node ~/.claude/scripts/builder-dispatch.js create \
   --receipt /tmp/builder-receipt.json \
   --request phase-request.json \

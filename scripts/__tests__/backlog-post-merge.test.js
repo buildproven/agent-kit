@@ -100,7 +100,7 @@ describe("backlog-post-merge", () => {
       env: {
         ...process.env,
         CURL_LOG: fx.log,
-        GITHUB_REPOSITORY: "buildproven/claude-kit",
+        GITHUB_REPOSITORY: "buildproven/agent-kit",
         GITHUB_SHA: "deadbeef",
         LINEAR_API_KEY: "test-token",
         PATH: `${fx.bin}:${process.env.PATH}`,
@@ -160,7 +160,7 @@ describe("backlog-post-merge", () => {
       env: {
         ...process.env,
         CURL_LOG: fx.log,
-        GITHUB_REPOSITORY: "buildproven/claude-kit",
+        GITHUB_REPOSITORY: "buildproven/agent-kit",
         GITHUB_SHA: "deadbeef",
         LINEAR_API_KEY: "test-token",
         PATH: `${fx.bin}:${process.env.PATH}`,

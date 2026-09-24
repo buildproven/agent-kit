@@ -106,7 +106,7 @@ Add a repository-scoped merge lease to the public quality runtime.
    in one fixed per-operator namespace derived from the operating-system account
    record for the effective UID (Node `os.userInfo()`, not `HOME`,
    `XDG_STATE_HOME`, or another caller environment variable), plus
-   `.local/state/claude-kit/repository-leases`. `TMPDIR`, checkout location, and
+   `.local/state/agent-kit/repository-leases`. `TMPDIR`, checkout location, and
    caller environment cannot select another production namespace; canonical account home,
    owner UID, and directory modes are validated before use. A different invocation may
    reclaim automatically only from a final owner manifest. A six-hour-old

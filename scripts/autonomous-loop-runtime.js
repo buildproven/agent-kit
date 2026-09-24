@@ -38,8 +38,19 @@ function stateHome(environment = process.env) {
   );
 }
 
+// Inlined rather than imported from ./state-dir-name.js: some test fixtures
+// copy this file standalone into an isolated scripts/ dir without siblings,
+// so it must not depend on another repo file at runtime.
+function resolveStateDirName(parentDir, fsImpl = fs) {
+  if (fsImpl.existsSync(path.join(parentDir, "agent-kit"))) return "agent-kit";
+  if (fsImpl.existsSync(path.join(parentDir, "claude-kit")))
+    return "claude-kit";
+  return "agent-kit";
+}
+
 function runtimeDirectory(environment = process.env) {
-  return path.join(stateHome(environment), "claude-kit", "autonomous-loops");
+  const root = stateHome(environment);
+  return path.join(root, resolveStateDirName(root), "autonomous-loops");
 }
 
 function hash(value) {

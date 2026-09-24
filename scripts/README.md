@@ -1,6 +1,6 @@
 # scripts/
 
-Automation scripts for claude-kit. Most scripts are standalone — run directly or via GitHub Actions.
+Automation scripts for agent-kit. Most scripts are standalone — run directly or via GitHub Actions.
 
 ## Other scripts
 
