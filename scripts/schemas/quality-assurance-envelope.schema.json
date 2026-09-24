@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/buildproven/claude-kit/schemas/quality-assurance-envelope-v1.json",
+  "$id": "https://github.com/buildproven/agent-kit/schemas/quality-assurance-envelope-v1.json",
   "title": "Quality Assurance Envelope",
   "type": "object",
   "additionalProperties": false,

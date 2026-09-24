@@ -163,7 +163,7 @@ Add these sections to `config/CLAUDE.md`:
 Every fix (bug, lint error, test failure, CI error) must answer these:
 
 1. **Symptom vs Root Cause**: Is this fixing the broken thing, or fixing the thing that broke it?
-   - Example (Category A): Moving pattern-check.sh path is a symptom. Root cause: downstream repos hardcoded paths instead of dereferencing from `claude-kit/scripts/`.
+   - Example (Category A): Moving pattern-check.sh path is a symptom. Root cause: downstream repos hardcoded paths instead of dereferencing from `agent-kit/scripts/`.
    - If your answer is "symptom," STOP and find the root cause first.
 
 2. **Scope of Impact**: Could this issue exist in other repos/layers?
@@ -242,14 +242,14 @@ When you commit a `fix:` that addresses an issue:
 ````markdown
 ## Shared Config Management — Prevent Broken Refs
 
-**Pattern-check.sh incident**: This script moved from `claude-kit/bin/` to `claude-kit/scripts/`, breaking 15+ refs across repos.
+**Pattern-check.sh incident**: This script moved from `agent-kit/bin/` to `agent-kit/scripts/`, breaking 15+ refs across repos.
 
 **Policy**:
 
 - **Source of truth**: Always lives in the shared kit, never a downstream copy
 - **Downstream refs**: Use one of:
   - **Environment variable**: `export PATTERN_CHECK="$HOME/.claude/scripts/pattern-check.sh"` (resolves via install symlink)
-  - **Symlink**: In each repo, `ln -s ../claude-kit/scripts/pattern-check.sh ./bin/`
+  - **Symlink**: In each repo, `ln -s ../agent-kit/scripts/pattern-check.sh ./bin/`
   - **Script wrapper**: Never hardcode paths; call a shared function that resolves the path
 - **CI check**: Pre-commit hook must validate all refs to the shared kit resolve correctly
 
@@ -257,7 +257,7 @@ When you commit a `fix:` that addresses an issue:
 
 ```bash
 # Validate no hardcoded paths to the shared config repo
-if git diff --cached | grep -E "claude-kit/scripts|claude-kit/commands" | grep -v "\.sh:|export "; then
+if git diff --cached | grep -E "agent-kit/scripts|agent-kit/commands" | grep -v "\.sh:|export "; then
   echo "❌ Hardcoded path to the shared config repo detected. Use env var or symlink instead."
   exit 1
 fi

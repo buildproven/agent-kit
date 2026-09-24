@@ -100,7 +100,7 @@ describe("quality-review-check", () => {
       agentsSha256: "d".repeat(64),
       domain: "reliability",
       selectionRule: "reliability-domain",
-      repositoryKey: "buildproven/claude-kit",
+      repositoryKey: "buildproven/agent-kit",
       diffSha256: "e".repeat(64),
       evidenceSha256: "f".repeat(64),
     });
@@ -109,7 +109,7 @@ describe("quality-review-check", () => {
       contractVersion: 2,
       leads: 1,
       reviewStatus: "complete",
-      repositoryKey: "buildproven/claude-kit",
+      repositoryKey: "buildproven/agent-kit",
     });
   });
 
@@ -127,7 +127,7 @@ describe("quality-review-check", () => {
       agentsSha256: "d".repeat(64),
       domain: "operator-override",
       selectionRule: "operator-override",
-      repositoryKey: "buildproven/claude-kit",
+      repositoryKey: "buildproven/agent-kit",
       diffSha256: "e".repeat(64),
       evidenceSha256: "f".repeat(64),
       override: {
@@ -158,7 +158,7 @@ describe("quality-review-check", () => {
       agentsSha256: "d".repeat(64),
       domain: "reliability",
       selectionRule: "reliability-domain",
-      repositoryKey: "buildproven/claude-kit",
+      repositoryKey: "buildproven/agent-kit",
       diffSha256: "e".repeat(64),
       evidenceSha256: "f".repeat(64),
     });
@@ -168,11 +168,11 @@ describe("quality-review-check", () => {
       validateStandaloneEvidence(
         record,
         "a".repeat(40),
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
       ),
     ).toThrow(/base is stale/);
     expect(() =>
-      validateStandaloneEvidence(record, fields.base, "BuildProven/Claude-Kit"),
+      validateStandaloneEvidence(record, fields.base, "BuildProven/Agent-Kit"),
     ).not.toThrow();
     expect(() =>
       validateStandaloneEvidence(
@@ -181,7 +181,7 @@ describe("quality-review-check", () => {
           evidence: { ...record.evidence, reviewStatus: "incomplete" },
         },
         fields.base,
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
       ),
     ).toThrow(/complete review evidence/);
     expect(() =>
@@ -191,7 +191,7 @@ describe("quality-review-check", () => {
           evidence: { ...record.evidence, reviewStatus: "unexpected" },
         },
         fields.base,
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
       ),
     ).toThrow(/complete review evidence/);
   });
@@ -210,7 +210,7 @@ describe("quality-review-check", () => {
       agentsSha256: "d".repeat(64),
       domain: "operator-override",
       selectionRule: "operator-override",
-      repositoryKey: "buildproven/claude-kit",
+      repositoryKey: "buildproven/agent-kit",
       diffSha256: "e".repeat(64),
       evidenceSha256: "f".repeat(64),
       override: {
@@ -226,7 +226,7 @@ describe("quality-review-check", () => {
     const record = recordForFields(fields, "signature");
 
     expect(() =>
-      validateStandaloneEvidence(record, fields.base, "buildproven/claude-kit"),
+      validateStandaloneEvidence(record, fields.base, "buildproven/agent-kit"),
     ).not.toThrow();
     expect(() =>
       validateStandaloneEvidence(
@@ -239,7 +239,7 @@ describe("quality-review-check", () => {
           },
         },
         fields.base,
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
       ),
     ).toThrow(/complete review evidence/);
   });
@@ -254,7 +254,7 @@ describe("quality-review-check", () => {
       agentsSha256: "d".repeat(64),
       domain: "reliability",
       selectionRule: "reliability-domain",
-      repositoryKey: "buildproven/claude-kit",
+      repositoryKey: "buildproven/agent-kit",
       diffSha256: "e".repeat(64),
       evidenceSha256: "f".repeat(64),
     });
@@ -272,7 +272,7 @@ describe("quality-review-check", () => {
       validateStandaloneEvidence(
         record,
         record.evidence.base,
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
       ),
     ).toThrow(/repository-bound v2 evidence/);
   });
@@ -290,7 +290,7 @@ describe("quality-review-check", () => {
   it("omits create-only head_sha when updating an existing check run", () => {
     const record = recordForFields(evidenceFields(authorization), "signature");
     const common = {
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
       pullRequest: 313,
       head: authorization.head,
       authorization,
@@ -308,13 +308,13 @@ describe("quality-review-check", () => {
   it("maps hyphenated verifier CLI options to verify parameters", () => {
     expect(
       verifyOptions({
-        repository: "buildproven/claude-kit",
+        repository: "buildproven/agent-kit",
         head: "a".repeat(40),
         "required-tier": "critical",
         base: "origin/main",
       }),
     ).toEqual({
-      repository: "buildproven/claude-kit",
+      repository: "buildproven/agent-kit",
       head: "a".repeat(40),
       requiredTier: "critical",
       manifestPath: undefined,

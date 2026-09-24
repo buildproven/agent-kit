@@ -28,7 +28,7 @@ REFLECT → DECIDE`; `INIT`, `BLOCK`, `SPLIT`, and `SPECULATE` are explicit
   the long-lived loop's owner PID and `--provider codex|claude` matching the
   executing provider. The bundled adapter queries CodexBar; see
   `../../docs/provider-usage.md` for per-computer setup. Never expose credentials or raw usage data;
-  state belongs under `$XDG_STATE_HOME/claude-kit/autonomous-loops/`.
+  state belongs under `$XDG_STATE_HOME/agent-kit/autonomous-loops/`.
 - Each item gets a fresh provider process and an isolated feature branch or
   worktree. Inline items are ephemeral and never update Linear.
 - `QUALITY` is mandatory before a Linear item can be completed. Run one

@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { execFileSync } = require("node:child_process");
+const { resolveStateDirName } = require("./state-dir-name.js");
 const {
   parse: parseJsonc,
   printParseErrorCode,
@@ -2069,13 +2070,15 @@ async function inspectDependencies(root) {
 }
 
 function telemetryFile(env = process.env) {
-  return (
-    env.BS_QUALITY_PREFLIGHT_TELEMETRY_FILE ||
-    path.join(
-      env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
-      "claude-kit",
-      "quality-preflight.jsonl",
-    )
+  if (env.BS_QUALITY_PREFLIGHT_TELEMETRY_FILE) {
+    return env.BS_QUALITY_PREFLIGHT_TELEMETRY_FILE;
+  }
+  const stateHome =
+    env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
+  return path.join(
+    stateHome,
+    resolveStateDirName(stateHome),
+    "quality-preflight.jsonl",
   );
 }
 

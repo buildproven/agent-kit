@@ -99,10 +99,10 @@ describe("CI budget admission", () => {
 
   it("reserves exit 2 for a valid billing-policy denial", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ci-budget-denial-"));
-    const policyPath = path.join(root, "claude-kit", "ci-budget-policy.json");
+    const policyPath = path.join(root, "agent-kit", "ci-budget-policy.json");
     const snapshotPath = path.join(
       root,
-      "claude-kit",
+      "agent-kit",
       "ci-budget",
       "snapshot.json",
     );
@@ -136,7 +136,7 @@ describe("CI budget admission", () => {
 
   it("uses exit 1 for malformed policy instead of a recoverable denial", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ci-budget-error-"));
-    const policyPath = path.join(root, "claude-kit", "ci-budget-policy.json");
+    const policyPath = path.join(root, "agent-kit", "ci-budget-policy.json");
     try {
       fs.mkdirSync(path.dirname(policyPath), { recursive: true });
       fs.writeFileSync(policyPath, "not-json");

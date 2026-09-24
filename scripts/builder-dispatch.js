@@ -65,10 +65,20 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+// Inlined rather than imported from ./state-dir-name.js: some test fixtures
+// copy this file standalone into an isolated scripts/ dir without siblings,
+// so it must not depend on another repo file at runtime.
+function resolveStateDirName(parentDir, fsImpl = fs) {
+  if (fsImpl.existsSync(path.join(parentDir, "agent-kit"))) return "agent-kit";
+  if (fsImpl.existsSync(path.join(parentDir, "claude-kit")))
+    return "claude-kit";
+  return "agent-kit";
+}
+
 function stateDirectory(environment = process.env) {
   const root =
     environment.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-  return path.join(root, "claude-kit", "builder-dispatch");
+  return path.join(root, resolveStateDirName(root), "builder-dispatch");
 }
 
 function assertRequiredOptions(command, options) {

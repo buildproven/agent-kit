@@ -170,21 +170,21 @@ describe("repository-scoped product trust", () => {
     const root = trustedRoot(
       registry([
         repositoryRow(
-          "buildproven/claude-kit",
+          "buildproven/agent-kit",
           "1175614110",
           kit.producer.publicKey,
           kit.admission.publicKey,
         ),
         repositoryRow(
-          "buildproven/claude-setup",
+          "buildproven/agent-setup",
           "1073180710",
           setup.producer.publicKey,
           setup.admission.publicKey,
         ),
       ]),
     );
-    const kitExpected = expected("buildproven/claude-kit", "1175614110");
-    const setupExpected = expected("buildproven/claude-setup", "1073180710");
+    const kitExpected = expected("buildproven/agent-kit", "1175614110");
+    const setupExpected = expected("buildproven/agent-setup", "1073180710");
     const evidenceDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "product-evidence-"),
     );
@@ -249,14 +249,14 @@ describe("repository-scoped product trust", () => {
       value ??
         registry([
           repositoryRow(
-            "buildproven/claude-kit",
+            "buildproven/agent-kit",
             "1175614110",
             keys.publicKey,
             keys.publicKey,
           ),
         ]),
     );
-    const identity = expected("buildproven/claude-kit", "1175614110");
+    const identity = expected("buildproven/agent-kit", "1175614110");
     try {
       expect(() =>
         verifyAdmissionEnvelope(
@@ -273,7 +273,7 @@ describe("repository-scoped product trust", () => {
   it("rejects a non-canonical encoded public key", () => {
     const producer = crypto.generateKeyPairSync("ed25519");
     const admissionKey = crypto.generateKeyPairSync("ed25519");
-    const identity = expected("buildproven/claude-kit", "1175614110");
+    const identity = expected("buildproven/agent-kit", "1175614110");
     const row = repositoryRow(
       identity.repository,
       identity.repositoryId,
@@ -297,7 +297,7 @@ describe("repository-scoped product trust", () => {
 
   it("rejects unsafe ownership, symlinks, and replacement races", () => {
     const keys = crypto.generateKeyPairSync("ed25519");
-    const identity = expected("buildproven/claude-kit", "1175614110");
+    const identity = expected("buildproven/agent-kit", "1175614110");
     const value = registry([
       repositoryRow(
         identity.repository,
@@ -354,7 +354,7 @@ describe("repository-scoped product trust", () => {
 
   it("preserves injected-key legacy verification when no registry exists", () => {
     const keys = crypto.generateKeyPairSync("ed25519");
-    const identity = expected("buildproven/claude-kit", "1175614110");
+    const identity = expected("buildproven/agent-kit", "1175614110");
     expect(
       verifyAdmissionEnvelope(
         admission(keys.privateKey, keys.publicKey, identity),
@@ -366,7 +366,7 @@ describe("repository-scoped product trust", () => {
 
   it("preserves unpadded legacy singleton keys when no registry exists", () => {
     const keys = crypto.generateKeyPairSync("ed25519");
-    const identity = expected("buildproven/claude-kit", "1175614110");
+    const identity = expected("buildproven/agent-kit", "1175614110");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-trust-"));
     const trustRoot = path.join(dir, "product-admission-public-key");
     fs.writeFileSync(
@@ -404,7 +404,7 @@ describe("privileged product-trust installation", () => {
     const keys = crypto.generateKeyPairSync("ed25519");
     const value = registry([
       repositoryRow(
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
         "1175614110",
         keys.publicKey,
         crypto.generateKeyPairSync("ed25519").publicKey,
@@ -454,7 +454,7 @@ describe("privileged product-trust installation", () => {
     const second = crypto.generateKeyPairSync("ed25519");
     const value = registry([
       repositoryRow(
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
         "1175614110",
         first.publicKey,
         crypto.generateKeyPairSync("ed25519").publicKey,
@@ -462,7 +462,7 @@ describe("privileged product-trust installation", () => {
     ]);
     const replacement = registry([
       repositoryRow(
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
         "1175614110",
         second.publicKey,
         crypto.generateKeyPairSync("ed25519").publicKey,
@@ -509,7 +509,7 @@ describe("privileged product-trust installation", () => {
     const keys = crypto.generateKeyPairSync("ed25519");
     const value = registry([
       repositoryRow(
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
         "1175614110",
         keys.publicKey,
         crypto.generateKeyPairSync("ed25519").publicKey,
@@ -549,7 +549,7 @@ describe("privileged product-trust installation", () => {
         }),
       ).toThrow(/regular file/);
       opened = false;
-      const identity = expected("buildproven/claude-kit", "1175614110");
+      const identity = expected("buildproven/agent-kit", "1175614110");
       expect(() =>
         verifyAdmissionEnvelope(
           admission(keys.privateKey, keys.publicKey, identity),
@@ -574,13 +574,13 @@ describe("privileged product-trust installation", () => {
     const secondAdmission = crypto.generateKeyPairSync("ed25519");
     const full = registry([
       repositoryRow(
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
         "1175614110",
         first.publicKey,
         firstAdmission.publicKey,
       ),
       repositoryRow(
-        "buildproven/claude-setup",
+        "buildproven/agent-setup",
         "1073180710",
         second.publicKey,
         secondAdmission.publicKey,
@@ -588,7 +588,7 @@ describe("privileged product-trust installation", () => {
     ]);
     const reduced = registry([
       repositoryRow(
-        "buildproven/claude-kit",
+        "buildproven/agent-kit",
         "1175614110",
         first.publicKey,
         firstAdmission.publicKey,

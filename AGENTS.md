@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents (Claude Code, Codex, and other A
 
 ## What this repo is
 
-`claude-kit` is a **complete, standalone, free (MIT) Claude Code toolkit**. It ships commands, skills, agents, hooks, and setup scripts that get symlinked into `~/.claude/` (globally) or `.claude/` (per-project, typically via git submodule) — or installed as a Claude Code plugin. There is no runtime product — the artifacts here _are_ the product. Nothing is held back and there is no paid tier.
+`agent-kit` is a **complete, standalone, free (MIT) Claude Code toolkit**. It ships commands, skills, agents, hooks, and setup scripts that get symlinked into `~/.claude/` (globally) or `.claude/` (per-project, typically via git submodule) — or installed as a Claude Code plugin. There is no runtime product — the artifacts here _are_ the product. Nothing is held back and there is no paid tier.
 
 This repo is designed to be **extended, not forked**. An operator who wants private
 commands, personal preferences, or service integrations puts them in their own
@@ -20,7 +20,7 @@ path only the author has.
 There are two install surfaces, both work via symlinks so edits propagate without copy:
 
 - **Global** — `./install.sh` symlinks this repo's `commands/`, `skills/`, `agents/`, `scripts/` into `~/.claude/`. Hook commands in `config/settings.json` resolve via `$HOME/.claude/scripts/...`. `scripts/setup-claude-sync.sh` is the separate verify/repair tool (`--check` / `--repair`) that `/bs:sync` drives; it links the same set.
-- **Per-repo** — `scripts/install-commands-to-repo.sh` or the submodule flow in `QUICK_START.md` / `SUBMODULE_SETUP.md`. Target repo gets `.claude-setup/` (submodule) and `.claude/` with symlinks into it.
+- **Per-repo** — `scripts/install-commands-to-repo.sh` or the submodule flow in `QUICK_START.md` / `SUBMODULE_SETUP.md`. Target repo gets `.agent-setup/` (submodule) and `.claude/` with symlinks into it.
 
 When editing, you are editing the source that both surfaces read. There is no build step — changes to a command or skill `.md` are live immediately.
 

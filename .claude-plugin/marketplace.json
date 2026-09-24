@@ -12,7 +12,7 @@
         "source": "github",
         "repo": "buildproven/agent-kit"
       },
-      "description": "claude-kit — quality automation, autonomous backlog execution, multi-LLM strategy panels, and fleet auditing. Free and open source.",
+      "description": "agent-kit — quality automation, autonomous backlog execution, multi-LLM strategy panels, and fleet auditing. Free and open source.",
       "version": "4.15.0",
       "author": {
         "name": "buildproven"

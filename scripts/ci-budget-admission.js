@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { resolveStateDirName } = require("./state-dir-name.js");
 
 const API_VERSION = "2026-03-10";
 
@@ -23,10 +24,19 @@ function locations(env = process.env) {
   return {
     policy:
       env.CI_BUDGET_POLICY ||
-      path.join(configHome, "claude-kit", "ci-budget-policy.json"),
+      path.join(
+        configHome,
+        resolveStateDirName(configHome),
+        "ci-budget-policy.json",
+      ),
     snapshot:
       env.CI_BUDGET_SNAPSHOT ||
-      path.join(stateHome, "claude-kit", "ci-budget", "snapshot.json"),
+      path.join(
+        stateHome,
+        resolveStateDirName(stateHome),
+        "ci-budget",
+        "snapshot.json",
+      ),
   };
 }
 

@@ -11,7 +11,7 @@ const {
 
 // BUI-391: resolving `--pr <n>` without `--repo` scoping can silently pick
 // the wrong repo when a PR number collides across repos (e.g. PR #141 exists
-// in both buildproven/claude-kit and buildproven/claude-setup). These tests
+// in both buildproven/agent-kit and buildproven/agent-setup). These tests
 // simulate two different --target-dir checkouts, each with its own origin
 // remote, both being asked to resolve "the same" PR number, and assert each
 // resolves against ITS OWN repo — never cross-contaminating.
@@ -29,8 +29,8 @@ describe("expandHome", () => {
 
   it("expands a leading ~ to HOME", () => {
     process.env.HOME = "/Users/example";
-    expect(expandHome("~/repos/claude-kit")).toBe(
-      "/Users/example/repos/claude-kit",
+    expect(expandHome("~/repos/agent-kit")).toBe(
+      "/Users/example/repos/agent-kit",
     );
     expect(expandHome("~")).toBe("/Users/example");
   });
@@ -41,43 +41,43 @@ describe("expandHome", () => {
     // unresolved, causing downstream lookups to fail against a nonexistent
     // literal `~`-prefixed directory.
     delete process.env.HOME;
-    expect(expandHome("~/repos/claude-kit")).toBe("~/repos/claude-kit");
+    expect(expandHome("~/repos/agent-kit")).toBe("~/repos/agent-kit");
   });
 
   it("does not touch a path without a leading ~", () => {
     process.env.HOME = "/Users/example";
-    expect(expandHome("/repos/claude-kit")).toBe("/repos/claude-kit");
+    expect(expandHome("/repos/agent-kit")).toBe("/repos/agent-kit");
   });
 
   it("does not expand a ~ that isn't at the start of the path", () => {
     process.env.HOME = "/Users/example";
-    expect(expandHome("/repos/~claude-kit")).toBe("/repos/~claude-kit");
+    expect(expandHome("/repos/~agent-kit")).toBe("/repos/~agent-kit");
   });
 });
 
 describe("parseOwnerRepo", () => {
   it("parses an https remote URL", () => {
-    expect(
-      parseOwnerRepo("https://github.com/buildproven/claude-kit.git"),
-    ).toBe("buildproven/claude-kit");
+    expect(parseOwnerRepo("https://github.com/buildproven/agent-kit.git")).toBe(
+      "buildproven/agent-kit",
+    );
   });
 
   it("parses an https remote URL without a trailing .git", () => {
-    expect(parseOwnerRepo("https://github.com/buildproven/claude-setup")).toBe(
-      "buildproven/claude-setup",
+    expect(parseOwnerRepo("https://github.com/buildproven/agent-setup")).toBe(
+      "buildproven/agent-setup",
     );
   });
 
   it("parses an ssh scp-like remote URL", () => {
-    expect(parseOwnerRepo("git@github.com:buildproven/claude-kit.git")).toBe(
-      "buildproven/claude-kit",
+    expect(parseOwnerRepo("git@github.com:buildproven/agent-kit.git")).toBe(
+      "buildproven/agent-kit",
     );
   });
 
   it("parses an ssh:// scheme remote URL", () => {
     expect(
-      parseOwnerRepo("ssh://git@github.com/buildproven/claude-setup.git"),
-    ).toBe("buildproven/claude-setup");
+      parseOwnerRepo("ssh://git@github.com/buildproven/agent-setup.git"),
+    ).toBe("buildproven/agent-setup");
   });
 
   it("returns null for a malformed or non-URL value", () => {
@@ -90,9 +90,9 @@ describe("parseOwnerRepo", () => {
   it("parses a credential-embedded https github.com URL", () => {
     expect(
       parseOwnerRepo(
-        "https://x-access-token:tok@github.com/buildproven/claude-kit.git",
+        "https://x-access-token:tok@github.com/buildproven/agent-kit.git",
       ),
-    ).toBe("buildproven/claude-kit");
+    ).toBe("buildproven/agent-kit");
   });
 
   // Regression: the shape `host.tld/owner/repo` matches GitLab, Bitbucket,
@@ -103,19 +103,19 @@ describe("parseOwnerRepo", () => {
   // instead of failing closed as BUI-391 requires.
   it("returns null for a same-shaped URL on a non-github.com host (https)", () => {
     expect(
-      parseOwnerRepo("https://gitlab.com/buildproven/claude-kit.git"),
+      parseOwnerRepo("https://gitlab.com/buildproven/agent-kit.git"),
     ).toBeNull();
     expect(
-      parseOwnerRepo("https://github.com.attacker.io/buildproven/claude-kit"),
+      parseOwnerRepo("https://github.com.attacker.io/buildproven/agent-kit"),
     ).toBeNull();
   });
 
   it("returns null for a same-shaped URL on a non-github.com host (ssh)", () => {
     expect(
-      parseOwnerRepo("git@gitlab.com:buildproven/claude-kit.git"),
+      parseOwnerRepo("git@gitlab.com:buildproven/agent-kit.git"),
     ).toBeNull();
     expect(
-      parseOwnerRepo("ssh://git@bitbucket.org/buildproven/claude-kit.git"),
+      parseOwnerRepo("ssh://git@bitbucket.org/buildproven/agent-kit.git"),
     ).toBeNull();
   });
 });
@@ -126,23 +126,23 @@ describe("parseOwnerRepo", () => {
 // behavior where PR #141 means something different in each repo.
 function makeMockRepos() {
   const repos = {
-    "/repos/claude-kit": "https://github.com/buildproven/claude-kit.git",
-    "/repos/claude-setup": "git@github.com:buildproven/claude-setup.git",
+    "/repos/agent-kit": "https://github.com/buildproven/agent-kit.git",
+    "/repos/agent-setup": "git@github.com:buildproven/agent-setup.git",
   };
 
   const prsByRepo = {
-    "buildproven/claude-kit": {
+    "buildproven/agent-kit": {
       141: {
         headRefName: "fix/kit-thing",
-        url: "https://github.com/buildproven/claude-kit/pull/141",
-        repo: "buildproven/claude-kit",
+        url: "https://github.com/buildproven/agent-kit/pull/141",
+        repo: "buildproven/agent-kit",
       },
     },
-    "buildproven/claude-setup": {
+    "buildproven/agent-setup": {
       141: {
         headRefName: "fix/setup-thing",
-        url: "https://github.com/buildproven/claude-setup/pull/141",
-        repo: "buildproven/claude-setup",
+        url: "https://github.com/buildproven/agent-setup/pull/141",
+        repo: "buildproven/agent-setup",
       },
     },
   };
@@ -154,28 +154,28 @@ function makeMockRepos() {
 
   // Mimics the real CLI lookupPr: when a repo is supplied, scope to it
   // (as `gh pr view --repo <repo>` would); when not supplied, fall back to
-  // "ambient" resolution — here modeled as always landing on claude-kit's
-  // PR, simulating a `gh` whose ambient cwd/config points at claude-kit
+  // "ambient" resolution — here modeled as always landing on agent-kit's
+  // PR, simulating a `gh` whose ambient cwd/config points at agent-kit
   // regardless of which --target-dir the caller meant.
   const lookupPr = (n, repo) => {
     if (repo) {
       const found = prsByRepo[repo] && prsByRepo[repo][n];
       return found || null;
     }
-    return prsByRepo["buildproven/claude-kit"][n] || null;
+    return prsByRepo["buildproven/agent-kit"][n] || null;
   };
 
   return { getRepoForDir, lookupPr, dirExists: () => false };
 }
 
 describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-391)", () => {
-  it("resolves PR #141 against claude-kit when --target-dir points at claude-kit", () => {
+  it("resolves PR #141 against agent-kit when --target-dir points at agent-kit", () => {
     const { getRepoForDir, lookupPr, dirExists } = makeMockRepos();
     const parsed = parseArgs([
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-kit",
+      "/repos/agent-kit",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",
@@ -190,13 +190,13 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
     expect(result.targetBranch).toBe("fix/kit-thing");
   });
 
-  it("resolves PR #141 against claude-setup when --target-dir points at claude-setup, not claude-kit", () => {
+  it("resolves PR #141 against agent-setup when --target-dir points at agent-setup, not agent-kit", () => {
     const { getRepoForDir, lookupPr, dirExists } = makeMockRepos();
     const parsed = parseArgs([
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-setup",
+      "/repos/agent-setup",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",
@@ -214,21 +214,21 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
 
   it("fails closed when the resolved PR's repo does not match --target-dir's repo", () => {
     // Simulate a lookupPr that ignores the repo hint entirely (e.g. --repo
-    // scoping somehow didn't take effect) and always resolves to claude-kit,
-    // even when --target-dir named claude-setup. The cross-check must catch
-    // this and hard-error rather than silently returning claude-kit's PR.
+    // scoping somehow didn't take effect) and always resolves to agent-kit,
+    // even when --target-dir named agent-setup. The cross-check must catch
+    // this and hard-error rather than silently returning agent-kit's PR.
     const { getRepoForDir, dirExists } = makeMockRepos();
     const brokenLookupPr = () => ({
       headRefName: "fix/kit-thing",
-      url: "https://github.com/buildproven/claude-kit/pull/141",
-      repo: "buildproven/claude-kit",
+      url: "https://github.com/buildproven/agent-kit/pull/141",
+      repo: "buildproven/agent-kit",
     });
 
     const parsed = parseArgs([
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-setup",
+      "/repos/agent-setup",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",
@@ -242,8 +242,8 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
     expect(result.ok).toBe(false);
     expect(result.resolution).toBe("pr");
     expect(result.reason).toMatch(/does not match/i);
-    expect(result.reason).toContain("buildproven/claude-kit");
-    expect(result.reason).toContain("buildproven/claude-setup");
+    expect(result.reason).toContain("buildproven/agent-kit");
+    expect(result.reason).toContain("buildproven/agent-setup");
   });
 
   it("fails closed when findWorktreeForBranch returns a worktree from a different repo (branch-name collision)", () => {
@@ -261,24 +261,24 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-kit",
+      "/repos/agent-kit",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",
       primaryCheckout: null,
-      // Simulates the caller's shell being cwd'd inside claude-setup (or
+      // Simulates the caller's shell being cwd'd inside agent-setup (or
       // any repo) at the moment this ran, so `git worktree list` (no -C
       // flag) enumerated THAT repo's worktrees and found one on a
       // same-named branch by coincidence.
       findWorktreeForBranch: (branch) =>
         branch === "fix/kit-thing"
-          ? "/worktrees/claude-setup/fix-kit-thing"
+          ? "/worktrees/agent-setup/fix-kit-thing"
           : null,
       dirExists: () => true,
       lookupPr,
       getRepoForDir: (dir) => {
-        if (dir === "/worktrees/claude-setup/fix-kit-thing") {
-          return "buildproven/claude-setup";
+        if (dir === "/worktrees/agent-setup/fix-kit-thing") {
+          return "buildproven/agent-setup";
         }
         return getRepoForDir(dir);
       },
@@ -287,9 +287,9 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
     expect(result.ok).toBe(false);
     expect(result.resolution).toBe("pr");
     expect(result.reason).toMatch(/different repository/i);
-    expect(result.reason).toContain("buildproven/claude-kit");
-    expect(result.reason).toContain("buildproven/claude-setup");
-    expect(result.targetPath).not.toBe("/worktrees/claude-setup/fix-kit-thing");
+    expect(result.reason).toContain("buildproven/agent-kit");
+    expect(result.reason).toContain("buildproven/agent-setup");
+    expect(result.targetPath).not.toBe("/worktrees/agent-setup/fix-kit-thing");
   });
 
   it("still resolves normally when the found worktree's repo matches the PR's repo", () => {
@@ -298,20 +298,20 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-kit",
+      "/repos/agent-kit",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",
       primaryCheckout: null,
       findWorktreeForBranch: (branch) =>
-        branch === "fix/kit-thing" ? "/repos/claude-kit" : null,
+        branch === "fix/kit-thing" ? "/repos/agent-kit" : null,
       dirExists: () => true,
       lookupPr,
       getRepoForDir,
     });
 
     expect(result.ok).toBe(true);
-    expect(result.targetPath).toBe("/repos/claude-kit");
+    expect(result.targetPath).toBe("/repos/agent-kit");
     expect(result.targetBranch).toBe("fix/kit-thing");
   });
 
@@ -320,11 +320,11 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
     const seenRepos = [];
     const scopedLookupPr = (n, repo) => {
       seenRepos.push(repo);
-      if (repo === "buildproven/claude-setup") {
+      if (repo === "buildproven/agent-setup") {
         return {
           headRefName: "fix/setup-thing",
-          url: "https://github.com/buildproven/claude-setup/pull/141",
-          repo: "buildproven/claude-setup",
+          url: "https://github.com/buildproven/agent-setup/pull/141",
+          repo: "buildproven/agent-setup",
         };
       }
       return null;
@@ -334,7 +334,7 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-setup",
+      "/repos/agent-setup",
     ]);
     resolveTarget(parsed, {
       cwd: "/somewhere",
@@ -345,7 +345,7 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
       getRepoForDir,
     });
 
-    expect(seenRepos).toEqual(["buildproven/claude-setup"]);
+    expect(seenRepos).toEqual(["buildproven/agent-setup"]);
   });
 
   it("falls back to ambient (unscoped) lookupPr when --target-dir is not supplied", () => {
@@ -426,7 +426,7 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-setup",
+      "/repos/agent-setup",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",
@@ -450,7 +450,7 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
     const { getRepoForDir, dirExists } = makeMockRepos();
     const unverifiableLookupPr = () => ({
       headRefName: "fix/enterprise-thing",
-      url: "https://github.mycompany.com/buildproven/claude-setup/pull/141",
+      url: "https://github.mycompany.com/buildproven/agent-setup/pull/141",
       repo: null,
     });
 
@@ -458,7 +458,7 @@ describe("resolveTarget / resolveByPr — cross-repo PR-number collision (BUI-39
       "--pr",
       "141",
       "--target-dir",
-      "/repos/claude-setup",
+      "/repos/agent-setup",
     ]);
     const result = resolveTarget(parsed, {
       cwd: "/somewhere",

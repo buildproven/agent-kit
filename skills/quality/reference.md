@@ -329,7 +329,7 @@ every other native gate name); the script above is only the default.
 | `BS_QUALITY_MAX_PROVIDER_ATTEMPTS`    | 2       | May lower the primary-plus-one-fallback start allowance per review pass. The runtime reserves the same allowance for the one exact-head verification pass; values above the hard maximum are rejected. |
 | `BS_QUALITY_MAX_REMEDIATION_SECONDS`  | planned | Batched-fix allowance remaining after proportional discovery and verification reserves.                                                                                                                |
 | `BS_QUALITY_REREVIEW_RESERVE_SECONDS` | planned | Workload-scaled allowance for one targeted validation review after fixes.                                                                                                                              |
-| `BS_QUALITY_TELEMETRY_FILE`           | -       | Absolute path for the campaign telemetry log. Default: operator state under `$XDG_STATE_HOME/claude-kit/quality-telemetry/` (or `~/.local/state`).                                                     |
+| `BS_QUALITY_TELEMETRY_FILE`           | -       | Absolute path for the campaign telemetry log. Default: operator state under `$XDG_STATE_HOME/agent-kit/quality-telemetry/` (or `~/.local/state`).                                                      |
 | `BS_QUALITY_ALLOW_UNPROTECTABLE_BASE` | `false` | Accepts non-atomic base freshness on a private repo whose plan cannot enforce branch protection at all. See below.                                                                                     |
 
 ### `BS_QUALITY_ALLOW_UNPROTECTABLE_BASE` (base-protection escape hatch)

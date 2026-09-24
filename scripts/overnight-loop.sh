@@ -11,6 +11,17 @@ if [ -n "${OVERNIGHT_LOOP_ENV_FILE:-}" ]; then
 fi
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Inlined rather than sourced from lib/state-dir-name.sh: tests copy this
+# script standalone into synthetic harness dirs without its siblings, so it
+# must not depend on another repo file at runtime.
+state_dir_name() {
+  local parent_dir="$1"
+  if [ -d "$parent_dir/agent-kit" ] || [ ! -d "$parent_dir/claude-kit" ]; then
+    echo "agent-kit"
+  else
+    echo "claude-kit"
+  fi
+}
 CCUSAGE_BIN="${CCUSAGE_BIN:-ccusage}"
 AUTONOMOUS_RUNTIME="$SCRIPT_DIR/autonomous-loop-runtime.js"
 CLAUDE_USAGE_COMMAND="${CLAUDE_USAGE_COMMAND:-}"
@@ -52,7 +63,7 @@ STATE_HOME="${XDG_STATE_HOME:-${HOME:-${TMPDIR:-/tmp}}/.local/state}"
 LOG_DIR="${OVERNIGHT_LOOP_STATE_DIR:-$STATE_HOME/buildproven/overnight-loop/$TARGET_STATE_ID}"
 LOG_FILE="$LOG_DIR/overnight-loop-$(date +%Y-%m-%d).log"
 STATUS_FILE="$LOG_DIR/overnight-loop-status.json"
-BUILDER_STATE_DIR="$STATE_HOME/claude-kit/builder-dispatch"
+BUILDER_STATE_DIR="$STATE_HOME/$(state_dir_name "$STATE_HOME")/builder-dispatch"
 RUN_WITH_DEADLINE="$SCRIPT_DIR/run-with-deadline.py"
 mkdir -p "$LOG_DIR"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }

@@ -205,4 +205,4 @@ ID convention: `P-NNN` format, globally unique, `source` links to backlog item.
 
 ---
 
-_Part of the claude-kit knowledge management system_
+_Part of the agent-kit knowledge management system_

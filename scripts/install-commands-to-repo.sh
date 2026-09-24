@@ -6,10 +6,10 @@
 #
 # Usage:
 #   # From within any repo:
-#   curl -sL https://raw.githubusercontent.com/buildproven/claude-kit/main/scripts/install-commands-to-repo.sh | bash
+#   curl -sL https://raw.githubusercontent.com/buildproven/agent-kit/main/scripts/install-commands-to-repo.sh | bash
 #
-#   # Or if claude-kit is cloned locally:
-#   /path/to/claude-kit/scripts/install-commands-to-repo.sh
+#   # Or if agent-kit is cloned locally:
+#   /path/to/agent-kit/scripts/install-commands-to-repo.sh
 # =============================================================================
 
 set -euo pipefail
@@ -43,15 +43,15 @@ log "Installing commands to: $COMMANDS_DIR"
 mkdir -p "$COMMANDS_DIR"
 
 # Find the source commands directory
-if [[ -d "$HOME/Projects/claude-kit/commands" ]]; then
-    SOURCE_DIR="$HOME/Projects/claude-kit/commands"
+if [[ -d "$HOME/Projects/agent-kit/commands" ]]; then
+    SOURCE_DIR="$HOME/Projects/agent-kit/commands"
 elif [[ -d "$(dirname "$0")/../commands" ]]; then
     SOURCE_DIR="$(cd "$(dirname "$0")/../commands" && pwd)"
 else
-    echo "❌ Cannot find claude-kit commands directory"
+    echo "❌ Cannot find agent-kit commands directory"
     echo ""
     echo "Clone it first:"
-    echo "  git clone YOUR-REPO ~/Projects/claude-kit"
+    echo "  git clone YOUR-REPO ~/Projects/agent-kit"
     exit 1
 fi
 

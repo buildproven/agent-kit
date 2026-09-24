@@ -1,34 +1,34 @@
 # Extension Architecture
 
-claude-kit is the complete toolkit. It is designed to be extended, not forked.
+agent-kit is the complete toolkit. It is designed to be extended, not forked.
 
 ## The contract
 
 ```
 ┌─────────────────────────────────────────┐
 │  Your private overlay (optional)        │  your private config repo
-│  Your CLAUDE.md, private commands,      │  submodules claude-kit
+│  Your CLAUDE.md, private commands,      │  submodules agent-kit
 │  service integrations, secrets          │
 ├─────────────────────────────────────────┤
-│  claude-kit (this repo, free/MIT)       │  the whole toolkit
+│  agent-kit (this repo, free/MIT)       │  the whole toolkit
 │  Everything: quality, autonomous        │
 │  workflow, strategy, domain skills      │
 └─────────────────────────────────────────┘
 ```
 
-claude-kit stands alone — you never need an overlay. An overlay is what you add
+agent-kit stands alone — you never need an overlay. An overlay is what you add
 when you have private or personal behaviour that doesn't belong in a public repo.
 
-The overlay adds to claude-kit. You never modify claude-kit to add personal or
-project-specific behaviour, and **claude-kit never references anything above it** —
+The overlay adds to agent-kit. You never modify agent-kit to add personal or
+project-specific behaviour, and **agent-kit never references anything above it** —
 a public repo must not tell a user to run code from a path only you have.
 
-Updates propagate automatically: a push to claude-kit can trigger a submodule bump
+Updates propagate automatically: a push to agent-kit can trigger a submodule bump
 PR in your private overlay. No manual syncing.
 
 ---
 
-## claude-kit (this repo, free/MIT)
+## agent-kit (this repo, free/MIT)
 
 Everything. Core dev commands (`/bs:dev`, `/bs:quality`, `/bs:test`), autonomous
 workflow (`/bs:ralph`), strategy (`/bs:strategy`), fleet management (`/bs:sota`,
@@ -42,7 +42,7 @@ everyone.
 
 ## Your private overlay (optional)
 
-A private config repo that sits on top of claude-kit. Contains:
+A private config repo that sits on top of agent-kit. Contains:
 
 - Your `CLAUDE.md` (preferences, team conventions, known mistakes)
 - Private commands that don't belong in a public repo
@@ -81,9 +81,9 @@ your-project/
 
 | You want to...                   | Do this                          |
 | -------------------------------- | -------------------------------- |
-| Use the toolkit                  | Install claude-kit               |
-| Get autonomous workflow commands | Already in claude-kit            |
+| Use the toolkit                  | Install agent-kit                |
+| Get autonomous workflow commands | Already in agent-kit             |
 | Add personal preferences         | Private overlay (`CLAUDE.md`)    |
 | Add a private workflow command   | Private overlay (`commands/`)    |
 | Add a project-specific command   | `.claude/commands/` in that repo |
-| Improve something for everyone   | PR to claude-kit                 |
+| Improve something for everyone   | PR to agent-kit                  |

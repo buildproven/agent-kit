@@ -1,6 +1,6 @@
 # Portable autonomous-loop usage checks
 
-Install/update claude-kit using its normal installer on each computer. The
+Install/update agent-kit using its normal installer on each computer. The
 installer links `scripts/provider-usage-adapter.js` with the other runtime
 scripts; no machine-specific absolute path is stored in the repository.
 

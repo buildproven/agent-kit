@@ -1,4 +1,4 @@
-# Contributing to claude-kit
+# Contributing to agent-kit
 
 Thanks for your interest in contributing!
 
@@ -12,8 +12,8 @@ Thanks for your interest in contributing!
 ## Development setup
 
 ```bash
-git clone https://github.com/buildproven/claude-kit.git
-cd claude-kit
+git clone https://github.com/buildproven/agent-kit.git
+cd agent-kit
 npm install
 ./install.sh      # symlinks into ~/.claude/
 ```

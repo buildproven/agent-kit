@@ -286,5 +286,5 @@ Both live in the target project's repo, version-controlled. They are the canonic
 - Carson's "3-step AI coding workflow" — Lenny's Newsletter
 - tenex.co playbook: "How to ship software without touching your keyboard"
 - GitHub Spec Kit: https://github.com/github/spec-kit (similar pattern, more verbose)
-- `/bs:plan` (claude-kit) — lighter-weight planning for non-PRD work
+- `/bs:plan` (agent-kit) — lighter-weight planning for non-PRD work
 - `/bs:dev`, `/bs:ralph` — downstream consumers

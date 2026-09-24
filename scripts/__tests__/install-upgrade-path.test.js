@@ -1,6 +1,6 @@
 // Regression coverage for BUI-444: the curl|bash installer must be able to
 // upgrade a pre-existing checkout that predates claude-link-manifest.sh
-// (claude-kit PR #149 / BUI-413). Before the fix, install.sh unconditionally
+// (agent-kit PR #149 / BUI-413). Before the fix, install.sh unconditionally
 // sourced scripts/claude-link-manifest.sh; a checkout cloned before that file
 // existed had no way to gain it (re-running the installer only re-downloads
 // install.sh itself, it never updates PROJECT_DIR), so `source` failed and
@@ -20,7 +20,7 @@ function sandbox() {
   const root = makeTempDir("kit-install-upgrade-");
   return {
     home: path.join(root, "home"),
-    projectDir: path.join(root, "claude-kit"),
+    projectDir: path.join(root, "agent-kit"),
   };
 }
 
@@ -45,7 +45,7 @@ function run({ home, projectDir }) {
   const env = {
     ...process.env,
     HOME: home,
-    CLAUDE_KIT_DIR: projectDir,
+    AGENT_KIT_DIR: projectDir,
   };
   try {
     const stdout = execFileSync("bash", [INSTALL_SCRIPT], {
@@ -88,7 +88,7 @@ describe("install.sh upgrade path (BUI-444)", () => {
   it("self-heals by pulling when PROJECT_DIR is a real git checkout missing the manifest", () => {
     const { home, projectDir } = sandbox();
 
-    // A synthetic two-commit "origin" standing in for the real claude-kit
+    // A synthetic two-commit "origin" standing in for the real agent-kit
     // history around PR #149: commit 1 has no manifest (pre-#149), commit 2
     // adds it (post-#149). Built entirely from local content rather than by
     // walking REPO_ROOT's real git history, so this is deterministic and

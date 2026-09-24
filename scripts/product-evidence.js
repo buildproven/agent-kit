@@ -16,15 +16,15 @@ const RECEIPT_KINDS = new Set([
 const LEGACY_TRUST_ROOTS = Object.freeze({
   producer: Object.freeze({
     darwin:
-      "/Library/Application Support/claude-kit/product-evidence-public-key",
-    linux: "/etc/claude-kit/product-evidence-public-key",
-    win32: "C:\\ProgramData\\claude-kit\\product-evidence-public-key",
+      "/Library/Application Support/agent-kit/product-evidence-public-key",
+    linux: "/etc/agent-kit/product-evidence-public-key",
+    win32: "C:\\ProgramData\\agent-kit\\product-evidence-public-key",
   }),
   admission: Object.freeze({
     darwin:
-      "/Library/Application Support/claude-kit/product-admission-public-key",
-    linux: "/etc/claude-kit/product-admission-public-key",
-    win32: "C:\\ProgramData\\claude-kit\\product-admission-public-key",
+      "/Library/Application Support/agent-kit/product-admission-public-key",
+    linux: "/etc/agent-kit/product-admission-public-key",
+    win32: "C:\\ProgramData\\agent-kit\\product-admission-public-key",
   }),
 });
 

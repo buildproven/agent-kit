@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-12
-- Decision owner: claude-kit
+- Decision owner: agent-kit
 - Tracking: BUI-733
 
 ## Context

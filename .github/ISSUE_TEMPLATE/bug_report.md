@@ -18,7 +18,7 @@ What you expected to happen.
 - OS:
 - Node version:
 - Claude Code version:
-- claude-kit version/commit:
+- agent-kit version/commit:
 
 **Additional context**
 Any other context, screenshots, or error output.

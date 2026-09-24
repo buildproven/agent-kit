@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/buildproven/claude-kit/schemas/defensive-patterns.schema.json",
+  "$id": "https://github.com/buildproven/agent-kit/schemas/defensive-patterns.schema.json",
   "title": "Defensive Patterns Configuration",
   "description": "Per-project configuration for defensive pattern checks in pattern-check.sh",
   "type": "object",

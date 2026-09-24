@@ -1,12 +1,12 @@
 {
-  "name": "claude-kit",
+  "name": "agent-kit",
   "version": "4.15.0",
   "private": true,
   "description": "Free, open-source Claude Code toolkit — commands, skills, agents, and quality automation",
   "license": "MIT AND Apache-2.0",
-  "repository": "https://github.com/buildproven/claude-kit",
-  "homepage": "https://github.com/buildproven/claude-kit",
-  "bugs": "https://github.com/buildproven/claude-kit/issues",
+  "repository": "https://github.com/buildproven/agent-kit",
+  "homepage": "https://github.com/buildproven/agent-kit",
+  "bugs": "https://github.com/buildproven/agent-kit/issues",
   "author": {
     "name": "buildproven",
     "url": "https://github.com/buildproven"

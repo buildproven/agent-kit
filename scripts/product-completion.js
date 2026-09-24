@@ -24,7 +24,7 @@ const BASE_OWNED_QUALITY_RUNTIME_PATHS = new Map();
 const NON_PRODUCT_EXACT_PATHS = new Set([
   "harness-config.json",
   "package-lock.json",
-  // claude-setup records the shared quality/agent runtime as a submodule
+  // agent-setup records the shared quality/agent runtime as a submodule
   // gitlink. The exact `core` path is contract infrastructure, not product
   // application behavior.
   "core",

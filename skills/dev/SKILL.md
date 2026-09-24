@@ -108,8 +108,8 @@ Before treating `$ARGUMENTS` as a single task name, detect whether it contains a
 markdown task list. If yes, switch to **list mode** (Step 9 below).
 
 ```bash
-# Locate the parser. It ships with claude-kit; resolve via several candidates so
-# this works whether dev/ralph are invoked from claude-kit (vendored
+# Locate the parser. It ships with agent-kit; resolve via several candidates so
+# this works whether dev/ralph are invoked from agent-kit (vendored
 # at core/), or a downstream consumer.
 resolve_parser() {
   local candidates=(
@@ -139,7 +139,7 @@ IS_LIST=$(echo "$LIST_JSON" | jq -r '.isList')
 if [[ "$ARGUMENTS" == *"--list"* ]]; then IS_LIST=true; fi
 ```
 
-Detection rules (see `scripts/inline-list-parser.js` in claude-kit for the canonical
+Detection rules (see `scripts/inline-list-parser.js` in agent-kit for the canonical
 implementation and `scripts/__tests__/inline-list-parser.test.js` for the test suite):
 
 - Requires **2+** items. A single bullet is treated as a normal task description.
