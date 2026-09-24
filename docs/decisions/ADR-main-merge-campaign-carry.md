@@ -26,6 +26,13 @@ Do not replace it with an exact-head equality check. The existing merge lease
 must still compare the carried base with the live protected remote base;
 a local base reference alone cannot authorize integration.
 
+BUI-974 applies that same rule to mutation production and validation. The
+identity-validated `effective-base` command supplies the live candidate base
+after later content or test commits. Fresh proof uses that base, with no reused
+artifact or claimed execution savings. Explicit killed-subject replay remains
+separate and unchanged. Evidence still names the exact current head and the
+immutable creation base. Upstream-only files are never candidate mutations.
+
 The history shape is not the trust condition. The prior candidate patch,
 replayed on the new protected base, must produce exactly the candidate tree.
 A changed patch, conflict resolution that changes candidate content, failed
