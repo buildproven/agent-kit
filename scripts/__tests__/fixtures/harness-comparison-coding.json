@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "status": "draft-not-frozen",
+  "tasks": [
+    {
+      "id": "T01",
+      "prompt": "Fix cli.cjs so --name requires a non-empty value. Missing or empty values must exit 2, write 'name requires a value\\n' to stderr, and print nothing to stdout. Keep --dry-run boolean: it prints 'dry-run\\n'. A valid --name Ada prints 'Hello Ada\\n'; --name Ada --dry-run prints 'dry-run\\n'. Add regression.cjs, runnable with node, that fails on the original missing-value bug. Change only cli.cjs and regression.cjs.",
+      "files": {
+        "cli.cjs": "const a=process.argv.slice(2);const i=a.indexOf('--name');const name=i<0?'world':a[i+1].trim();console.log(a.includes('--dry-run')?'dry-run':`Hello ${name}`);\n"
+      },
+      "solution": {
+        "cli.cjs": "const a=process.argv.slice(2);const i=a.indexOf('--name');if(i>=0&&(!a[i+1]||a[i+1].startsWith('--')||!a[i+1].trim())){console.error('name requires a value');process.exit(2)}const name=i<0?'world':a[i+1].trim();console.log(a.includes('--dry-run')?'dry-run':`Hello ${name}`);\n",
+        "regression.cjs": "const a=require('node:assert/strict');const{spawnSync}=require('node:child_process');const r=spawnSync(process.execPath,['cli.cjs','--name'],{encoding:'utf8'});a.equal(r.status,2);a.equal(r.stderr,'name requires a value\\n');\n"
+      },
+      "checks": [
+        {
+          "args": ["--name"],
+          "status": 2,
+          "stdout": "",
+          "stderr": "name requires a value\n"
+        },
+        {
+          "args": ["--name", ""],
+          "status": 2,
+          "stdout": "",
+          "stderr": "name requires a value\n"
+        },
+        {
+          "args": ["--name", "--dry-run"],
+          "status": 2,
+          "stdout": "",
+          "stderr": "name requires a value\n"
+        },
+        {
+          "args": ["--name", "Ada"],
+          "stdout": "Hello Ada\n"
+        },
+        {
+          "args": ["--dry-run"],
+          "stdout": "dry-run\n"
+        },
+        {
+          "args": ["--name", "Ada", "--dry-run"],
+          "stdout": "dry-run\n"
+        }
+      ],
+      "regression": "regression.cjs",
+      "mutationPath": "cli.cjs",
+      "permittedPaths": ["cli.cjs", "regression.cjs"]
+    },
+    {
+      "id": "T02",
+      "prompt": "Fix cli.cjs: node cli.cjs --check must print 'ready\\n', exit 0, and leave the filesystem unchanged. Normal node cli.cjs must still create output/result.txt containing 'ready\\n' and print 'written\\n'. Change only cli.cjs.",
+      "files": {
+        "cli.cjs": "const fs=require('node:fs');fs.mkdirSync('output',{recursive:true});if(process.argv.includes('--check')){console.log('ready')}else{fs.writeFileSync('output/result.txt','ready\\n');console.log('written')}\n"
+      },
+      "solution": {
+        "cli.cjs": "const fs=require('node:fs');if(process.argv.includes('--check')){console.log('ready')}else{fs.mkdirSync('output',{recursive:true});fs.writeFileSync('output/result.txt','ready\\n');console.log('written')}\n"
+      },
+      "checks": [
+        {
+          "args": ["--check"],
+          "stdout": "ready\n",
+          "unchanged": true
+        },
+        {
+          "args": [],
+          "stdout": "written\n",
+          "files": {
+            "output/result.txt": "ready\n"
+          }
+        }
+      ],
+      "permittedPaths": ["cli.cjs"]
+    },
+    {
+      "id": "T03",
+      "prompt": "Add --json to cli.cjs. Normal text output remains 'ready\\n', status 0. --json prints exactly {\"status\":\"ready\"} plus newline. --fail exits 1 with no stdout and 'unavailable\\n' on stderr; --json --fail exits 1, prints exactly {\"status\":\"unavailable\"} plus newline on stdout and the same diagnostic on stderr. Change only cli.cjs.",
+      "files": {
+        "cli.cjs": "if(process.argv.includes('--fail')){console.error('unavailable');process.exit(1)}console.log('ready');\n"
+      },
+      "solution": {
+        "cli.cjs": "const bad=process.argv.includes('--fail');if(process.argv.includes('--json'))console.log(JSON.stringify({status:bad?'unavailable':'ready'}));else if(!bad)console.log('ready');if(bad){console.error('unavailable');process.exitCode=1}\n"
+      },
+      "checks": [
+        {
+          "args": [],
+          "stdout": "ready\n"
+        },
+        {
+          "args": ["--json"],
+          "stdout": "{\"status\":\"ready\"}\n"
+        },
+        {
+          "args": ["--fail"],
+          "status": 1,
+          "stdout": "",
+          "stderr": "unavailable\n"
+        },
+        {
+          "args": ["--json", "--fail"],
+          "status": 1,
+          "stdout": "{\"status\":\"unavailable\"}\n",
+          "stderr": "unavailable\n"
+        }
+      ],
+      "permittedPaths": ["cli.cjs"]
+    },
+    {
+      "id": "T04",
+      "prompt": "cli.cjs reads a JSON array of {name,group} objects from stdin and returns the names as a JSON array plus newline. Add optional --group VALUE that returns names only for the matching group, preserving input order. Without --group retain all names. Empty or nonmatching input returns []. Change only cli.cjs.",
+      "files": {
+        "cli.cjs": "const fs=require('node:fs');const rows=JSON.parse(fs.readFileSync(0,'utf8'));console.log(JSON.stringify(rows.map(x=>x.name)));\n"
+      },
+      "solution": {
+        "cli.cjs": "const fs=require('node:fs');const rows=JSON.parse(fs.readFileSync(0,'utf8'));const i=process.argv.indexOf('--group');const filtered=i<0?rows:rows.filter(x=>x.group===process.argv[i+1]);console.log(JSON.stringify(filtered.map(x=>x.name)));\n"
+      },
+      "checks": [
+        {
+          "args": [],
+          "input": "[{\"name\":\"A\",\"group\":\"x\"},{\"name\":\"B\",\"group\":\"y\"},{\"name\":\"C\",\"group\":\"x\"}]",
+          "stdout": "[\"A\",\"B\",\"C\"]\n"
+        },
+        {
+          "args": ["--group", "x"],
+          "input": "[{\"name\":\"A\",\"group\":\"x\"},{\"name\":\"B\",\"group\":\"y\"},{\"name\":\"C\",\"group\":\"x\"}]",
+          "stdout": "[\"A\",\"C\"]\n"
+        },
+        {
+          "args": ["--group", "z"],
+          "input": "[{\"name\":\"A\",\"group\":\"x\"}]",
+          "stdout": "[]\n"
+        },
+        {
+          "args": ["--group", "x"],
+          "input": "[]",
+          "stdout": "[]\n"
+        }
+      ],
+      "permittedPaths": ["cli.cjs"]
+    },
+    {
+      "id": "T05",
+      "prompt": "Correct only README.md and USAGE.md to match CONTRACT.md. Replace the obsolete --dry flag with --check in their command examples. Preserve all other bytes. Do not change CONTRACT.md or add files.",
+      "files": {
+        "CONTRACT.md": "The supported check-only invocation is `node cli.cjs --check`.\n",
+        "README.md": "# Example\n\nCheck with `node cli.cjs --dry`.\n",
+        "USAGE.md": "# Usage\n\nRun `node cli.cjs --dry` before deployment.\n"
+      },
+      "solution": {
+        "README.md": "# Example\n\nCheck with `node cli.cjs --check`.\n",
+        "USAGE.md": "# Usage\n\nRun `node cli.cjs --check` before deployment.\n"
+      },
+      "checks": [],
+      "exactFiles": {
+        "README.md": "# Example\n\nCheck with `node cli.cjs --check`.\n",
+        "USAGE.md": "# Usage\n\nRun `node cli.cjs --check` before deployment.\n"
+      },
+      "permittedPaths": ["README.md", "USAGE.md"]
+    },
+    {
+      "id": "T06",
+      "prompt": "Investigate the report that sortedNames in names.cjs mutates its input. Reproduce with ['B','A'] and []. Do not change code unless these cases prove a defect. Write diagnosis.json with keys defectReproduced (boolean), cases (array of objects with before, after, result arrays), and reason (nonempty explanation). Change only diagnosis.json if the alleged defect is not reproduced.",
+      "files": {
+        "names.cjs": "exports.sortedNames=names=>[...names].sort();\n"
+      },
+      "solution": {
+        "diagnosis.json": "{\"defectReproduced\":false,\"cases\":[{\"before\":[\"B\",\"A\"],\"after\":[\"B\",\"A\"],\"result\":[\"A\",\"B\"]},{\"before\":[],\"after\":[],\"result\":[]}],\"reason\":\"The function copies the input before sorting; both supplied inputs are unchanged.\"}\n"
+      },
+      "checks": [],
+      "diagnosis": true,
+      "permittedPaths": ["diagnosis.json"]
+    },
+    {
+      "id": "T07",
+      "prompt": "Fix free shipping at the boundary: shipping.cjs must return 0 for totals at least 50 and 5 below 50. Existing test.cjs passes but does not test total 50. Update shipping.cjs and test.cjs; keep the existing total-49 assertion and add a regression that fails on the original code. Run node test.cjs.",
+      "files": {
+        "shipping.cjs": "module.exports=total=>total>50?0:5;\n",
+        "test.cjs": "const assert=require('node:assert/strict');const shipping=require('./shipping.cjs');assert.equal(shipping(49),5);\n",
+        "cli.cjs": "console.log(require('./shipping.cjs')(Number(process.argv[2])));\n"
+      },
+      "solution": {
+        "shipping.cjs": "module.exports=total=>total>=50?0:5;\n",
+        "test.cjs": "const assert=require('node:assert/strict');const shipping=require('./shipping.cjs');assert.equal(shipping(49),5);assert.equal(shipping(50),0);\n"
+      },
+      "checks": [
+        {
+          "args": ["0"],
+          "stdout": "5\n"
+        },
+        {
+          "args": ["49"],
+          "stdout": "5\n"
+        },
+        {
+          "args": ["50"],
+          "stdout": "0\n"
+        },
+        {
+          "args": ["51"],
+          "stdout": "0\n"
+        }
+      ],
+      "regression": "test.cjs",
+      "mutationPath": "shipping.cjs",
+      "preservationMutation": "module.exports=total=>total>=49?0:5;\n",
+      "permittedPaths": ["shipping.cjs", "test.cjs"]
+    }
+  ]
+}
