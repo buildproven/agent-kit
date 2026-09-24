@@ -5279,11 +5279,16 @@ function validMutationArtifact(manifest, artifact) {
   } else if (candidateBase !== artifact.base) {
     const carry = manifest.mutationCarry;
     const rebaseCarry = manifest.revisions.baseRebaseCarry;
-    // Fresh execution is bound to the validated rebase head/base, not the
-    // last reusable mutation head (which may precede a test-only repair).
+    // Fresh execution uses the validated live base for the carried head and
+    // its descendants, not a reusable mutation head or the creation base.
     const freshRebaseProof = Boolean(
       rebaseCarry &&
-      rebaseCarry.head === artifact.head &&
+      baseIdentityMatches(
+        manifest,
+        manifest.repo.realpath,
+        artifact.head,
+        candidateBase,
+      ) &&
       rebaseCarry.baseSha === candidateBase &&
       artifact.reusedArtifactSha256 === null &&
       artifact.avoidedSeconds === 0,
@@ -7132,6 +7137,8 @@ const COMMANDS = {
     ),
   "mutation-replay-plan": ({ manifest }) =>
     process.stdout.write(`${JSON.stringify(mutationReplayPlan(manifest))}\n`),
+  "effective-base": ({ manifest }) =>
+    process.stdout.write(`${effectiveBaseSha(manifest)}\n`),
   "mutation-attempt": ({ manifestArg, rawArgs }) => {
     let result;
     mutate(manifestArg, (locked) => {

@@ -72,10 +72,11 @@ fi
 # the protected base, so those paths are not valid mutation subjects for this
 # candidate. Re-prove the complete live PR patch against the exact carried
 # base instead. This is fresh evidence: do not claim prior execution savings.
-REBASE_CARRY_HEAD="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" revisions.baseRebaseCarry.head 2>/dev/null || true)"
-REBASE_CARRY_BASE="$(node "$SCRIPT_DIR/quality-invocation.js" field "$MANIFEST" revisions.baseRebaseCarry.baseSha 2>/dev/null || true)"
-if [ "$REBASE_CARRY_HEAD" = "$HEAD" ] && [ -n "$REBASE_CARRY_BASE" ]; then
-  MUTATION_BASE="$REBASE_CARRY_BASE"
+# The invocation validates carry ancestry for integration and later commits.
+# Do not treat already-merged upstream code as a descendant mutation subject.
+EFFECTIVE_BASE="$(node "$SCRIPT_DIR/quality-invocation.js" effective-base "$MANIFEST")"
+if [ "$EFFECTIVE_BASE" != "$BASE" ]; then
+  MUTATION_BASE="$EFFECTIVE_BASE"
   REUSED_ARTIFACT_SHA=""
   AVOIDED_SECONDS=0
 fi
