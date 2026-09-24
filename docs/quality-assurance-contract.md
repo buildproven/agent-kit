@@ -67,6 +67,12 @@ persisted test plan; that test must fail to produce red-capable evidence. A
 pointer-only submodule update has no candidate-owned behavioral subject and is
 recorded separately as `gitlink-skip`.
 
+Mutation selection reads an exact-HEAD snapshot of the selector policy for both
+the baseline and controlled revert. The test still reads files in the reverted
+worktree. Reverting the policy must not remove its own test mapping or change
+the experiment's selected tests. Nested selectors retain their digest checks;
+an orchestration failure is not a killed mutant.
+
 Mutation test commands, repository-owned selector execution, dependency installs,
 and Stryker use the same environment allowlist as ordinary repository gates.
 Controller identity and credential variables stay outside those child processes.
