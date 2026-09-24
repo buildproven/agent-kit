@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -32,6 +32,7 @@ function executableController(fx) {
     "quality-wake.js",
     "quality-run.js",
     "quality-process-supervisor.js",
+    "quality-runner-ownership.js",
     "autonomous-loop-runtime.js",
   ]) {
     copyFileSync(
@@ -327,6 +328,81 @@ setTimeout(() => process.exit(1), 5000);\n`,
 );
 
 describe("quality wake reconciliation", () => {
+  it("refuses a second wake while the real worker has no foreground child", async () => {
+    const fx = fixture();
+    executableController(fx);
+    fx.manifest.governor.executionBudgetVersion = 1;
+    fx.manifest.requiredGatesPolicyVersion = 3;
+    writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    fx.stopAt = new Date(Date.now() + 15000).toISOString();
+    const registration = registered(fx);
+    const ownerFile = fx.manifestPath + ".runner-lock";
+    const bin = path.join(fx.root, "pause-git");
+    const ready = path.join(fx.root, "worker-paused");
+    const release = path.join(fx.root, "worker-release");
+    mkdirSync(bin);
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    writeFileSync(
+      path.join(bin, "git"),
+      `#!${process.execPath}
+const fs=require('node:fs');
+const ownerFile=${JSON.stringify(ownerFile)};
+if(fs.existsSync(ownerFile) && !fs.existsSync(${JSON.stringify(ready)})) {
+  const owner=JSON.parse(fs.readFileSync(ownerFile,'utf8'));
+  if(!owner.child && !owner.childInFlight) {
+    fs.writeFileSync(${JSON.stringify(ready)},JSON.stringify(owner));
+    const end=Date.now()+4000;
+    while(!fs.existsSync(${JSON.stringify(release)}) && Date.now()<end)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+  }
+}
+const result=require('node:child_process').spawnSync(${JSON.stringify(realGit)},process.argv.slice(2),{stdio:'inherit'});
+process.exit(result.status ?? 1);
+`,
+    );
+    chmodSync(path.join(bin, "git"), 0o755);
+    const child = spawn(
+      process.execPath,
+      [fx.runtime, "reconcile-quality", "--registration", registration],
+      {
+        env: {
+          ...process.env,
+          TMPDIR: fx.root,
+          PATH: bin + path.delimiter + process.env.PATH,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
+    const ended = new Promise((resolve, reject) => {
+      child.once("exit", resolve);
+      child.once("error", reject);
+    });
+    try {
+      await waitFor(() => existsSync(ready) || child.exitCode !== null, 10000);
+      expect(existsSync(ready), output).toBe(true);
+      const before = readFileSync(fx.manifestPath, "utf8");
+      const ownerBefore = readFileSync(ownerFile, "utf8");
+      const second = wake(fx, registration);
+      expect(second.status, second.stderr).toBe(0);
+      expect(JSON.parse(second.stdout)).toMatchObject({
+        status: "busy",
+        reason: "runner-live",
+      });
+      expect(readFileSync(fx.manifestPath, "utf8")).toBe(before);
+      expect(readFileSync(ownerFile, "utf8")).toBe(ownerBefore);
+    } finally {
+      writeFileSync(release, "release");
+      await ended;
+    }
+  }, 20000);
+
   it("bounds a stalled metadata read by the registered deadline", () => {
     const fx = fixture();
     fx.stopAt = new Date(Date.now() + 2000).toISOString();

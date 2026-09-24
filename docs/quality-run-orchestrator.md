@@ -35,7 +35,13 @@ is retained for the supported reconciliation path; expiry does not reset it.
 If the OS refuses group termination, the runner reports the termination error,
 disconnects its output pipes and retains ownership of the possibly live child.
 It returns a blocked result without waiting indefinitely or claiming the child
-was stopped.
+was stopped. With a deadline, a separate POSIX group supervisor also bounds
+synchronous metadata checks. Each supervisor signals only its own live group;
+payload execution starts after the nested ownership record is saved. Worker
+death cancels its foreground group. A blocked invocation can leave the durable
+campaign in its prior nonterminal state: expiry does not run a potentially
+blocking metadata transaction just to write a terminal marker. The existing
+recovery path must reconcile that preserved evidence before more work starts.
 Calls without the option retain their existing behavior. Automatic wake
 registration and scheduling are separate from this runner input.
 

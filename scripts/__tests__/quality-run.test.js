@@ -147,6 +147,7 @@ function withManifestLock(file, mutation) {
   return manifest;
 }
 function validateIdentity(manifest) {
+  if (manifest.behavior?.stallMetadata) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000);
   if (manifest.behavior?.stale) throw new Error("manifest HEAD identity is stale");
 }
 function terminalEpoch(manifest) { return manifest.terminalEpoch || 0; }
@@ -747,6 +748,23 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("bounds standalone metadata validation by the absolute deadline", () => {
+    const entry = fixture({ stallMetadata: true });
+    entry.timeoutSignal = "SIGKILL";
+    const result = run(
+      entry,
+      ["--stop-at", new Date(Date.now() + 2000).toISOString()],
+      4000,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+    });
+    expect(result.manifest.calls || []).toEqual([]);
+  });
   it("starts no campaign work after an absolute stop-at deadline", () => {
     const entry = fixture();
     const before = readFileSync(entry.manifestPath, "utf8");
@@ -791,7 +809,6 @@ describe("quality-run public orchestration", () => {
         status: "terminal",
         state: "blocked",
         reason: "stop-at-expired",
-        campaignState: "blocked",
         quiescence: "confirmed",
       });
       const reviewPid = Number(

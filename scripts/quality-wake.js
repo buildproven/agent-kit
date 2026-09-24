@@ -247,18 +247,7 @@ async function reconcileQuality(options) {
     },
   );
   if (result.deadlineExpired) {
-    const ownerFile = `${registration.manifestPath}.runner-lock`;
-    const observed = ownership.readOwner(ownerFile);
-    const owner = observed?.record;
-    const campaignAbsent =
-      !fs.existsSync(ownerFile) ||
-      (owner?.hostname === os.hostname() &&
-        ownership.processAbsent(owner.pid) &&
-        owner.schemaVersion === 2 &&
-        (owner.child
-          ? ownership.processAbsent(owner.child.pid) &&
-            ownership.processGroupAbsent(owner.child.processGroupId)
-          : !owner.childInFlight));
+    const campaignAbsent = ownership.runnerQuiescent(registration.manifestPath);
     return {
       ...expired,
       quiescence:

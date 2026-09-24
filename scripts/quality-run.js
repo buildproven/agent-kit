@@ -1228,6 +1228,61 @@ async function runOpenCampaign(context, manifestPath, manifest) {
 
 async function runManifest(manifestPath, dependencies = {}) {
   const stopAt = parseStopAt(dependencies.stopAt);
+  if (stopAt === null) return runManifestOwned(manifestPath, dependencies);
+  if (dependencies.runProcess)
+    throw new Error(
+      "deadline execution cannot transfer an injected process callback",
+    );
+  let reply;
+  const result = await require("./quality-process-supervisor").supervise(
+    process.execPath,
+    [
+      __filename,
+      "--deadline-worker",
+      "--manifest",
+      path.resolve(manifestPath),
+      "--stop-at",
+      new Date(stopAt).toISOString(),
+    ],
+    {
+      stopAt,
+      onMessage: (value) => {
+        reply = value;
+      },
+    },
+  );
+  if (result.deadlineExpired) {
+    // Do not re-enter metadata/transaction code after expiry. Preserve the
+    // exact saved state; the supported recovery path will reconcile it later.
+    let quiescent;
+    const until = Date.now() + 200;
+    do {
+      quiescent = runnerOwnership.runnerQuiescent(manifestPath);
+      if (!quiescent) await new Promise((resolve) => setTimeout(resolve, 10));
+    } while (!quiescent && Date.now() < until);
+    return {
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      quiescence:
+        quiescent && !result.terminationError ? "confirmed" : "unknown",
+      ...(result.terminationError
+        ? { terminationError: result.terminationError }
+        : {}),
+      message:
+        "absolute deadline expired; saved campaign state was preserved for recovery",
+    };
+  }
+  if (result.terminationError)
+    throw new Error(`runner supervisor incomplete: ${result.terminationError}`);
+  if (reply?.error) throw new Error(reply.error);
+  if (result.code !== 0 || !reply?.result)
+    throw new Error("runner worker returned no result");
+  return reply.result;
+}
+
+async function runManifestOwned(manifestPath, dependencies = {}) {
+  const stopAt = parseStopAt(dependencies.stopAt);
   // Validate before canonicalizing: a symlinked manifest remains forbidden.
   const initial = quality.loadManifest(manifestPath);
   if (stopAt !== null && Date.now() >= stopAt) {
@@ -1401,8 +1456,20 @@ async function runManifest(manifestPath, dependencies = {}) {
 
 async function main() {
   try {
-    const { manifestPath, stopAt } = parseArgs(process.argv.slice(2));
-    const result = await runManifest(manifestPath, { stopAt });
+    const worker = process.argv[2] === "--deadline-worker";
+    if (worker && !process.send)
+      throw new Error("runner worker requires private IPC");
+    const { manifestPath, stopAt } = parseArgs(
+      process.argv.slice(worker ? 3 : 2),
+    );
+    const result = await (worker ? runManifestOwned : runManifest)(
+      manifestPath,
+      { stopAt },
+    );
+    if (worker) {
+      process.send({ result }, () => process.disconnect());
+      return;
+    }
     emit(result);
     if (result.status === "busy") {
       process.exitCode = BUSY_EXIT;
@@ -1419,6 +1486,10 @@ async function main() {
       process.exitCode = 1;
     }
   } catch (error) {
+    if (process.argv[2] === "--deadline-worker" && process.connected) {
+      process.send({ error: error.message }, () => process.disconnect());
+      return;
+    }
     process.stderr.write(`quality-run: ${error.message}\n`);
     process.exitCode = 2;
   }

@@ -83,9 +83,25 @@ an already accepted remote side effect.
 This replaces the rejected external-signaler designs and avoids experimental
 execve, PID scans, a new lease or a new campaign state schema. Rollback removes
 the new boundary before activation and keeps registrations/history intact.
-Standalone quality-run metadata supervision, explicit between-phase exclusion
-coverage, delayed-CI acceptance and final exact-head review remain unfinished;
-do not infer their completion from the wake deadline regression.
+Standalone `quality-run --stop-at` and the exported deadline-bearing
+`runManifest` now use the same supervisor around the complete runner, not only
+its child phases. The standalone CLI regression first timed out at four seconds
+for a two-second deadline; the revised boundary returns blocked at the deadline.
+It does not call Git or terminal-state transactions after expiry. Thus a saved
+campaign may retain its previous nonterminal state for supported recovery;
+the invocation's blocked result is not a fabricated durable campaign transition.
+
+A real controller worker paused at the Git boundary with no foreground child
+now proves exclusion: another public wake returns `runner-live` without changing
+the manifest or top-level owner record. The fixture uses the current execution
+budget schema; its initial obsolete schema was correctly refused and was not a
+product defect. The shared ownership module owns the read-only quiescence check
+used by both wake and standalone expiry.
+
+The combined runner/wake/runtime suite passes **129/129** in 47.23 seconds,
+including native launchd. Delayed-CI acceptance and final exact-head review
+remain unfinished. These are component/native-fixture results, not installed
+builder recovery, provider authentication or SOTA evidence.
 
 The optional runner deadline is implemented locally, not yet reviewed or merged.
 The public CLI orchestration suite passes 80/80 tests (32.90 seconds). The
