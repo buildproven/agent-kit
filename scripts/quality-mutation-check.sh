@@ -101,7 +101,8 @@ cleanup() {
   if [ -d "$TEMP_ROOT/worktree" ]; then
     git -C "$ROOT" worktree remove --force "$TEMP_ROOT/worktree" >/dev/null 2>&1 || true
   fi
-  rmdir "$TEMP_ROOT" >/dev/null 2>&1 || true
+  rm -f -- "$TEMP_ROOT/policy/.buildproven/test-impact.json"
+  rmdir "$TEMP_ROOT/policy/.buildproven" "$TEMP_ROOT/policy" "$TEMP_ROOT" >/dev/null 2>&1 || true
   if [ "$MUTATION_ACTIVE" = true ]; then
     MUTATION_ACTIVE=false
     if ! node "$SCRIPT_DIR/quality-invocation.js" mutation-complete "$MANIFEST"; then
@@ -113,6 +114,15 @@ cleanup() {
   exit "$STATUS"
 }
 trap cleanup EXIT
+
+# Selection is an input to the experiment, not a mutation subject. Both the
+# baseline and reverted tree read the policy bytes from the exact reviewed
+# commit. Tests still execute in, and inspect, the mutable detached worktree.
+POLICY_ROOT="$TEMP_ROOT/policy"
+mkdir -p "$POLICY_ROOT/.buildproven"
+if git -C "$ROOT" cat-file -e "$HEAD:.buildproven/test-impact.json" 2>/dev/null; then
+  git -C "$ROOT" show "$HEAD:.buildproven/test-impact.json" > "$POLICY_ROOT/.buildproven/test-impact.json"
+fi
 
 printf '%s' "$TEST_PLAN" | jq -e '.args | type == "array" and all(.[]; type == "string")' >/dev/null || {
   echo "quality-mutation-check: persisted test command is invalid" >&2
@@ -222,6 +232,9 @@ run_mutation_command() {
       if [ "$argument" = --execute ] && [ "$saw_execute" = false ]; then
         saw_execute=true
       else
+        if [ "$argument" = -- ] && ! array_contains --policy-root "${args[@]+"${args[@]}"}"; then
+          plan_args+=(--policy-root "$POLICY_ROOT")
+        fi
         plan_args+=("$argument")
       fi
     done
@@ -330,14 +343,14 @@ run_candidate_tests() {
     sibling_result=$?
   fi
   [ "$SIBLING_TEST_SELECTED" = false ] || return "$sibling_result"
-  if [ -f "$SANDBOX/.buildproven/test-impact.json" ] &&
+  if [ -f "$POLICY_ROOT/.buildproven/test-impact.json" ] &&
      [ -f "$SCRIPT_DIR/test-impact.js" ]; then
     # A delivery audit can still require the complete suite. A mutation proof
     # needs only the explicit behavioral test that can turn red. Prefer a
     # repository-owned mapping here so central workflow changes do not spend
     # the full mutation budget before reaching their guard test.
     plan="$(cd "$SANDBOX" && node "$SCRIPT_DIR/test-impact.js" \
-      --prefer-explicit-mappings -- "$candidate" 2>> "$log")" || plan=""
+      --policy-root "$POLICY_ROOT" --prefer-explicit-mappings -- "$candidate" 2>> "$log")" || plan=""
     mode="$(printf '%s' "$plan" | jq -r '.mode // empty' 2>/dev/null || true)"
     command_count="$(printf '%s' "$plan" | jq -r '.commands | length' 2>/dev/null || printf 0)"
     if [ "$mode" = focused ] && [ "$command_count" -gt 0 ]; then

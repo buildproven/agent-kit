@@ -677,6 +677,61 @@ describe("quality-mutation-check", () => {
     expect(state.governor.gateSecondsUsed).toBeGreaterThanOrEqual(1);
   });
 
+  it.each([false, true])(
+    "keeps policy-subject test selection fixed (vacuous=%s)",
+    (vacuous) => {
+      const { root, manifest } = fixture(
+        "policy-subject",
+        "process.exit(0);\n",
+        {
+          focusedMapping: true,
+          testPath: "tests/policy.test.js",
+          testScript: "node -e 'process.exit(0)'",
+        },
+      );
+      const policyPath = ".buildproven/test-impact.json";
+      const policy = JSON.parse(
+        readFileSync(path.join(root, policyPath), "utf8"),
+      );
+      policy.mappings.push({
+        paths: [policyPath],
+        commands: [{ executable: "node", args: ["tests/policy.test.js"] }],
+      });
+      writeFileSync(path.join(root, policyPath), JSON.stringify(policy));
+      // Leave only the policy and its regression changed from the original base.
+      writeFileSync(
+        path.join(root, "logic.js"),
+        git(root, ["show", "origin/main:logic.js"]) + "\n",
+      );
+      writeFileSync(
+        path.join(root, "tests/policy.test.js"),
+        vacuous
+          ? "JSON.parse(require('fs').readFileSync('.buildproven/test-impact.json', 'utf8'));\n"
+          : "const p=JSON.parse(require('fs').readFileSync('.buildproven/test-impact.json','utf8')); if(!p.mappings.some(m=>m.paths.includes('.buildproven/test-impact.json'))) process.exit(1);\n",
+      );
+      git(root, ["add", "."]);
+      git(root, ["commit", "-qm", "test: prove policy mapping"]);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      if (vacuous) {
+        expect(() => runMutation(root, manifest)).toThrow(
+          /persisted tests remained green/,
+        );
+        expect(JSON.parse(readFileSync(manifest, "utf8")).mutation).toBeNull();
+      } else {
+        expect(runMutation(root, manifest)).toMatch(
+          /mutation evidence: revert-diff/,
+        );
+        const state = JSON.parse(readFileSync(manifest, "utf8"));
+        expect(
+          JSON.parse(readFileSync(state.mutation.artifactPath, "utf8")),
+        ).toMatchObject({
+          mutatedPaths: [policyPath],
+          testFailureObserved: true,
+        });
+      }
+    },
+  );
+
   it("uses the shared planner with a committed focused mapping instead of the complete suite", () => {
     const { root, manifest } = fixture(
       "focused",
