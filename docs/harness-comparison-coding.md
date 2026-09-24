@@ -46,3 +46,9 @@ acceptance execution, fixture tree/prompt/scorer hashes, independent review and
 the final manifest freeze remain required before the planned 48 attempts.
 Neither passing controls nor fixture count is evidence of SOTA, model quality,
 token savings, unattended completion, or finished product acceptance.
+
+The selector contract tests also require the corpus, control suite, and this
+document to select the coding-control suite. Removing the corpus mapping must
+produce a failing regression rather than leave future corpus edits unmapped.
+The explicit mutation-plan mode selects selector contract tests for policy
+metadata; ordinary policy changes still select the complete regression audit.
