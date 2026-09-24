@@ -46,10 +46,17 @@ does not duplicate the gate; the deliberately failing gate leaves the campaign
 blocked with zero provider usage. The gate counter remains exactly one. The
 temporary job is booted out and absence is verified. This proves scheduled
 crash wake-up and failure preservation, not successful delayed-CI completion.
-The combined native/runtime run passes 35/35 tests (23.20 seconds).
-Race fault injection, deadline edge cases and the
-remaining delayed-CI acceptance below are unfinished. No production wake job
-has been installed.
+The combined runner/wake/runtime suite now passes 119/119 tests (40.10 seconds),
+including the opt-in native launchd case. A deterministic Git-boundary fault
+replaces ownership after execution reconciliation: the tick returns busy,
+preserves the replacement owner, charges the expired gate once, and starts no
+runner phase. A denied process-group kill originally kept the runner's output
+pipes alive past its deadline (red: six-second test timeout). The fix detaches
+those pipes, returns blocked with `quiescence: unknown` and `terminationError:
+EPERM`, and retains child ownership (green: 3.17 seconds for a three-second
+deadline). It does not claim that an unkillable child stopped.
+The remaining delayed-CI acceptance below is unfinished. No production wake
+job has been installed.
 
 Recovery dispatch must execute from the registered controller's own runtime.
 It uses fixed imports, not dynamic loading of paths from registration data.

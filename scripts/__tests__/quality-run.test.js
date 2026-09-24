@@ -547,7 +547,11 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
 }
 
 function run(entry, extraArgs = [], timeout = 30_000) {
-  const env = { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath };
+  const env = {
+    ...process.env,
+    QUALITY_TEST_MANIFEST: entry.manifestPath,
+    ...entry.environment,
+  };
   delete env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
   const result = spawnSync(
     process.execPath,
@@ -685,6 +689,48 @@ describe("quality-run public orchestration", () => {
       expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
     },
   );
+
+  it("reports unknown quiescence and preserves ownership when deadline termination is denied", () => {
+    const entry = fixture({ holdReview: true });
+    const shim = entry.manifestPath + ".deny-kill.cjs";
+    writeFileSync(
+      shim,
+      `const original = process.kill.bind(process);
+process.kill = (pid, signal) => {
+  if (pid < 0 && signal === "SIGKILL") throw Object.assign(new Error("injected kill denial"), { code: "EPERM" });
+  return original(pid, signal);
+};\n`,
+    );
+    entry.environment = { NODE_OPTIONS: "--require " + JSON.stringify(shim) };
+    let result;
+    try {
+      result = run(
+        entry,
+        ["--stop-at", new Date(Date.now() + 3000).toISOString()],
+        6000,
+      );
+    } finally {
+      writeFileSync(entry.manifestPath + ".review-release", "release");
+    }
+    expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      quiescence: "unknown",
+      terminationError: "EPERM",
+    });
+    const owner = JSON.parse(
+      readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
+    );
+    expect(owner.childInFlight).toBe(true);
+    expect(owner.child.pid).toBe(
+      Number(readFileSync(entry.manifestPath + ".review-pid", "utf8")),
+    );
+    expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
+  });
 
   it.each(["tomorrow", "2026-09-24T00:00:00", "-1", "2026-02-30T00:00:00Z"])(
     "rejects invalid absolute deadline %s before campaign work",

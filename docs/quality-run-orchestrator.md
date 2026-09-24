@@ -32,6 +32,10 @@ returns `blocked` with reason `stop-at-expired`. The result reports whether
 process quiescence was confirmed or remains unknown. It never reports campaign
 success from deadline expiry. Existing active-execution and ownership evidence
 is retained for the supported reconciliation path; expiry does not reset it.
+If the OS refuses group termination, the runner reports the termination error,
+disconnects its output pipes and retains ownership of the possibly live child.
+It returns a blocked result without waiting indefinitely or claiming the child
+was stopped.
 Calls without the option retain their existing behavior. Automatic wake
 registration and scheduling are separate from this runner input.
 

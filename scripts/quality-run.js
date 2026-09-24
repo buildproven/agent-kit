@@ -154,7 +154,22 @@ function runProcess(command, args, options = {}) {
       } catch (error) {
         if (error.code !== "ESRCH") {
           clearTimeout(deadlineTimer);
-          reject(error);
+          // A refused signal is not proof that the child stopped. Do not let
+          // its open pipes keep this bounded invocation alive indefinitely.
+          // The owner keeps the live child identity and prevents re-entry.
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.unref();
+          options.onChild?.(null);
+          resolve({
+            code: 1,
+            signal: null,
+            stdout,
+            stderr,
+            deadlineExpired: true,
+            childPid: child.pid,
+            terminationError: error.code || "SIGNAL_FAILED",
+          });
         }
       }
     };
@@ -1003,6 +1018,9 @@ async function recordFailure(context, manifestPath, error) {
       reason: "stop-at-expired",
       campaignState,
       quiescence: error.quiescence,
+      ...(error.terminationError
+        ? { terminationError: error.terminationError }
+        : {}),
       message: "absolute wake deadline expired; campaign remains incomplete",
       head: manifest.revisions.currentHead,
     };
@@ -1258,10 +1276,11 @@ async function runManifest(manifestPath, dependencies = {}) {
       head: initial.manifest.revisions.currentHead,
     };
   }
-  const deadlineError = (quiescence) =>
+  const deadlineError = (quiescence, terminationError = null) =>
     Object.assign(new Error("absolute wake deadline expired"), {
       deadlineExpired: true,
       quiescence,
+      terminationError,
     });
   const execute = async (command, args, options = {}) => {
     if (stopAt !== null && Date.now() >= stopAt)
@@ -1277,7 +1296,10 @@ async function runManifest(manifestPath, dependencies = {}) {
         Number.isInteger(result.childPid) &&
         runnerOwnership.processAbsent(result.childPid) &&
         runnerOwnership.processGroupAbsent(result.childPid);
-      throw deadlineError(quiescent ? "confirmed" : "unknown");
+      throw deadlineError(
+        quiescent ? "confirmed" : "unknown",
+        result.terminationError,
+      );
     }
     return result;
   };

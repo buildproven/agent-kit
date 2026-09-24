@@ -28,7 +28,11 @@ function executableController(fx) {
   execFileSync("tar", ["-xf", "-", "-C", fx.controller], {
     input: controllerArchive,
   });
-  for (const file of ["quality-wake.js", "autonomous-loop-runtime.js"]) {
+  for (const file of [
+    "quality-wake.js",
+    "quality-run.js",
+    "autonomous-loop-runtime.js",
+  ]) {
     copyFileSync(
       path.join(SOURCE_ROOT, "scripts", file),
       path.join(fx.controller, "scripts", file),
@@ -150,7 +154,7 @@ function register(fx, extra = []) {
   );
 }
 
-function wake(fx, registrationPath) {
+function wake(fx, registrationPath, environment = {}) {
   return spawnSync(
     process.execPath,
     [
@@ -161,7 +165,7 @@ function wake(fx, registrationPath) {
     ],
     {
       encoding: "utf8",
-      env: { ...process.env, TMPDIR: fx.root },
+      env: { ...process.env, TMPDIR: fx.root, ...environment },
       timeout: 10_000,
     },
   );
@@ -319,6 +323,81 @@ setTimeout(() => process.exit(1), 5000);\n`,
 );
 
 describe("quality wake reconciliation", () => {
+  it("stops when ownership changes after execution reconciliation", () => {
+    const fx = fixture();
+    executableController(fx);
+    fx.manifest.governor.executionBudgetVersion = 1;
+    fx.manifest.requiredGatesPolicyVersion = 3;
+    fx.manifest.governor.activeExecution = {
+      kind: "gate",
+      name: "test",
+      startedAt: new Date(Date.now() - 10_000).toISOString(),
+      timeoutSeconds: 1,
+    };
+    writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    const registration = registered(fx);
+    const dead = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
+    expect(dead.status).toBe(0);
+    const ownerFile = fx.manifestPath + ".runner-lock";
+    writeFileSync(
+      ownerFile,
+      JSON.stringify({
+        schemaVersion: 2,
+        hostname: hostname(),
+        pid: dead.pid,
+        nonce: "original-owner",
+        acquiredAt: new Date().toISOString(),
+        childInFlight: true,
+        child: {
+          pid: dead.pid,
+          processGroupId: dead.pid,
+          startedAt: new Date().toISOString(),
+        },
+      }),
+    );
+    const bin = path.join(fx.root, "race-bin");
+    const marker = path.join(fx.root, "race-injected");
+    mkdirSync(bin);
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    // The real Git command still executes. Its boundary provides a deterministic
+    // fault point after advanceManifest saves, before the second owner read.
+    writeFileSync(
+      path.join(bin, "git"),
+      `#!${process.execPath}
+const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(${JSON.stringify(fx.manifestPath)}, "utf8"));
+if (manifest.manifestRevision > 0 && !fs.existsSync(${JSON.stringify(marker)})) {
+  const file = ${JSON.stringify(ownerFile)};
+  const owner = JSON.parse(fs.readFileSync(file, "utf8"));
+  owner.nonce = "changed-during-recovery";
+  fs.writeFileSync(file + ".replacement", JSON.stringify(owner));
+  fs.renameSync(file + ".replacement", file);
+  fs.writeFileSync(${JSON.stringify(marker)}, "injected");
+}
+const result = require("node:child_process").spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`,
+    );
+    chmodSync(path.join(bin, "git"), 0o755);
+    const result = wake(fx, registration, {
+      PATH: bin + path.delimiter + process.env.PATH,
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "busy",
+      reason: "recovery-observation-changed",
+    });
+    expect(JSON.parse(readFileSync(ownerFile, "utf8")).nonce).toBe(
+      "changed-during-recovery",
+    );
+    const final = JSON.parse(readFileSync(fx.manifestPath, "utf8"));
+    expect(final.governor.activeExecution).toBeNull();
+    expect(final.governor.gateSecondsUsed).toBe(1);
+    expect(final.terminalState).toBeNull();
+    expect(final.orchestration).toBeUndefined();
+  });
+
   it.each(["work-required", "action-required"])(
     "honors the existing durable %s pause",
     (status) => {
