@@ -3622,143 +3622,252 @@ exec "${realGit}" "$@"
     expect(result.stderr).toMatch(/only one override flag/);
   });
 
-  it("carries a valid break-glass approval across a rebase-only HEAD change with no new diff (BUI-380)", () => {
-    const root = repo("approval-rebase-carry");
-    const wrapped = spawnSync("node", [WRAPPER, BOOTSTRAP], {
-      cwd: root,
-      input: JSON.stringify({
-        argv: ["--target-dir", root, "--level", "98"],
-      }),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        BREAK_GLASS_APPROVED: "true",
-        BREAK_GLASS_APPROVER: "brett",
-      },
-    });
-    expect(wrapped.status, wrapped.stderr).toBe(0);
-    const manifest = wrapped.stdout
-      .split("\n")
-      .find((line) => line.startsWith("BS_QUALITY_MANIFEST="))
-      ?.slice("BS_QUALITY_MANIFEST=".length);
-    expect(
-      spawnSync("node", [INVOCATION, "approval-valid", manifest], {
+  it.each(["rebase", "merge"])(
+    "carries %s replay",
+    (integration) => {
+      const root = repo("approval-rebase-carry");
+      const wrapped = spawnSync("node", [WRAPPER, BOOTSTRAP], {
         cwd: root,
-      }).status,
-    ).toBe(0);
-    const beforeState = JSON.parse(readFileSync(manifest, "utf8"));
-    const priorHead = beforeState.revisions.currentHead;
-
-    // Advance main with an unrelated commit, then rebase the feature branch
-    // onto it. This rewrites the feature commit (new SHA, new parent) but
-    // the diff content (file.js: 1 -> 2) is byte-identical.
-    git(root, ["switch", "-q", "main"]);
-    writeFileSync(path.join(root, "unrelated.js"), "export const u = 1;\n");
-    git(root, ["add", "."]);
-    git(root, ["commit", "-q", "-m", "unrelated main change"]);
-    git(root, ["push", "-q", "origin", "main"]);
-    git(root, ["switch", "-q", "feature"]);
-    git(root, ["fetch", "-q", "origin", "main"]);
-    git(root, ["rebase", "-q", "origin/main"]);
-    const rebasedHead = git(root, ["rev-parse", "HEAD"]);
-    expect(rebasedHead).not.toBe(priorHead);
-    expect(
-      spawnSync(
-        "git",
-        ["merge-base", "--is-ancestor", priorHead, rebasedHead],
-        {
-          cwd: root,
+        input: JSON.stringify({
+          argv: ["--target-dir", root, "--level", "98"],
+        }),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          BREAK_GLASS_APPROVED: "true",
+          BREAK_GLASS_APPROVER: "brett",
         },
-      ).status,
-    ).not.toBe(0); // confirm this is a real rewrite, not a fast-forward
+      });
+      expect(wrapped.status, wrapped.stderr).toBe(0);
+      const manifest = wrapped.stdout
+        .split("\n")
+        .find((line) => line.startsWith("BS_QUALITY_MANIFEST="))
+        ?.slice("BS_QUALITY_MANIFEST=".length);
+      expect(
+        spawnSync("node", [INVOCATION, "approval-valid", manifest], {
+          cwd: root,
+        }).status,
+      ).toBe(0);
+      const beforeState = JSON.parse(readFileSync(manifest, "utf8"));
+      const priorHead = beforeState.revisions.currentHead;
 
-    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
-    const afterState = JSON.parse(readFileSync(manifest, "utf8"));
-    expect(afterState.revisions.currentHead).toBe(rebasedHead);
-    // Human approval is a signed capability for an exact HEAD. Unlike
-    // provider evidence, it is never silently carried across a rewrite.
-    expect(afterState.approval.approved).toBe(false);
-    expect(
-      spawnSync("node", [INVOCATION, "approval-valid", manifest], {
-        cwd: root,
-      }).status,
-    ).not.toBe(0);
+      // Advance main with an unrelated commit, then rebase the feature branch
+      // onto it. This rewrites the feature commit (new SHA, new parent) but
+      // the diff content (file.js: 1 -> 2) is byte-identical.
+      git(root, ["switch", "-q", "main"]);
+      writeFileSync(path.join(root, "unrelated.js"), "export const u = 1;\n");
+      git(root, ["add", "."]);
+      git(root, ["commit", "-q", "-m", "unrelated main change"]);
+      git(root, ["push", "-q", "origin", "main"]);
+      git(root, ["switch", "-q", "feature"]);
+      git(root, ["fetch", "-q", "origin", "main"]);
+      git(root, [
+        integration,
+        "-q",
+        ...(integration === "merge" ? ["--no-edit"] : []),
+        "origin/main",
+      ]);
+      const rebasedHead = git(root, ["rev-parse", "HEAD"]);
+      expect(rebasedHead).not.toBe(priorHead);
+      expect(
+        spawnSync(
+          "git",
+          ["merge-base", "--is-ancestor", priorHead, rebasedHead],
+          {
+            cwd: root,
+          },
+        ).status,
+      ).toBe(integration === "merge" ? 0 : 1);
 
-    // baseHeadSha (quality-authorize-merge.sh's live-freshness anchor at
-    // merge time, EXPECTED_BASE_OID) must advance with the rebase too, or
-    // merge authorization would keep comparing against the pre-rebase base
-    // forever and wrongly block an up-to-date branch with "PR base changed
-    // after review" even though nothing unreviewed landed.
-    const newMainHead = git(root, ["rev-parse", "origin/main"]);
-    expect(afterState.revisions.baseHeadSha).toBe(newMainHead);
-    expect(afterState.revisions.baseRebaseCarry).toMatchObject({
-      head: rebasedHead,
-      baseSha: newMainHead,
-    });
-    expect(afterState.revisions.reviewRebaseCarry).toMatchObject({
-      reviewedHead: priorHead,
-      head: rebasedHead,
-      priorBaseSha: beforeState.revisions.baseSha,
-      expectedTree: afterState.revisions.reviewRebaseCarry.actualTree,
-    });
-    expect(
-      spawnSync(
-        "git",
-        [
-          "merge-base",
-          "--is-ancestor",
-          afterState.revisions.baseHeadSha,
-          rebasedHead,
-        ],
-        { cwd: root },
-      ).status,
-    ).toBe(0);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      const afterState = JSON.parse(readFileSync(manifest, "utf8"));
+      expect(afterState.revisions.currentHead).toBe(rebasedHead);
+      // Human approval is a signed capability for an exact HEAD. Unlike
+      // provider evidence, it is never silently carried across a rewrite.
+      expect(afterState.approval.approved).toBe(false);
+      expect(
+        spawnSync("node", [INVOCATION, "approval-valid", manifest], {
+          cwd: root,
+        }).status,
+      ).not.toBe(0);
 
-    // A later train member can be rebased again after another earlier PR
-    // lands. Preserve both exact replay edges rather than overwriting the
-    // original provider-reviewed endpoint.
-    git(root, ["switch", "-q", "main"]);
-    writeFileSync(
-      path.join(root, "unrelated-two.js"),
-      "export const u2 = 1;\n",
-    );
-    git(root, ["add", "."]);
-    git(root, ["commit", "-q", "-m", "second unrelated main change"]);
-    git(root, ["push", "-q", "origin", "main"]);
-    git(root, ["switch", "-q", "feature"]);
-    git(root, ["fetch", "-q", "origin", "main"]);
-    git(root, ["rebase", "-q", "origin/main"]);
-    const twiceRebasedHead = git(root, ["rev-parse", "HEAD"]);
-    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
-    const twiceRebased = JSON.parse(readFileSync(manifest, "utf8"));
-    expect(twiceRebased.revisions.reviewRebaseCarries).toHaveLength(2);
-    expect(twiceRebased.revisions.reviewRebaseCarries).toMatchObject([
-      {
+      // baseHeadSha (quality-authorize-merge.sh's live-freshness anchor at
+      // merge time, EXPECTED_BASE_OID) must advance with the rebase too, or
+      // merge authorization would keep comparing against the pre-rebase base
+      // forever and wrongly block an up-to-date branch with "PR base changed
+      // after review" even though nothing unreviewed landed.
+      const newMainHead = git(root, ["rev-parse", "origin/main"]);
+      expect(afterState.revisions.baseHeadSha).toBe(newMainHead);
+      expect(afterState.revisions.baseRebaseCarry).toMatchObject({
+        head: rebasedHead,
+        baseSha: newMainHead,
+      });
+      expect(afterState.revisions.reviewRebaseCarry).toMatchObject({
         reviewedHead: priorHead,
         head: rebasedHead,
         priorBaseSha: beforeState.revisions.baseSha,
-      },
-      {
-        reviewedHead: rebasedHead,
-        head: twiceRebasedHead,
-        priorBaseSha: newMainHead,
-      },
-    ]);
+        expectedTree: afterState.revisions.reviewRebaseCarry.actualTree,
+      });
+      expect(
+        spawnSync(
+          "git",
+          [
+            "merge-base",
+            "--is-ancestor",
+            afterState.revisions.baseHeadSha,
+            rebasedHead,
+          ],
+          { cwd: root },
+        ).status,
+      ).toBe(0);
 
-    // A genuine new content change after the rebase must still invalidate
-    // the carried approval — rebase tolerance must never become a blanket
-    // pass.
+      // A normal content commit must not make the previous carry inapplicable.
+      writeFileSync(path.join(root, "file.js"), "export const value = 4;\n");
+      git(root, ["commit", "-qam", "intervening candidate change"]);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      const interveningHead = git(root, ["rev-parse", "HEAD"]);
+
+      // A later train member can be integrated again after another earlier PR
+      // lands. Preserve both exact replay edges rather than overwriting the
+      // original provider-reviewed endpoint.
+      git(root, ["switch", "-q", "main"]);
+      writeFileSync(
+        path.join(root, "unrelated-two.js"),
+        "export const u2 = 1;\n",
+      );
+      git(root, ["add", "."]);
+      git(root, ["commit", "-q", "-m", "second unrelated main change"]);
+      git(root, ["push", "-q", "origin", "main"]);
+      git(root, ["switch", "-q", "feature"]);
+      git(root, ["fetch", "-q", "origin", "main"]);
+      git(root, [
+        integration,
+        "-q",
+        ...(integration === "merge" ? ["--no-edit"] : []),
+        "origin/main",
+      ]);
+      const twiceRebasedHead = git(root, ["rev-parse", "HEAD"]);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      const twiceRebased = JSON.parse(readFileSync(manifest, "utf8"));
+      expect(twiceRebased.revisions.reviewRebaseCarries).toHaveLength(2);
+      expect(twiceRebased.revisions.reviewRebaseCarries).toMatchObject([
+        {
+          reviewedHead: priorHead,
+          head: rebasedHead,
+          priorBaseSha: beforeState.revisions.baseSha,
+        },
+        {
+          reviewedHead: interveningHead,
+          head: twiceRebasedHead,
+          priorBaseSha: newMainHead,
+        },
+      ]);
+
+      // A genuine new content change after the rebase must still invalidate
+      // the carried approval — rebase tolerance must never become a blanket
+      // pass.
+      writeFileSync(path.join(root, "file.js"), "export const value = 3;\n");
+      git(root, ["commit", "-qam", "real content change"]);
+      execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      const finalState = JSON.parse(readFileSync(manifest, "utf8"));
+      expect(finalState.approval.approved).toBe(false);
+      expect(
+        spawnSync("node", [INVOCATION, "approval-valid", manifest], {
+          cwd: root,
+        }).status,
+      ).not.toBe(0);
+    },
+    120_000,
+  );
+
+  it("rejects a main merge with extra candidate content without changing the manifest", () => {
+    const root = repo("main-merge-changed-patch");
+    const manifest = create(root);
+    const before = readFileSync(manifest, "utf8");
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(path.join(root, "upstream.js"), "export const value = 7;\n");
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "upstream change"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["merge", "-q", "--no-edit", "origin/main"]);
     writeFileSync(path.join(root, "file.js"), "export const value = 3;\n");
-    git(root, ["commit", "-qam", "real content change"]);
-    execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
-    const finalState = JSON.parse(readFileSync(manifest, "utf8"));
-    expect(finalState.approval.approved).toBe(false);
+    git(root, ["commit", "-qam", "extra candidate change"]);
+    const result = spawnSync("node", [INVOCATION, "advance", manifest], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(
+      /base identity mismatch|provable rebase-only replay/,
+    );
+    expect(readFileSync(manifest, "utf8")).toBe(before);
+  });
+
+  it("refuses ambiguous merge bases without changing campaign state", () => {
+    const root = repo("ambiguous-main-merge");
+    const manifest = create(root);
+    const before = readFileSync(manifest, "utf8");
+    const feature = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "-q", "main"]);
+    writeFileSync(path.join(root, "upstream.js"), "export const value = 7;\n");
+    git(root, ["add", "."]);
+    git(root, ["commit", "-qm", "upstream"]);
+    const upstream = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["fetch", "-q", "origin", "main"]);
+    git(root, ["switch", "-q", "feature"]);
+    git(root, ["merge", "-q", "--no-edit", "origin/main"]);
+    const otherMerge = git(root, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      upstream,
+      "-p",
+      feature,
+      "-m",
+      "other merge",
+    ]);
+    git(root, ["update-ref", "refs/remotes/origin/main", otherMerge]);
     expect(
-      spawnSync("node", [INVOCATION, "approval-valid", manifest], {
-        cwd: root,
-      }).status,
-    ).not.toBe(0);
-  }, 120_000);
+      git(root, ["merge-base", "--all", "HEAD", "origin/main"]).split("\n"),
+    ).toHaveLength(2);
+    const result = spawnSync("node", [INVOCATION, "advance", manifest], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/multiple merge bases/);
+    expect(readFileSync(manifest, "utf8")).toBe(before);
+  });
+
+  it("refuses replay onto a non-descendant base without changing campaign state", () => {
+    const root = repo("non-monotonic-base");
+    const manifest = create(root);
+    const before = readFileSync(manifest, "utf8");
+    const unrelatedBase = git(root, [
+      "commit-tree",
+      "main^{tree}",
+      "-m",
+      "unrelated base",
+    ]);
+    const replayHead = git(root, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      unrelatedBase,
+      "-m",
+      "same patch unrelated history",
+    ]);
+    git(root, ["update-ref", "refs/remotes/origin/main", unrelatedBase]);
+    git(root, ["switch", "-q", "--detach", replayHead]);
+    const result = spawnSync("node", [INVOCATION, "advance", manifest], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/not a provable rebase-only replay/);
+    expect(readFileSync(manifest, "utf8")).toBe(before);
+  });
 
   it("never carries a non-string-patchId approval across a rebase-only HEAD change", () => {
     // invalidateOrCarryApproval() now guards manifest.approval.patchId with

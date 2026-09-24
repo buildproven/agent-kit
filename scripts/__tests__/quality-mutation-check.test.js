@@ -459,7 +459,7 @@ function runMutation(root, manifest) {
   }
 }
 
-function runMutationProcess(root, manifest) {
+function runMutationProcess(root, manifest, extraEnv = {}) {
   return spawnSync("bash", [MUTATION, "--manifest", manifest], {
     cwd: root,
     encoding: "utf8",
@@ -467,6 +467,7 @@ function runMutationProcess(root, manifest) {
       ...process.env,
       GIT_ALLOW_PROTOCOL: "file",
       PATH: `${path.join(root, "test-bin")}:${process.env.PATH}`,
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -546,6 +547,49 @@ describe("config-promotion filter", () => {
 });
 
 describe("quality-mutation-check", () => {
+  it.each([
+    ["default", {}],
+    ["mapped", { focusedMapping: true }],
+    ["dependency", { localDependency: true }],
+    ["sibling", { vitestRunner: true }],
+  ])(
+    "isolates controller identity and credentials from %s mutation tests",
+    (label, options) => {
+      const { root, manifest } = fixture(
+        `filtered-environment-${label}`,
+        "const assert=require('node:assert/strict');\nfor(const name of ['BS_QUALITY_TERMINAL_EPOCH','GH_TOKEN','NPM_CONFIG_AUTH_TOKEN']) assert.equal(process.env[name],undefined, name + ' leaked');\nassert.ok(process.env.PATH);\nassert.equal(process.env.CI,'true');\nassert.equal(require('./logic').isAllowed('admin'),true);\n",
+        options,
+      );
+      const result = runMutationProcess(root, manifest, {
+        BS_QUALITY_TERMINAL_EPOCH: "17",
+        GH_TOKEN: "synthetic-not-a-credential",
+        NPM_CONFIG_AUTH_TOKEN: "synthetic-not-a-credential",
+        CI: "true",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/mutation evidence: revert-diff/);
+    },
+  );
+
+  it.each([
+    [[], 2, /expected executable/],
+    [["nonexistent-quality-fixture-executable"], 1, /child launch failed/],
+    [[process.execPath, "-e", "process.exit(23)"], 23, /^$/],
+    [
+      [process.execPath, "-e", "process.kill(process.pid, 'SIGTERM')"],
+      143,
+      /^$/,
+    ],
+  ])("preserves repository command failure for %j", (args, status, stderr) => {
+    const result = spawnSync(
+      process.execPath,
+      [path.join(ROOT, "scripts", "quality-repository-command.js"), ...args],
+      { encoding: "utf8" },
+    );
+    expect(result.status).toBe(status);
+    expect(result.stderr).toMatch(stderr);
+  });
+
   it("prepares non-pnpm dependencies inside the detached mutation worktree", () => {
     const { root, manifest } = fixture(
       "npm-isolated-dependency",
@@ -1446,9 +1490,14 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     },
   );
 
-  it.each([false, true])(
-    "excludes protected-base paths from an exact rebase-carry mutation (test repair=%s)",
-    (testRepair) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "excludes protected-base paths from a rebase-carry mutation (test repair=%s, descendant=%s)",
+    (testRepair, descendant) => {
       const { root, manifest } = fixture(
         "rebase-live-patch",
         "const { isAllowed } = require('./logic');\nif (!isAllowed('admin')) process.exit(1);\n",
@@ -1491,6 +1540,15 @@ if (!source.includes("role === 'admin'")) process.exit(1);
         baseSha: freshBase,
         head: advanced.revisions.currentHead,
       });
+      if (descendant) {
+        writeFileSync(
+          path.join(root, "repair.test.js"),
+          "// Later test repair\n",
+        );
+        git(root, ["add", "repair.test.js"]);
+        git(root, ["commit", "-qm", "test: repair after base carry"]);
+        execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      }
       expect(runMutation(root, manifest)).toMatch(
         /mutation evidence: revert-diff caught by logic\.js/,
       );
