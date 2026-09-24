@@ -35,6 +35,12 @@ the known-correct test, not the submitted test: both controls failed. The copy
 now preserves the submitted test and reverts only implementation bytes; both
 controls pass. No model attempt was run before this correction.
 
+CodeQL also rejected the initial snapshot path check followed by a separate
+path read. Snapshot files now open with `O_NOFOLLOW`; metadata and contents use
+that same descriptor, closed in `finally`. A synthetic symlink control is
+rejected. This remains trusted fixture inspection, not a confinement boundary
+for concurrently hostile candidate processes.
+
 This draft does not freeze a complete comparison. T08–T12, actual isolated
 acceptance execution, fixture tree/prompt/scorer hashes, independent review and
 the final manifest freeze remain required before the planned 48 attempts.

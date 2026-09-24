@@ -3,7 +3,11 @@ import {
   readFileSync,
   writeFileSync,
   readdirSync,
-  lstatSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  constants,
+  symlinkSync,
   mkdirSync,
 } from "node:fs";
 import path from "node:path";
@@ -36,13 +40,20 @@ function snapshot(root, relative = "") {
   for (const name of readdirSync(path.join(root, relative)).sort()) {
     const file = path.join(relative, name);
     const full = path.join(root, file);
-    const stat = lstatSync(full);
-    assert(!stat.isSymbolicLink(), `unexpected symlink: ${file}`);
-    entries[file] = {
-      mode: stat.mode,
-      contents: stat.isFile() ? readFileSync(full, "utf8") : null,
-    };
-    if (stat.isDirectory()) Object.assign(entries, snapshot(root, file));
+    const fd = openSync(
+      full,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const stat = fstatSync(fd);
+      entries[file] = {
+        mode: stat.mode,
+        contents: stat.isFile() ? readFileSync(fd, "utf8") : null,
+      };
+      if (stat.isDirectory()) Object.assign(entries, snapshot(root, file));
+    } finally {
+      closeSync(fd);
+    }
   }
   return entries;
 }
@@ -142,6 +153,13 @@ function verify(task, root) {
 }
 
 describe("coding comparison oracle controls (not scored agent runs)", () => {
+  it("refuses symlinked snapshot input without following the target", () => {
+    const root = makeTempDir("comparison-symlink-");
+    const outside = makeTempDir("comparison-outside-");
+    writeFileSync(path.join(outside, "canary"), "synthetic only");
+    symlinkSync(path.join(outside, "canary"), path.join(root, "input"));
+    expect(() => snapshot(root)).toThrow();
+  });
   it("T07: rejects removal of the existing boundary coverage", () => {
     const task = corpus.tasks.find((task) => task.id === "T07");
     const root = materialize(task, true);
