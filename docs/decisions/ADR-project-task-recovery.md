@@ -12,6 +12,81 @@ here so the temporary artifact is not the only record.
 
 ## Implementation checkpoint — 2026-09-24
 
+Latest deadline audit: **incomplete**. Pushed head `96b7d5d` passes CI, but
+a new public wake CLI regression with a two-second registered deadline and a
+stalled Git boundary takes 5.06 seconds. The test fails its four-second bound
+(one failed, 25 skipped; 5.57 seconds). Synchronous metadata validation blocks
+the runner's event loop; child-phase timers cannot bound the whole tick.
+
+Two focused architecture reviews rejected an outer watchdog that signals
+children from saved owner records. Publication-before-execution, PID reuse,
+descriptor inheritance and stopped-worker cleanup need explicit handling.
+Do not implement that rejected design or treat its review as approval.
+
+The replacement received focused Sol/high architecture approval after confirming
+the existing ownership split: the top-level worker PID/nonce never changes
+between phases; only its nested child identifies a phase supervisor. A live
+top-level worker always prevents recovery, even between child groups. The
+implementation must retain and test that exclusion. Review decision: APPROVE;
+implementation and delivery remain unreviewed.
+
+The replacement is a small self-owned process-group supervisor:
+each supervisor keeps an asynchronous deadline outside its payload, starts the
+payload only after ownership publication, and signals only its own live group.
+The same boundary would supervise metadata reconciliation and phase commands.
+This removes file-derived kill authority, PID scans and experimental execve.
+The implementation is now local, not deployed or independently reviewed.
+The original metadata regression passes (one passed, 25 skipped; 2.36 seconds).
+Its first combined run passed 120 tests and failed one: signal-denial reporting
+lost the original EPERM code. The corrected focused suite passed 5/5 (4.05
+seconds), preserving the error and unknown-quiescence result. The next combined
+run passed 125 tests; its old launchd expectation failed because coordinator
+death now cancels, rather than leaves running, the gate. The updated native
+probe passed (16.59 seconds): automatic ticks preserve pending execution,
+run the gate exactly once, observe its group absent, and stop at the original
+registration deadline without claiming campaign completion. The temporary job
+is removed. No production job has been installed.
+The final local combined runner/wake/runtime run passes **127/127** in 47.68
+seconds, including the opt-in native launchd probe. Focused coverage also proves
+parent-disconnect cancellation, no payload before successful ownership
+publication, exact arguments, normal target exit codes, same-group descendant
+cleanup and an event-loop-blocking payload deadline. ESLint reports zero errors
+(existing and new complexity warnings remain); `git diff --check` passes.
+Required tests include parent disconnect, publication ordering, same-group
+descendant cleanup, structured exit results and the existing native wake proof.
+Delayed-CI acceptance and final independent review remain required.
+
+### Approved supervisor boundary
+
+Each detached supervisor is its own live POSIX group leader. It keeps the
+absolute deadline on its event loop; the payload runs non-detached in that
+group. Only the supervisor signals its group, using its own PID. No watchdog
+signals a PID obtained from a durable file. Normal target exit also cleans
+same-group descendants before the parent can accept its result.
+
+The parent fsyncs the nested child ownership record before sending the private
+IPC start message. Disconnect before start cannot execute the payload;
+disconnect afterward cancels the group. Payload IPC, when needed for the wake
+result, is a fresh channel, not an inherited endpoint of the parent's channel.
+The top-level campaign owner remains the reconciliation worker for its whole
+run. Its live PID excludes a second wake even between phases.
+
+Target results travel separately from stdout. The supervisor waits for its
+result-send callback, then self-kills; a short fallback bounds IPC delivery.
+Missing results, failed signals and groups not proved absent are incomplete,
+never success. An outer observer may detach after a bounded cleanup allowance
+but never signals a stale PID. Wake expiry also checks retained nested campaign
+ownership before claiming quiescence. This is cooperative POSIX supervision,
+not malicious-daemon containment, hard real-time scheduling, or cancellation of
+an already accepted remote side effect.
+
+This replaces the rejected external-signaler designs and avoids experimental
+execve, PID scans, a new lease or a new campaign state schema. Rollback removes
+the new boundary before activation and keeps registrations/history intact.
+Standalone quality-run metadata supervision, explicit between-phase exclusion
+coverage, delayed-CI acceptance and final exact-head review remain unfinished;
+do not infer their completion from the wake deadline regression.
+
 The optional runner deadline is implemented locally, not yet reviewed or merged.
 The public CLI orchestration suite passes 80/80 tests (32.90 seconds). The
 original active-review probe failed after its six-second test timeout; with the

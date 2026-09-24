@@ -221,6 +221,68 @@ async function reconcileQuality(options) {
   if (!options.registration)
     throw new Error("reconcile-quality requires --registration");
   const file = path.resolve(options.registration);
+  const registration = readRegistration(file);
+  const stopAt = parseStopAt(registration.stopAt);
+  if (stopAt === null)
+    throw new Error("wake registration is missing its deadline");
+  const expired = {
+    schemaVersion: 1,
+    invocationId: registration.invocationId,
+    repoKey: registration.repoKey,
+    manifestPath: registration.manifestPath,
+    status: "blocked",
+    reason: "stop-at-expired",
+  };
+  if (Date.now() >= stopAt) return expired;
+  let reply;
+  const result = await require("./quality-process-supervisor").supervise(
+    process.execPath,
+    [__filename, "--worker", file],
+    {
+      stopAt,
+      forwardOutput: false,
+      onMessage: (value) => {
+        reply = value;
+      },
+    },
+  );
+  if (result.deadlineExpired) {
+    const ownerFile = `${registration.manifestPath}.runner-lock`;
+    const observed = ownership.readOwner(ownerFile);
+    const owner = observed?.record;
+    const campaignAbsent =
+      !fs.existsSync(ownerFile) ||
+      (owner?.hostname === os.hostname() &&
+        ownership.processAbsent(owner.pid) &&
+        owner.schemaVersion === 2 &&
+        (owner.child
+          ? ownership.processAbsent(owner.child.pid) &&
+            ownership.processGroupAbsent(owner.child.processGroupId)
+          : !owner.childInFlight));
+    return {
+      ...expired,
+      quiescence:
+        result.terminationError || !campaignAbsent ? "unknown" : "confirmed",
+    };
+  }
+  if (result.terminationError)
+    throw new Error(`wake supervisor incomplete: ${result.terminationError}`);
+  if (reply?.error) throw new Error(reply.error);
+  if (
+    result.code !== 0 ||
+    !reply?.result ||
+    reply.result.invocationId !== registration.invocationId ||
+    reply.result.repoKey !== registration.repoKey ||
+    reply.result.manifestPath !== registration.manifestPath
+  )
+    throw new Error("wake worker returned no matching campaign result");
+  return reply.result;
+}
+
+async function reconcileQualityWorker(options) {
+  if (!options.registration)
+    throw new Error("reconcile-quality requires --registration");
+  const file = path.resolve(options.registration);
   const snapshot = validatedWake(file);
   const { registration, manifest, stopAt } = snapshot;
   const manifestPath = registration.manifestPath;
@@ -422,3 +484,13 @@ module.exports = {
   controllerIdentity,
   renderQualityWake,
 };
+
+if (require.main === module) {
+  if (process.argv[2] !== "--worker" || !process.send)
+    throw new Error("quality wake worker requires private IPC");
+  reconcileQualityWorker({ registration: process.argv[3] }).then(
+    (result) => process.send({ result }, () => process.disconnect()),
+    (error) =>
+      process.send({ error: error.message }, () => process.disconnect()),
+  );
+}

@@ -31,6 +31,7 @@ function executableController(fx) {
   for (const file of [
     "quality-wake.js",
     "quality-run.js",
+    "quality-process-supervisor.js",
     "autonomous-loop-runtime.js",
   ]) {
     copyFileSync(
@@ -189,7 +190,7 @@ it.runIf(
   process.platform === "darwin" &&
     process.env.BS_QUALITY_WAKE_LAUNCHD_TEST === "1",
 )(
-  "launchd wakes a crashed coordinator without repeating its live gate",
+  "launchd wakes a crashed coordinator without repeating its cancelled gate",
   async () => {
     const fx = fixture();
     executableController(fx);
@@ -236,7 +237,7 @@ setTimeout(() => process.exit(1), 5000);\n`,
       },
     ).trim();
     fx.manifest = JSON.parse(readFileSync(fx.manifestPath, "utf8"));
-    fx.stopAt = new Date(Date.now() + 40_000).toISOString();
+    fx.stopAt = new Date(Date.now() + 15_000).toISOString();
     const registration = registered(fx);
     const render = spawnSync(
       process.execPath,
@@ -276,16 +277,19 @@ setTimeout(() => process.exit(1), 5000);\n`,
       await waitFor(
         () =>
           existsSync(stdout) &&
-          readFileSync(stdout, "utf8").includes("child-live-or-unverifiable"),
+          readFileSync(stdout, "utf8").includes("execution-deadline-pending"),
       );
       await waitFor(
         () =>
           existsSync(stdout) &&
-          readFileSync(stdout, "utf8").includes("campaign-terminal"),
+          readFileSync(stdout, "utf8").includes("stop-at-expired"),
       );
       const final = JSON.parse(readFileSync(fx.manifestPath, "utf8"));
       expect(final.invocationId).toBe(fx.manifest.invocationId);
-      expect(final.terminalState.state).toBe("blocked");
+      expect(final.terminalState?.state).not.toBe("verified-unmerged");
+      expect(final.terminalState?.state).not.toBe("merged");
+      expect(final.governor.activeExecution).not.toBeNull();
+      expect(() => process.kill(-childGroup, 0)).toThrow();
       expect(final.governor.providerSecondsUsed).toBe(0);
       expect(readFileSync(gateCount, "utf8")).toBe("lint\n");
     } catch (error) {
@@ -323,6 +327,36 @@ setTimeout(() => process.exit(1), 5000);\n`,
 );
 
 describe("quality wake reconciliation", () => {
+  it("bounds a stalled metadata read by the registered deadline", () => {
+    const fx = fixture();
+    fx.stopAt = new Date(Date.now() + 2000).toISOString();
+    const registration = registered(fx);
+    const bin = path.join(fx.root, "stalled-git");
+    const marker = path.join(fx.root, "metadata-started");
+    mkdirSync(bin);
+    writeFileSync(
+      path.join(bin, "git"),
+      `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(marker)}, "started");
+setTimeout(() => process.exit(1), 15000);\n`,
+    );
+    chmodSync(path.join(bin, "git"), 0o755);
+    const started = Date.now();
+    const result = wake(fx, registration, {
+      PATH: bin + path.delimiter + process.env.PATH,
+    });
+    expect(existsSync(marker)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "stop-at-expired",
+    });
+    expect(readFileSync(fx.manifestPath, "utf8")).toBe(
+      JSON.stringify(fx.manifest),
+    );
+  });
+
   it("stops when ownership changes after execution reconciliation", () => {
     const fx = fixture();
     executableController(fx);

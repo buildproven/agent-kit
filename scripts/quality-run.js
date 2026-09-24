@@ -114,21 +114,15 @@ function emit(result) {
 }
 
 function runProcess(command, args, options = {}) {
+  if (options.stopAt != null)
+    return require("./quality-process-supervisor").supervise(
+      command,
+      args,
+      options,
+    );
   return new Promise((resolve, reject) => {
-    if (options.stopAt != null && Date.now() >= options.stopAt) {
-      resolve({
-        code: 1,
-        signal: null,
-        stdout: "",
-        stderr: "",
-        deadlineExpired: true,
-      });
-      return;
-    }
     let stdout = "";
     let stderr = "";
-    let deadlineExpired = false;
-    let deadlineTimer;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: process.env,
@@ -136,44 +130,6 @@ function runProcess(command, args, options = {}) {
       stdio: ["inherit", "pipe", "pipe"],
     });
     options.onChild?.(child);
-    const armDeadline = () => {
-      const remaining = options.stopAt - Date.now();
-      if (remaining > 0) {
-        deadlineTimer = setTimeout(
-          armDeadline,
-          Math.min(remaining, 2147483647),
-        );
-        return;
-      }
-      deadlineExpired = true;
-      // Each child owns a detached process group. A hard deadline must also
-      // stop children which ignore SIGTERM; ownership verifies quiescence.
-      try {
-        if (process.platform === "win32") child.kill("SIGKILL");
-        else process.kill(-child.pid, "SIGKILL");
-      } catch (error) {
-        if (error.code !== "ESRCH") {
-          clearTimeout(deadlineTimer);
-          // A refused signal is not proof that the child stopped. Do not let
-          // its open pipes keep this bounded invocation alive indefinitely.
-          // The owner keeps the live child identity and prevents re-entry.
-          child.stdout.destroy();
-          child.stderr.destroy();
-          child.unref();
-          options.onChild?.(null);
-          resolve({
-            code: 1,
-            signal: null,
-            stdout,
-            stderr,
-            deadlineExpired: true,
-            childPid: child.pid,
-            terminationError: error.code || "SIGNAL_FAILED",
-          });
-        }
-      }
-    };
-    if (options.stopAt != null) armDeadline();
     child.stdout.on("data", (chunk) => {
       if (options.forwardOutput !== false) process.stdout.write(chunk);
       stdout = `${stdout}${chunk}`.slice(-32768);
@@ -183,18 +139,16 @@ function runProcess(command, args, options = {}) {
       stderr = `${stderr}${chunk}`.slice(-32768);
     });
     child.once("error", (error) => {
-      clearTimeout(deadlineTimer);
       reject(error);
     });
     child.once("exit", (code, signal) => {
-      clearTimeout(deadlineTimer);
       options.onChild?.(null);
       resolve({
         code: code ?? 1,
         signal,
         stdout,
         stderr,
-        deadlineExpired,
+        deadlineExpired: false,
         childPid: child.pid,
       });
     });

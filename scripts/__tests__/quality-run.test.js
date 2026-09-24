@@ -15,6 +15,118 @@ const { spawn, spawnSync } = require("node:child_process");
 const SOURCE_RUNNER = path.resolve(__dirname, "..", "quality-run.js");
 const { writeAllSync } = require(SOURCE_RUNNER);
 const { ownershipSchemaVersion } = require("../quality-runner-ownership");
+const { supervise } = require("../quality-process-supervisor");
+
+describe("owned deadline process boundary", () => {
+  it("preserves target exit code and argument boundaries", async () => {
+    const result = await supervise(
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write(JSON.stringify(process.argv.slice(1))); process.exitCode=7",
+        "space value",
+        "$(not-a-command)",
+        'quote"value',
+      ],
+      {
+        stopAt: Date.now() + 2000,
+        forwardOutput: false,
+      },
+    );
+    expect(result.code).toBe(7);
+    expect(result.terminationError).toBeUndefined();
+    expect(JSON.parse(result.stdout)).toEqual([
+      "space value",
+      "$(not-a-command)",
+      'quote"value',
+    ]);
+  });
+
+  it("does not start a payload when ownership publication fails", async () => {
+    const entry = fixture();
+    const marker = entry.manifestPath + ".unpublished-payload";
+    let supervisorPid;
+    await expect(
+      supervise(
+        process.execPath,
+        [
+          "-e",
+          `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`,
+        ],
+        {
+          stopAt: Date.now() + 500,
+          forwardOutput: false,
+          onChild(child) {
+            if (child) {
+              supervisorPid = child.pid;
+              throw new Error("publication failed");
+            }
+          },
+        },
+      ),
+    ).rejects.toThrow("publication failed");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(() => process.kill(supervisorPid, 0)).toThrow();
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("cancels the payload when its parent disconnects", async () => {
+    const entry = fixture();
+    const marker = entry.manifestPath + ".orphan-pid";
+    const supervisor = path.resolve(
+      __dirname,
+      "..",
+      "quality-process-supervisor.js",
+    );
+    const payload = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(()=>{}, 1000)`;
+    const controller = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `
+      const fs=require('node:fs');
+      require(${JSON.stringify(supervisor)}).supervise(process.execPath, ['-e', ${JSON.stringify(payload)}],
+        {stopAt:Date.now()+2000, forwardOutput:false});
+      const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(marker)})) process.exit(0)}, 10);
+    `,
+      ],
+      { encoding: "utf8", timeout: 3000 },
+    );
+    expect(controller.status, controller.stderr).toBe(0);
+    const pid = Number(readFileSync(marker, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("cleans same-group descendants after the target exits", async () => {
+    const result = await supervise(
+      process.execPath,
+      [
+        "-e",
+        `
+      const {spawn}=require('node:child_process');
+      const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+      process.stdout.write(String(child.pid)); child.unref();
+    `,
+      ],
+      { stopAt: Date.now() + 2000, forwardOutput: false },
+    );
+    expect(result.code).toBe(0);
+    expect(result.terminationError).toBeUndefined();
+    expect(() => process.kill(Number(result.stdout), 0)).toThrow();
+  });
+
+  it("keeps target code off the supervisor deadline event loop", async () => {
+    const started = Date.now();
+    const result = await supervise(process.execPath, ["-e", "while(true) {}"], {
+      stopAt: started + 300,
+      forwardOutput: false,
+    });
+    expect(result.deadlineExpired).toBe(true);
+    expect(result.terminationError).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+});
 
 const FAKE_INVOCATION = `
 "use strict";
@@ -426,6 +538,10 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   mkdirSync(runtime);
   copyFileSync(SOURCE_RUNNER, path.join(runtime, "quality-run.js"));
   copyFileSync(
+    path.resolve(__dirname, "..", "quality-process-supervisor.js"),
+    path.join(runtime, "quality-process-supervisor.js"),
+  );
+  copyFileSync(
     path.resolve(__dirname, "..", "quality-runner-ownership.js"),
     path.join(runtime, "quality-runner-ownership.js"),
   );
@@ -698,17 +814,27 @@ describe("quality-run public orchestration", () => {
       shim,
       `const original = process.kill.bind(process);
 process.kill = (pid, signal) => {
-  if (pid < 0 && signal === "SIGKILL") throw Object.assign(new Error("injected kill denial"), { code: "EPERM" });
+  if (pid < 0 && signal === "SIGKILL" && require("node:fs").existsSync(${JSON.stringify(entry.manifestPath + ".review-ready")})) throw Object.assign(new Error("injected kill denial"), { code: "EPERM" });
   return original(pid, signal);
 };\n`,
     );
     entry.environment = { NODE_OPTIONS: "--require " + JSON.stringify(shim) };
     let result;
+    let heldGroup;
     try {
       result = run(
         entry,
         ["--stop-at", new Date(Date.now() + 3000).toISOString()],
         6000,
+      );
+      const reviewPid = readFileSync(
+        entry.manifestPath + ".review-pid",
+        "utf8",
+      ).trim();
+      heldGroup = Number(
+        spawnSync("ps", ["-o", "pgid=", "-p", reviewPid], {
+          encoding: "utf8",
+        }).stdout.trim(),
       );
     } finally {
       writeFileSync(entry.manifestPath + ".review-release", "release");
@@ -727,9 +853,8 @@ process.kill = (pid, signal) => {
       readFileSync(entry.manifestPath + ".runner-lock", "utf8"),
     );
     expect(owner.childInFlight).toBe(true);
-    expect(owner.child.pid).toBe(
-      Number(readFileSync(entry.manifestPath + ".review-pid", "utf8")),
-    );
+    expect(heldGroup).toBeGreaterThan(0);
+    expect(owner.child.processGroupId).toBe(heldGroup);
     expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
   });
 

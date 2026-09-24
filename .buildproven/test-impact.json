@@ -5,6 +5,7 @@
     {
       "paths": [
         "scripts/quality-wake.js",
+        "scripts/quality-process-supervisor.js",
         "scripts/autonomous-loop-runtime.js",
         "scripts/__tests__/quality-wake.test.js",
         "scripts/__tests__/autonomous-loop-runtime.test.js",
@@ -348,6 +349,7 @@
     {
       "paths": [
         "scripts/quality-run.js",
+        "scripts/quality-process-supervisor.js",
         "scripts/__tests__/quality-run.test.js",
         "docs/quality-run-orchestrator.md"
       ],
