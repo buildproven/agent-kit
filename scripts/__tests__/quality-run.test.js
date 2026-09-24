@@ -563,6 +563,7 @@ function run(entry, extraArgs = [], timeout = 30_000) {
       // under its eight-worker pool. Keep this fixture below that bound while
       // avoiding a machine-load-dependent false timeout.
       timeout,
+      killSignal: entry.timeoutSignal || "SIGTERM",
     },
   );
   return {
@@ -731,6 +732,54 @@ process.kill = (pid, signal) => {
     );
     expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
   });
+
+  it.each(["verifier", "admission"])(
+    "bounds a hanging product %s by the same absolute deadline",
+    (phase) => {
+      const heldVerification = `
+const fs = require("node:fs");
+const file = process.env.QUALITY_TEST_MANIFEST;
+fs.writeFileSync(file + ".verifier-started", "started");
+const end = Date.now() + 15000;
+while (!fs.existsSync(file + ".verifier-release") && Date.now() < end) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+process.stdout.write("fixture verified");
+`;
+      const entry = fixture(
+        phase === "verifier"
+          ? { productVerifier: heldVerification }
+          : {
+              productVerifier:
+                "process.stdout.write(JSON.stringify({valid:true,errors:[]}));",
+              productAdmission: heldVerification,
+            },
+        { merge: phase === "admission" },
+      );
+      entry.timeoutSignal = "SIGKILL";
+      let result;
+      try {
+        result = run(
+          entry,
+          ["--stop-at", new Date(Date.now() + 3000).toISOString()],
+          6000,
+        );
+      } finally {
+        writeFileSync(entry.manifestPath + ".verifier-release", "release");
+      }
+      expect(existsSync(entry.manifestPath + ".verifier-started")).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(1);
+      expect(JSON.parse(result.output)).toMatchObject({
+        status: "terminal",
+        state: "blocked",
+        reason: "stop-at-expired",
+      });
+      expect(result.manifest.calls || []).not.toContain(
+        "quality-stamp-and-merge.sh",
+      );
+    },
+  );
 
   it.each(["tomorrow", "2026-09-24T00:00:00", "-1", "2026-02-30T00:00:00Z"])(
     "rejects invalid absolute deadline %s before campaign work",

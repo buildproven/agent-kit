@@ -1,7 +1,7 @@
 # ADR: Wake an existing quality campaign without a second task runner
 
 Status: accepted after Sol/high focused re-review, 2026-09-24.
-Scope: BUI-969, one recovery slice under BUI-921 / agent-setup PR #835,
+Scope: BUI-969, one recovery slice under BUI-921,
 not all A2–A7.
 
 Review outcome: APPROVE. The accepted contract includes the concrete deadline
@@ -55,8 +55,16 @@ pipes alive past its deadline (red: six-second test timeout). The fix detaches
 those pipes, returns blocked with `quiescence: unknown` and `terminationError:
 EPERM`, and retains child ownership (green: 3.17 seconds for a three-second
 deadline). It does not claim that an unkillable child stopped.
-The remaining delayed-CI acceptance below is unfinished. No production wake
-job has been installed.
+Product verification and protected-admission subprocesses also now use the
+owned execution boundary rather than synchronous child calls. A hanging
+verifier reproduced a six-second test timeout before the change. Verifier and
+admission deadline probes both pass afterward, and verifier output stays
+privately captured. The orchestration suite passed 82/82 before the additional
+admission case; the two targeted deadline cases then passed in 6.26 seconds.
+The remaining delayed-CI acceptance below is unfinished. Read-only synchronous
+Git metadata helpers still need a worst-case deadline audit; do not claim a
+strict end-to-end wall-clock bound from the owned-child tests alone. No
+production wake job has been installed.
 
 Recovery dispatch must execute from the registered controller's own runtime.
 It uses fixed imports, not dynamic loading of paths from registration data.

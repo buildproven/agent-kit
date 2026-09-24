@@ -4,7 +4,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const quality = require("./quality-invocation");
 const runnerOwnership = require("./quality-runner-ownership");
 const { productionCodeChange } = require("./product-completion");
@@ -175,11 +175,11 @@ function runProcess(command, args, options = {}) {
     };
     if (options.stopAt != null) armDeadline();
     child.stdout.on("data", (chunk) => {
-      process.stdout.write(chunk);
+      if (options.forwardOutput !== false) process.stdout.write(chunk);
       stdout = `${stdout}${chunk}`.slice(-32768);
     });
     child.stderr.on("data", (chunk) => {
-      process.stderr.write(chunk);
+      if (options.forwardOutput !== false) process.stderr.write(chunk);
       stderr = `${stderr}${chunk}`.slice(-32768);
     });
     child.once("error", (error) => {
@@ -302,7 +302,7 @@ function verifyDeliveryEvidenceDigest(manifest, evidencePath) {
   }
 }
 
-function verifyProtectedProductAdmission(manifest) {
+async function verifyProtectedProductAdmission(context, manifest) {
   const evidencePath = manifest.options?.deliveryEvidence;
   verifyDeliveryEvidenceDigest(manifest, evidencePath);
   const requirementsDigest = crypto
@@ -320,7 +320,7 @@ function verifyProtectedProductAdmission(manifest) {
       }),
     )
     .digest("hex");
-  const result = spawnSync(
+  const result = await context.execute(
     process.execPath,
     [
       script("product-admission.js"),
@@ -331,14 +331,18 @@ function verifyProtectedProductAdmission(manifest) {
       requirementsDigest,
       manifest.deliveryEvidenceBinding.sha256,
     ],
-    { cwd: manifest.repo.realpath, encoding: "utf8" },
+    {
+      cwd: manifest.repo.realpath,
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
+    },
   );
   if (result.error) {
     throw new Error(
       `protected product admission could not start: ${result.error.message}`,
     );
   }
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
     throw new Error(
       `protected product admission rejected this exact head${detail ? `: ${detail}` : ""}`,
@@ -362,7 +366,7 @@ function verifyProtectedProductAdmission(manifest) {
   }
 }
 
-function trackedRepositoryPath(manifest, file, label) {
+async function trackedRepositoryPath(context, manifest, file, label) {
   const relative = path.relative(manifest.repo.realpath, path.resolve(file));
   if (
     !relative ||
@@ -373,15 +377,16 @@ function trackedRepositoryPath(manifest, file, label) {
       `${label} must be a tracked file inside the candidate repository`,
     );
   }
-  const tracked = spawnSync(
+  const tracked = await context.execute(
     "git",
     ["ls-files", "--error-unmatch", "--", relative],
     {
       cwd: manifest.repo.realpath,
-      encoding: "utf8",
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
     },
   );
-  if (tracked.status !== 0) {
+  if (tracked.code !== 0) {
     throw new Error(
       `${label} must be committed on the candidate head before protected admission`,
     );
@@ -389,13 +394,15 @@ function trackedRepositoryPath(manifest, file, label) {
   return relative;
 }
 
-function requestProtectedProductAdmission(manifest) {
-  const prd = trackedRepositoryPath(
+async function requestProtectedProductAdmission(context, manifest) {
+  const prd = await trackedRepositoryPath(
+    context,
     manifest,
     manifest.options.productPrd,
     "product PRD",
   );
-  const tasks = trackedRepositoryPath(
+  const tasks = await trackedRepositoryPath(
+    context,
     manifest,
     manifest.options.productTasks,
     "product tasks",
@@ -422,7 +429,7 @@ function requestProtectedProductAdmission(manifest) {
     return false;
   }
   const nonce = crypto.randomBytes(16).toString("hex");
-  const result = spawnSync(
+  const result = await context.execute(
     "gh",
     [
       "api",
@@ -444,9 +451,13 @@ function requestProtectedProductAdmission(manifest) {
       "-f",
       `client_payload[nonce]=${nonce}`,
     ],
-    { cwd: manifest.repo.realpath, encoding: "utf8" },
+    {
+      cwd: manifest.repo.realpath,
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
+    },
   );
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     throw new Error(
       `could not request protected product admission: ${(result.stderr || "").trim()}`,
     );
@@ -462,7 +473,7 @@ function verifierFailure(result) {
     return `product verifier terminated by signal ${result.signal}`;
   }
   if (!result.stdout?.trim()) {
-    return `product verifier process failed with status ${result.status}`;
+    return `product verifier process failed with status ${result.code}`;
   }
   let output;
   try {
@@ -501,7 +512,11 @@ function verifyEngineeringDeliveryClaim(manifest, productInputs) {
   return `declared engineering at protected policy ${policy.policyRevision}; product acceptance not established`;
 }
 
-function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
+async function verifyDeliveryClaim(
+  context,
+  manifest,
+  { inputsOnly = false } = {},
+) {
   const claim = deliveryClaim(manifest);
   const { productPrd, productTasks, deliveryEvidence } = manifest.options || {};
   const changedFiles = quality.changedFiles(
@@ -551,7 +566,7 @@ function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
     "delivery-changed-files.json",
   );
   fs.writeFileSync(changedFilesPath, JSON.stringify(changedFiles));
-  const result = spawnSync(
+  const result = await context.execute(
     process.execPath,
     [
       script("product-completion.js"),
@@ -579,9 +594,13 @@ function verifyDeliveryClaim(manifest, { inputsOnly = false } = {}) {
       "--repository-id",
       deliveryRepositoryId(manifest),
     ],
-    { cwd: manifest.repo.realpath, encoding: "utf8" },
+    {
+      cwd: manifest.repo.realpath,
+      onChild: context.runtime.onChild,
+      forwardOutput: false,
+    },
   );
-  if (result.status !== 0) {
+  if (result.code !== 0) {
     throw new Error(
       `delivery claim verification failed: ${verifierFailure(result)}`,
     );
@@ -601,10 +620,10 @@ function actionRequired(manifestPath, phase, message, manifest, review) {
   };
 }
 
-function prepareProductAdmission(manifestPath) {
+async function prepareProductAdmission(context, manifestPath) {
   const manifest = manifestAt(manifestPath);
   if (["contract", "engineering"].includes(deliveryClaim(manifest))) {
-    verifyDeliveryClaim(manifest, { inputsOnly: true });
+    await verifyDeliveryClaim(context, manifest, { inputsOnly: true });
     return null;
   }
 
@@ -612,16 +631,18 @@ function prepareProductAdmission(manifestPath) {
   // budget. Protected admission is still authoritative, but its request can
   // run while deterministic gates execute instead of being discovered after
   // all local work has already finished.
-  verifyDeliveryClaim(manifest);
+  await verifyDeliveryClaim(context, manifest);
   if (manifest.options?.merge !== true) return null;
   try {
-    verifyProtectedProductAdmission(manifest);
+    await verifyProtectedProductAdmission(context, manifest);
     return null;
   } catch (error) {
+    if (error.deadlineExpired) throw error;
     let request;
     try {
-      request = requestProtectedProductAdmission(manifest);
+      request = await requestProtectedProductAdmission(context, manifest);
     } catch (requestError) {
+      if (requestError.deadlineExpired) throw requestError;
       return actionRequired(
         manifestPath,
         "product-admission",
@@ -706,8 +727,8 @@ function invocationRuntime(manifestPath, execute) {
   return { assertNotInterrupted, invoke, onChild, onSignal };
 }
 
-async function runDeterministicPhases(manifestPath, invoke) {
-  const admission = prepareProductAdmission(manifestPath);
+async function runDeterministicPhases(context, manifestPath, invoke) {
+  const admission = await prepareProductAdmission(context, manifestPath);
   if (admission) return admission;
   let manifest = manifestAt(manifestPath);
   if (manifest.risk?.resolved !== true) {
@@ -746,7 +767,7 @@ async function runDeterministicPhases(manifestPath, invoke) {
     manifestPath,
     "delivery-claim",
     "success",
-    verifyDeliveryClaim(manifestAfterGates),
+    await verifyDeliveryClaim(context, manifestAfterGates),
   );
   const gated = manifestAt(manifestPath);
   if (
@@ -829,11 +850,15 @@ async function finishWithoutMerge(manifestPath, invoke, manifest, review) {
 async function finishWithMerge(context, manifestPath, manifest, review) {
   if (!["contract", "engineering"].includes(deliveryClaim(manifest))) {
     try {
-      verifyProtectedProductAdmission(manifest);
+      await verifyProtectedProductAdmission(context, manifest);
     } catch (error) {
+      if (error.deadlineExpired) throw error;
       let requested = false;
       try {
-        const request = requestProtectedProductAdmission(manifest);
+        const request = await requestProtectedProductAdmission(
+          context,
+          manifest,
+        );
         if (request) {
           quality.withManifestLock(manifestPath, (current) => {
             current.productAdmissionRequest = {
@@ -845,6 +870,7 @@ async function finishWithMerge(context, manifestPath, manifest, review) {
           requested = true;
         }
       } catch (requestError) {
+        if (requestError.deadlineExpired) throw requestError;
         return actionRequired(
           manifestPath,
           "product-admission",
@@ -1220,6 +1246,7 @@ function dispositionArtifactMatches(artifact, judge, context) {
 async function runOpenCampaign(context, manifestPath, manifest) {
   updateOrchestration(manifestPath, "validate", "success");
   const admission = await runDeterministicPhases(
+    context,
     manifestPath,
     context.runtime.invoke,
   );
