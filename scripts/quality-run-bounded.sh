@@ -280,9 +280,13 @@ cleanup_provider() {
   rm -f "$TRACKED_PIDS_FILE"
   exit "$status"
 }
-trap 'cleanup_provider 130' INT
-trap 'cleanup_provider 143' TERM
-trap 'cleanup_provider 129' HUP
+# A provider can run before Bash assigns $! below. Defer cancellation until
+# ownership is published; otherwise cleanup sees an empty CHILD_PID and leaves
+# the new process group alive. Caught signals retain normal child dispositions.
+PENDING_SIGNAL=""
+trap 'PENDING_SIGNAL=130' INT
+trap 'PENDING_SIGNAL=143' TERM
+trap 'PENDING_SIGNAL=129' HUP
 trap 'cleanup_provider $?' EXIT
 set -m
 if [ "$(uname -s)" = Darwin ]; then
@@ -295,6 +299,10 @@ else
   BS_QUALITY_PROCESS_OWNER="$PROCESS_OWNER_ID" "$@" &
 fi
 CHILD_PID=$!
+trap 'cleanup_provider 130' INT
+trap 'cleanup_provider 143' TERM
+trap 'cleanup_provider 129' HUP
+[ -z "$PENDING_SIGNAL" ] || cleanup_provider "$PENDING_SIGNAL"
 set +m
 # The tracker runs asynchronously so it can follow later forks, but its first
 # snapshot must happen before the provider can exit and reparent an escaped

@@ -12,6 +12,22 @@ here so the temporary artifact is not the only record.
 
 ## Implementation checkpoint — 2026-09-24
 
+Current delivery checkpoint, 03:27 UTC: released-controller audit of `dba26ae`
+passed 4,299 tests, failed one cancellation test, and skipped one (577.31s).
+The legacy unsupervised wrapper can receive TERM after spawning its provider
+but before assigning CHILD_PID; cleanup then sees no child. A test-only Bash
+DEBUG pause at that exact assignment reproduces the same 10-second liveness
+failure. Defer caught cancellation through this short publication interval,
+then restore normal handlers and immediately clean up any pending signal.
+No timeout was raised and no new process controller was added. The forced
+regression failed 1/1 before the repair; both normal/delayed cases pass afterward
+(2/2, 4.71s), and the full provider-runtime suite passes 48/48 (16.32s).
+Test cleanup runs only after its liveness assertions and checks fixture process
+identity. The same PR/campaign must run fresh exact-head gates and independent
+review; historical failed evidence and provider budgets remain intact.
+
+The earlier checkpoints below retain the design and implementation sequence.
+
 Latest deadline audit: **incomplete**. Pushed head `96b7d5d` passes CI, but
 a new public wake CLI regression with a two-second registered deadline and a
 stalled Git boundary takes 5.06 seconds. The test fails its four-second bound
