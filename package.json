@@ -12,6 +12,7 @@
     "url": "https://github.com/buildproven"
   },
   "scripts": {
+    "postinstall": "patch-package --error-on-fail",
     "prepare": "[ \"$CI\" = \"true\" ] && echo 'Skipping Husky in CI' || husky",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -33,7 +34,6 @@
     "check:commands": "bash scripts/check-command-readme.sh"
   },
   "devDependencies": {
-    "@anthropic-ai/sandbox-runtime": "0.0.77",
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.0",
     "@eslint/js": "^10.0.1",
@@ -75,7 +75,14 @@
       "bash -n"
     ]
   },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.77",
+    "patch-package": "8.0.1"
+  },
   "overrides": {
+    "patch-package": {
+      "json-stable-stringify": "npm:fast-json-stable-stringify@2.1.0"
+    },
     "fast-uri": ">=3.1.2"
   },
   "engines": {

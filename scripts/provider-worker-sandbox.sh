@@ -136,6 +136,27 @@ SRT_BIN=$(cd -P "$(dirname "$SRT_SOURCE")" 2>/dev/null && pwd)/$(basename "$SRT_
 [ -x "$SRT_BIN" ] && is_same_or_ancestor "$RUNTIME_DIR" "$SRT_BIN" \
   || { echo "provider-worker-sandbox: Sandbox Runtime is unavailable" >&2; exit 74; }
 
+# The pinned macOS policy patch is mandatory, including when install scripts
+# were skipped. Verify before running any sandbox probe or provider command.
+if ! env -i "PATH=$SAFE_PATH" "$NODE_BIN" - "$RUNTIME_DIR" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+try {
+  const root = path.join(process.argv[2], '@anthropic-ai/sandbox-runtime');
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const policy = fs.readFileSync(path.join(root, 'dist/sandbox/macos-sandbox-utils.js'));
+  const digest = crypto.createHash('sha256').update(policy).digest('hex');
+  if (pkg.version !== '0.0.77' || digest !== '7e23b7fc8ccb6479c6f174881fae4985757db490aeccf9d2b727c05a027ac95e') process.exit(1);
+} catch {
+  process.exit(1);
+}
+NODE
+then
+  echo "provider-worker-sandbox: required Sandbox Runtime policy patch is missing or changed; run npm ci with install scripts enabled" >&2
+  exit 74
+fi
+
 CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/provider-sandbox.XXXXXX") || exit 2
 CONTROL_DIR=$(cd -P "$CONTROL_DIR" && pwd)
 SETTINGS="$CONTROL_DIR/settings.json"

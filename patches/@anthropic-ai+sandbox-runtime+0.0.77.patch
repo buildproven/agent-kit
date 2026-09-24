@@ -1,0 +1,12 @@
+diff --git a/node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js b/node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js
+--- a/node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js
++++ b/node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js
+@@ -682,6 +682,8 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, http
+         '; Process permissions',
+         '(allow process-exec)',
+         '(allow process-fork)',
++        '(deny process-info* (require-not (target self)))',
++        '(deny sysctl-read (sysctl-name-prefix "kern.procargs"))',
+         '(allow process-info* (target same-sandbox))',
+         '(allow signal (target same-sandbox))',
+         '(allow mach-priv-task-port (target same-sandbox))',
