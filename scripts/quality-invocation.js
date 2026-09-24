@@ -1637,12 +1637,27 @@ function advanceHead(manifest, root, { acceptedConditions = [] } = {}) {
     if (nextHead === stampHead) return false;
   }
   const isAncestor = isAncestorOf(root, priorHead, nextHead);
+  const mergeBases = git(root, [
+    "merge-base",
+    "--all",
+    nextHead,
+    manifest.revisions.baseRef,
+  ]).split("\n");
+  if (mergeBases.length !== 1) {
+    throw new Error(
+      "quality resume refused: base integration has multiple merge bases",
+    );
+  }
+  const priorBase = effectiveBaseSha(manifest);
+  const baseChanged = mergeBases[0] !== priorBase;
   let replay = null;
-  if (!isAncestor) {
+  // A normal main merge preserves ancestry but still changes the bound base.
+  // Both history shapes require the same exact-tree replay proof.
+  if (!isAncestor || baseChanged) {
     replay = isRebaseOnlyReplay(manifest, root, priorHead);
-    if (!replay) {
+    if (!replay || !isAncestorOf(root, priorBase, mergeBases[0])) {
       throw new Error(
-        `quality resume refused: ${priorHead} is not an ancestor of ${nextHead} ` +
+        `quality resume refused: ${priorHead}..${nextHead} changes history or base ` +
           `and the diff is not a provable rebase-only replay`,
       );
     }
