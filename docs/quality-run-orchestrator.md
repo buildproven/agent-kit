@@ -23,6 +23,18 @@ It never discovers a campaign by session, glob, timestamp, environment
 inheritance, or a “latest” pointer. The manifest is the complete state machine
 and every phase records an identity-bound result before the next one begins.
 
+An optional `--stop-at <UTC timestamp>` bounds one runner invocation by an
+absolute deadline. `runManifest` accepts the same deadline through `stopAt`.
+The value does not extend any campaign or provider budget. An already expired
+deadline starts no work and leaves the manifest unchanged. During execution,
+expiry kills the owned process group, prevents further child launches, and
+returns `blocked` with reason `stop-at-expired`. The result reports whether
+process quiescence was confirmed or remains unknown. It never reports campaign
+success from deadline expiry. Existing active-execution and ownership evidence
+is retained for the supported reconciliation path; expiry does not reset it.
+Calls without the option retain their existing behavior. Automatic wake
+registration and scheduling are separate from this runner input.
+
 ```
 bootstrap → policy → gates → review → lead disposition → [remediate → gates → verify] → authorize/merge → telemetry
 ```

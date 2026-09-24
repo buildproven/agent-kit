@@ -322,6 +322,8 @@ if (step === "quality-run-governor.js") {
   manifest.governor.remediationStartedAtEpoch ||= 1;
 }
 if (step === "quality-run-review.sh" && manifest.behavior?.holdReview) {
+  if (manifest.behavior?.ignoreReviewTerm) process.on("SIGTERM", () => {});
+  fs.writeFileSync(file + ".review-pid", String(process.pid));
   manifest.governor.activeExecution = {
     kind: "provider", name: "review", startedAt: new Date().toISOString(), timeoutSeconds: 30,
   };
@@ -544,19 +546,19 @@ function fixture(behavior = {}, { merge = false, tier = "low" } = {}) {
   };
 }
 
-function run(entry) {
+function run(entry, extraArgs = [], timeout = 30_000) {
   const env = { ...process.env, QUALITY_TEST_MANIFEST: entry.manifestPath };
   delete env.BS_QUALITY_REPOSITORY_LEASE_TOKEN;
   const result = spawnSync(
     process.execPath,
-    [entry.runner, "--manifest", entry.manifestPath],
+    [entry.runner, "--manifest", entry.manifestPath, ...extraArgs],
     {
       encoding: "utf8",
       env,
       // The repository allows subprocess-heavy integration cases 60 seconds
       // under its eight-worker pool. Keep this fixture below that bound while
       // avoiding a machine-load-dependent false timeout.
-      timeout: 30_000,
+      timeout,
     },
   );
   return {
@@ -624,6 +626,79 @@ function recordDisposition(entry, blockingCount, label = "judge") {
 }
 
 describe("quality-run public orchestration", () => {
+  it("starts no campaign work after an absolute stop-at deadline", () => {
+    const entry = fixture();
+    const before = readFileSync(entry.manifestPath, "utf8");
+    const result = run(entry, ["--stop-at", "2020-01-01T00:00:00.000Z"]);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+    });
+    expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+    expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+  });
+
+  it("retains ordinary behavior before an absolute stop-at deadline", () => {
+    const entry = fixture();
+    const result = run(entry, [
+      "--stop-at",
+      new Date(Date.now() + 30_000).toISOString(),
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.output)).toMatchObject({ status: "complete" });
+  });
+
+  it.each([false, true])(
+    "stops an active owned review at the absolute deadline (ignores TERM: %s)",
+    (ignoreReviewTerm) => {
+      const entry = fixture({ holdReview: true, ignoreReviewTerm });
+      let result;
+      try {
+        result = run(
+          entry,
+          ["--stop-at", new Date(Date.now() + 3000).toISOString()],
+          6000,
+        );
+      } finally {
+        writeFileSync(entry.manifestPath + ".review-release", "release");
+      }
+      expect(existsSync(entry.manifestPath + ".review-ready")).toBe(true);
+      expect(result.status, result.stderr).toBe(1);
+      expect(JSON.parse(result.output)).toMatchObject({
+        status: "terminal",
+        state: "blocked",
+        reason: "stop-at-expired",
+        campaignState: "blocked",
+        quiescence: "confirmed",
+      });
+      const reviewPid = Number(
+        readFileSync(entry.manifestPath + ".review-pid", "utf8"),
+      );
+      expect(() => process.kill(reviewPid, 0)).toThrow();
+      expect(result.manifest.reviews).toEqual([]);
+      expect(result.manifest.governor.activeExecution).toMatchObject({
+        name: "review",
+      });
+      expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(true);
+      expect(result.manifest.calls).not.toContain("quality-stamp-and-merge.sh");
+    },
+  );
+
+  it.each(["tomorrow", "2026-09-24T00:00:00", "-1", "2026-02-30T00:00:00Z"])(
+    "rejects invalid absolute deadline %s before campaign work",
+    (stopAt) => {
+      const entry = fixture();
+      const before = readFileSync(entry.manifestPath, "utf8");
+      const result = run(entry, ["--stop-at", stopAt]);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("absolute UTC timestamp");
+      expect(readFileSync(entry.manifestPath, "utf8")).toBe(before);
+      expect(existsSync(entry.manifestPath + ".runner-lock")).toBe(false);
+    },
+  );
+
   it("re-enters one typed pre-review selector failure after the selector is repaired", () => {
     const entry = fixture({ failPanel: true }, { merge: true, tier: "medium" });
     const failed = run(entry);

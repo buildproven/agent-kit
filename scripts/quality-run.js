@@ -19,10 +19,36 @@ const RELEASE_PLEASE_HEAD =
   /^release-please--branches--[A-Za-z0-9._/-]+--components--[A-Za-z0-9._/-]+$/;
 
 function parseArgs(argv) {
-  if (argv.length !== 2 || argv[0] !== "--manifest" || !argv[1]) {
-    throw new Error("usage: quality-run.js --manifest <exact-path>");
+  if (
+    ![2, 4].includes(argv.length) ||
+    argv[0] !== "--manifest" ||
+    !argv[1] ||
+    (argv.length === 4 && argv[2] !== "--stop-at")
+  ) {
+    throw new Error(
+      "usage: quality-run.js --manifest <exact-path> [--stop-at <UTC timestamp>]",
+    );
   }
-  return path.resolve(argv[1]);
+  return { manifestPath: path.resolve(argv[1]), stopAt: parseStopAt(argv[3]) };
+}
+
+function parseStopAt(value) {
+  if (value === undefined || value === null) return null;
+  const timestamp = typeof value === "number" ? value : Date.parse(value);
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    timestamp < 0 ||
+    timestamp > 8640000000000000
+  ) {
+    throw new Error("stopAt must be an absolute UTC timestamp");
+  }
+  if (typeof value !== "number") {
+    const canonical = new Date(timestamp).toISOString();
+    if (value !== canonical && value !== canonical.replace(".000Z", "Z")) {
+      throw new Error("stopAt must be an absolute UTC timestamp");
+    }
+  }
+  return timestamp;
 }
 
 function manifestAt(manifestPath) {
@@ -89,8 +115,20 @@ function emit(result) {
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    if (options.stopAt != null && Date.now() >= options.stopAt) {
+      resolve({
+        code: 1,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        deadlineExpired: true,
+      });
+      return;
+    }
     let stdout = "";
     let stderr = "";
+    let deadlineExpired = false;
+    let deadlineTimer;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: process.env,
@@ -98,6 +136,29 @@ function runProcess(command, args, options = {}) {
       stdio: ["inherit", "pipe", "pipe"],
     });
     options.onChild?.(child);
+    const armDeadline = () => {
+      const remaining = options.stopAt - Date.now();
+      if (remaining > 0) {
+        deadlineTimer = setTimeout(
+          armDeadline,
+          Math.min(remaining, 2147483647),
+        );
+        return;
+      }
+      deadlineExpired = true;
+      // Each child owns a detached process group. A hard deadline must also
+      // stop children which ignore SIGTERM; ownership verifies quiescence.
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          clearTimeout(deadlineTimer);
+          reject(error);
+        }
+      }
+    };
+    if (options.stopAt != null) armDeadline();
     child.stdout.on("data", (chunk) => {
       process.stdout.write(chunk);
       stdout = `${stdout}${chunk}`.slice(-32768);
@@ -106,10 +167,21 @@ function runProcess(command, args, options = {}) {
       process.stderr.write(chunk);
       stderr = `${stderr}${chunk}`.slice(-32768);
     });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      clearTimeout(deadlineTimer);
+      reject(error);
+    });
     child.once("exit", (code, signal) => {
+      clearTimeout(deadlineTimer);
       options.onChild?.(null);
-      resolve({ code: code ?? 1, signal, stdout, stderr });
+      resolve({
+        code: code ?? 1,
+        signal,
+        stdout,
+        stderr,
+        deadlineExpired,
+        childPid: child.pid,
+      });
     });
   });
 }
@@ -917,6 +989,24 @@ async function recordFailure(context, manifestPath, error) {
   } catch {
     throw error;
   }
+  if (error.deadlineExpired) {
+    // No new child is permitted after the deadline, including a CLI used only
+    // to record failure. Use the same locked terminal-state API directly.
+    const campaignState = quality.recordTerminalState(
+      manifestPath,
+      "blocked",
+      "stop-at-expired",
+    );
+    return {
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      campaignState,
+      quiescence: error.quiescence,
+      message: "absolute wake deadline expired; campaign remains incomplete",
+      head: manifest.revisions.currentHead,
+    };
+  }
   if (
     manifest.terminalState?.recovery?.kind === "merge-read-failure" &&
     !context.mergeReadRecoveryGranted
@@ -1138,8 +1228,18 @@ async function runOpenCampaign(context, manifestPath, manifest) {
 }
 
 async function runManifest(manifestPath, dependencies = {}) {
+  const stopAt = parseStopAt(dependencies.stopAt);
   // Validate before canonicalizing: a symlinked manifest remains forbidden.
   const initial = quality.loadManifest(manifestPath);
+  if (stopAt !== null && Date.now() >= stopAt) {
+    return {
+      status: "terminal",
+      state: "blocked",
+      reason: "stop-at-expired",
+      message: "absolute wake deadline expired; no campaign work started",
+      head: initial.manifest.revisions.currentHead,
+    };
+  }
   manifestPath = fs.realpathSync(initial.manifestPath);
   const ownership = runnerOwnership.acquireRunner(manifestPath);
   if (!ownership)
@@ -1158,8 +1258,29 @@ async function runManifest(manifestPath, dependencies = {}) {
       head: initial.manifest.revisions.currentHead,
     };
   }
-  const execute = (...args) =>
-    ownership.execute(dependencies.runProcess || runProcess, ...args);
+  const deadlineError = (quiescence) =>
+    Object.assign(new Error("absolute wake deadline expired"), {
+      deadlineExpired: true,
+      quiescence,
+    });
+  const execute = async (command, args, options = {}) => {
+    if (stopAt !== null && Date.now() >= stopAt)
+      throw deadlineError("not-started");
+    const result = await ownership.execute(
+      dependencies.runProcess || runProcess,
+      command,
+      args,
+      { ...options, stopAt },
+    );
+    if (result.deadlineExpired || (stopAt !== null && Date.now() >= stopAt)) {
+      const quiescent =
+        Number.isInteger(result.childPid) &&
+        runnerOwnership.processAbsent(result.childPid) &&
+        runnerOwnership.processGroupAbsent(result.childPid);
+      throw deadlineError(quiescent ? "confirmed" : "unknown");
+    }
+    return result;
+  };
   const runtime = invocationRuntime(manifestPath, execute);
   const context = { execute, runtime, ownership };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -1277,8 +1398,8 @@ async function runManifest(manifestPath, dependencies = {}) {
 
 async function main() {
   try {
-    const manifestPath = parseArgs(process.argv.slice(2));
-    const result = await runManifest(manifestPath);
+    const { manifestPath, stopAt } = parseArgs(process.argv.slice(2));
+    const result = await runManifest(manifestPath, { stopAt });
     emit(result);
     if (result.status === "busy") {
       process.exitCode = BUSY_EXIT;
