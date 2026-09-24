@@ -1490,9 +1490,14 @@ if (!source.includes("role === 'admin'")) process.exit(1);
     },
   );
 
-  it.each([false, true])(
-    "excludes protected-base paths from an exact rebase-carry mutation (test repair=%s)",
-    (testRepair) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "excludes protected-base paths from a rebase-carry mutation (test repair=%s, descendant=%s)",
+    (testRepair, descendant) => {
       const { root, manifest } = fixture(
         "rebase-live-patch",
         "const { isAllowed } = require('./logic');\nif (!isAllowed('admin')) process.exit(1);\n",
@@ -1535,6 +1540,15 @@ if (!source.includes("role === 'admin'")) process.exit(1);
         baseSha: freshBase,
         head: advanced.revisions.currentHead,
       });
+      if (descendant) {
+        writeFileSync(
+          path.join(root, "repair.test.js"),
+          "// Later test repair\n",
+        );
+        git(root, ["add", "repair.test.js"]);
+        git(root, ["commit", "-qm", "test: repair after base carry"]);
+        execFileSync("node", [INVOCATION, "advance", manifest], { cwd: root });
+      }
       expect(runMutation(root, manifest)).toMatch(
         /mutation evidence: revert-diff caught by logic\.js/,
       );
