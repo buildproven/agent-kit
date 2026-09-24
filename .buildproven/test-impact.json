@@ -3,6 +3,32 @@
   "jsRunner": "vitest",
   "mappings": [
     {
+      "paths": [".buildproven/test-impact.json"],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": ["vitest", "run", "scripts/__tests__/test-impact.test.js"]
+        }
+      ]
+    },
+    {
+      "paths": [
+        "scripts/__tests__/fixtures/harness-comparison-coding.json",
+        "scripts/__tests__/harness-comparison-coding.test.js",
+        "docs/harness-comparison-coding.md"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/harness-comparison-coding.test.js"
+          ]
+        }
+      ]
+    },
+    {
       "paths": [
         "scripts/provider-worker-sandbox.sh",
         "scripts/__tests__/provider-worker-sandbox.test.js",
