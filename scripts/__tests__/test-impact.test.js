@@ -17,6 +17,23 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "..", "..");
 
 describe("cross-language test impact", () => {
+  it("selects policy contract tests only for an explicit mutation probe", () => {
+    const files = [".buildproven/test-impact.json"];
+    const policy = loadPolicy(ROOT);
+    expect(plan(files, policy, { root: ROOT }).mode).toBe("audit");
+    expect(
+      plan(files, policy, { root: ROOT, preferExplicitMappings: true }),
+    ).toMatchObject({
+      mode: "focused",
+      commands: [
+        {
+          executable: "npx",
+          args: ["vitest", "run", "scripts/__tests__/test-impact.test.js"],
+        },
+      ],
+    });
+  });
+
   it.each([
     "scripts/quality-run.js",
     "scripts/__tests__/quality-run.test.js",
@@ -47,6 +64,15 @@ describe("cross-language test impact", () => {
 
   it.each([
     ["scripts/quality-run-bounded.sh", "quality-provider-runtime.test.js"],
+    [
+      "scripts/__tests__/fixtures/harness-comparison-coding.json",
+      "harness-comparison-coding.test.js",
+    ],
+    [
+      "scripts/__tests__/harness-comparison-coding.test.js",
+      "harness-comparison-coding.test.js",
+    ],
+    ["docs/harness-comparison-coding.md", "harness-comparison-coding.test.js"],
     [
       ".github/workflows/product-admission-public-key.yml",
       "product-admission.test.js",
