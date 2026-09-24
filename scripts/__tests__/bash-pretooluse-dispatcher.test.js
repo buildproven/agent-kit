@@ -87,7 +87,10 @@ describe("bash-pretooluse-dispatcher.js", () => {
             if (stage === "classifier")
               body = `if [ "$1" = "--ci-budget-classify" ]; then\n${hang}fi\nexit 0\n`;
           }
-          writeFileSync(path.join(guardDir, name), `#!/bin/sh\n${body}`);
+          writeFileSync(
+            path.join(guardDir, name),
+            `#!/bin/sh\ncat >/dev/null\n${body}`,
+          );
         }
         writeFileSync(
           path.join(guardDir, "ci-budget-admission.js"),
@@ -95,32 +98,21 @@ describe("bash-pretooluse-dispatcher.js", () => {
             ? `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,600); const fs=require('fs'); const child=require('child_process').spawn('sleep',['30'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);\n`
             : "process.exit(0);\n",
         );
-        let result;
-        // A busy CI worker can reject the test's initial subprocess launch
-        // with EPIPE before the staged helper starts. That does prove the
-        // dispatcher fails closed, but it cannot prove process-group cleanup.
-        // Retry that pre-start infrastructure error only; once a helper exists,
-        // the timeout and descendant-death assertions below remain mandatory.
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          result = spawnSync(process.execPath, [staged], {
-            input: JSON.stringify({
-              tool_input: { command: "git push origin topic" },
-            }),
-            encoding: "utf8",
-            env: { ...process.env, BS_GUARD_TIMEOUT_MS: "2000" },
-            timeout: 8000,
-            killSignal: "SIGKILL",
-          });
-          helperPid = existsSync(pidFile)
-            ? Number(readFileSync(pidFile, "utf8"))
-            : undefined;
-          if (
-            Number.isSafeInteger(helperPid) ||
-            !String(result.stderr || "").includes("EPIPE")
-          ) {
-            break;
-          }
-        }
+        // Consume hook input before returning success, as the real guards do.
+        // Large input exposes early-exit EPIPE without probabilistic retries.
+        const result = spawnSync(process.execPath, [staged], {
+          input: JSON.stringify({
+            tool_input: { command: "git push origin topic" },
+            fixturePadding: "x".repeat(256 * 1024),
+          }),
+          encoding: "utf8",
+          env: { ...process.env, BS_GUARD_TIMEOUT_MS: "2000" },
+          timeout: 8000,
+          killSignal: "SIGKILL",
+        });
+        helperPid = existsSync(pidFile)
+          ? Number(readFileSync(pidFile, "utf8"))
+          : undefined;
         expect(result.error, result.stderr).toBeUndefined();
         expect(result.status, result.stderr).toBe(2);
         expect(result.stderr).toMatch(/did not finish within 2000ms/);

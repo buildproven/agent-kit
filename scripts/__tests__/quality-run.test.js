@@ -36,7 +36,16 @@ describe("owned deadline process boundary", () => {
     expect(result.terminationError).toBeUndefined();
     const pid = Number(result.stdout);
     expect(pid).toBeGreaterThan(0);
-    expect(() => process.kill(pid, 0)).toThrow();
+    // Nested guardians receive the same deadline and parent-disconnect signal,
+    // but OS process removal is asynchronous across their separate groups.
+    // Bound observation; do not kill the payload to make this assertion pass.
+    await vi.waitFor(
+      () =>
+        expect(() => process.kill(pid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        ),
+      { timeout: 200, interval: 10 },
+    );
   });
 
   it("retains cancel-file behavior through the supervised legacy wrapper", async () => {

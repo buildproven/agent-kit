@@ -145,6 +145,20 @@ reproduced that failure in 0.31 seconds. Making those stubs consume input fixes
 both classifier/admission cases (2/2, 4.39 seconds); the three-attempt retry was
 removed, not increased. No production hook timeout or protection was relaxed.
 
+The 8dc85aa complete audits exposed two more fixture defects. Hosted CI passed
+4,293 tests (8 skipped) but its descendant-timeout fixture still had early-exit
+guard stubs. A 256 KiB input reproduced EPIPE in 2/3 cases; consuming input
+before the guard bodies made 3/3 pass and the complete dispatcher suite pass
+25/25. Its three-attempt retry is removed. No production guard changed.
+
+The native audit passed 4,300 tests (one skipped) but asserted nested payload
+absence synchronously after the outer group exited. A 48-launch bounded probe
+observed six immediate PID-presence races; every one was absent by the next
+process snapshot and none survived 200 ms. The assertion now observes absence
+for at most 200 ms and requires ESRCH, matching asynchronous cooperative
+cleanup. It never signals the payload to satisfy the assertion. This does not
+change the production deadline or claim hard real-time or hostile containment.
+
 The affected recovery/provider/parser/hook/selector run passed 377 tests and
 failed one selector expectation for the intentionally expanded plan. That
 assertion now requires the focused merge-path cases as well as provider tests;
