@@ -212,9 +212,10 @@ if [ "$1" = "--ci-budget-classify" ]; then
   printf '%s' started > ${JSON.stringify(startedFile)}
   exec sleep 600
 fi
+cat >/dev/null
 exit 0
 `
-              : "#!/bin/sh\nexit 0\n";
+              : "#!/bin/sh\ncat >/dev/null\nexit 0\n";
           writeFileSync(path.join(guardDir, name), body);
         }
         writeFileSync(
@@ -223,28 +224,21 @@ exit 0
             ? `require("node:fs").writeFileSync(${JSON.stringify(startedFile)}, "started"); setInterval(() => {}, 1000);\n`
             : "process.exit(0);\n",
         );
-        let result;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          rmSync(startedFile, { force: true });
-          result = spawnSync(process.execPath, [staged], {
-            input: JSON.stringify({
-              tool_input: { command: "git push origin topic" },
-            }),
-            encoding: "utf8",
-            env: {
-              ...process.env,
-              BS_GUARD_TIMEOUT_MS: String(childTimeoutMs),
-            },
-            timeout: childTimeoutMs + 2000,
-            killSignal: "SIGKILL",
-          });
-          if (
-            existsSync(startedFile) ||
-            !String(result.stderr || "").includes("EPIPE")
-          ) {
-            break;
-          }
-        }
+        // Successful guards consume input just like the real guards. A large
+        // payload makes early-exit EPIPE deterministic instead of a CI race.
+        const result = spawnSync(process.execPath, [staged], {
+          input: JSON.stringify({
+            tool_input: { command: "git push origin topic" },
+            fixturePadding: "x".repeat(256 * 1024),
+          }),
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            BS_GUARD_TIMEOUT_MS: String(childTimeoutMs),
+          },
+          timeout: childTimeoutMs + 2000,
+          killSignal: "SIGKILL",
+        });
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(2);
         expect(existsSync(startedFile)).toBe(true);

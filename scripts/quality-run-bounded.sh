@@ -39,6 +39,13 @@ if [ -n "$GOVERNOR_FILE" ]; then
 fi
 [ -n "$TIMEOUT" ] && [ "${1:-}" = -- ] || { echo "usage: quality-run-bounded.sh --timeout <seconds> -- <command>" >&2; exit 1; }
 shift
+if [ -n "${BS_QUALITY_SUPERVISED_STOP_AT:-}" ]; then
+  # Stay connected to the enclosing supervisor. The legacy job-control path
+  # below creates groups which otherwise survive a killed outer coordinator.
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec node "$SCRIPT_DIR/quality-process-supervisor.js" --bounded \
+    "$TIMEOUT" "$CANCEL_FILE" -- "$@"
+fi
 MARKER="$(mktemp "${TMPDIR:-/tmp}/quality-timeout.XXXXXX")"
 rm -f "$MARKER"
 TRACKED_PIDS_FILE="$(mktemp "${TMPDIR:-/tmp}/quality-provider-pids.XXXXXX")"

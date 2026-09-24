@@ -4,6 +4,24 @@
   "mappings": [
     {
       "paths": [
+        "scripts/quality-process-supervisor.js",
+        "scripts/quality-run-bounded.sh"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/quality-invocation.test.js",
+            "-t",
+            "keeps the reviewed HEAD immutable with"
+          ]
+        }
+      ]
+    },
+    {
+      "paths": [
         "scripts/quality-wake.js",
         "scripts/quality-process-supervisor.js",
         "scripts/autonomous-loop-runtime.js",
@@ -279,6 +297,7 @@
     {
       "paths": [
         "scripts/quality-review-plan.sh",
+        "scripts/quality-process-supervisor.js",
         "scripts/quality-run-bounded.sh"
       ],
       "commands": [

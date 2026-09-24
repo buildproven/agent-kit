@@ -5876,50 +5876,56 @@ exit 99
     expect(result.stderr).toMatch(/gate reserve does not match gate count/);
   });
 
-  it("keeps the reviewed HEAD immutable and waits for exact-candidate CI", () => {
-    const root = repo("stamp-retry");
-    const remote = makeTempDir("quality-remote-");
-    git(remote, ["init", "--bare", "-q"]);
-    git(root, ["remote", "set-url", "origin", remote]);
-    git(root, ["push", "-q", "origin", "main"]);
-    git(root, ["push", "-q", "-u", "origin", "feature"]);
+  it.each(["immediate", "delayed", "deadline"])(
+    "keeps the reviewed HEAD immutable with %s exact-candidate CI",
+    (ciMode) => {
+      const root = repo("stamp-retry");
+      const remote = makeTempDir("quality-remote-");
+      git(remote, ["init", "--bare", "-q"]);
+      git(root, ["remote", "set-url", "origin", remote]);
+      git(root, ["push", "-q", "origin", "main"]);
+      git(root, ["push", "-q", "-u", "origin", "feature"]);
 
-    const manifest = create(root, ["--level", "95", "--pr", "1", "--merge"]);
-    const fixtureIdentity = fixtureRepository(root);
-    execFileSync("bash", [RISK, "--manifest", manifest], { cwd: root });
-    execFileSync("bash", [SELECT, "--manifest", manifest], { cwd: root });
-    prepareCodexReview(root, manifest);
-    recordJudgeArtifact(root, manifest);
+      const manifest = create(root, ["--level", "95", "--pr", "1", "--merge"]);
+      const fixtureIdentity = fixtureRepository(root);
+      execFileSync("bash", [RISK, "--manifest", manifest], { cwd: root });
+      execFileSync("bash", [SELECT, "--manifest", manifest], { cwd: root });
+      prepareCodexReview(root, manifest);
+      recordJudgeArtifact(root, manifest);
 
-    const harness = makeTempDir("quality-stamp-harness-");
-    const bin = path.join(harness, "bin");
-    mkdirSync(bin);
-    const log = path.join(harness, "gh-order.log");
-    const pushLog = path.join(harness, "git-push.log");
-    const fail = path.join(harness, "fail-ci");
-    const failPush = path.join(harness, "fail-push");
-    const denyPreflight = path.join(harness, "deny-preflight");
-    const evidence = path.join(harness, "quality-review-evidence.json");
-    const merged = path.join(harness, "merged");
-    writeFileSync(fail, "fail\n");
-    writeFileSync(denyPreflight, "deny\n");
-    const gh = path.join(bin, "gh");
-    const gitWrapper = path.join(bin, "git");
-    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
-    writeFileSync(
-      gitWrapper,
-      `#!/usr/bin/env bash
+      const harness = makeTempDir("quality-stamp-harness-");
+      const bin = path.join(harness, "bin");
+      mkdirSync(bin);
+      const log = path.join(harness, "gh-order.log");
+      const pushLog = path.join(harness, "git-push.log");
+      const fail = path.join(harness, "fail-ci");
+      const failPush = path.join(harness, "fail-push");
+      const denyPreflight = path.join(harness, "deny-preflight");
+      const evidence = path.join(harness, "quality-review-evidence.json");
+      const merged = path.join(harness, "merged");
+      const ciReadyAt = path.join(harness, "ci-ready-at");
+      const ciPidFile = path.join(harness, "ci-pid");
+      writeFileSync(fail, "fail\n");
+      writeFileSync(denyPreflight, "deny\n");
+      const gh = path.join(bin, "gh");
+      const gitWrapper = path.join(bin, "git");
+      const realGit = execFileSync("which", ["git"], {
+        encoding: "utf8",
+      }).trim();
+      writeFileSync(
+        gitWrapper,
+        `#!/usr/bin/env bash
 if [ "$1" = push ]; then
   printf '%s\\n' "$*" >> ${JSON.stringify(pushLog)}
   if [ -f ${JSON.stringify(failPush)} ]; then exit 75; fi
 fi
 exec ${JSON.stringify(realGit)} "$@"
 `,
-    );
-    chmodSync(gitWrapper, 0o755);
-    writeFileSync(
-      gh,
-      `#!/usr/bin/env bash
+      );
+      chmodSync(gitWrapper, 0o755);
+      writeFileSync(
+        gh,
+        `#!/usr/bin/env bash
 echo "$*" >> ${JSON.stringify(log)}
 if [ "$1 $2" = "pr view" ]; then
   head="$(git ls-remote origin refs/heads/feature | awk '{print $1}')"
@@ -5948,6 +5954,16 @@ if [ "$1" = "api" ]; then
     head_sha="$(jq -r .head_sha ${JSON.stringify(evidence)})"
     printf '{"id":2,"name":"quality-review-evidence","head_sha":"%s"}\\n' "$head_sha"
   elif [[ "$*" == *"/check-runs"* ]]; then
+    printf '%s\\n' "$PPID" > ${JSON.stringify(ciPidFile)}
+    if [ '${ciMode}' != immediate ]; then
+      if [ ! -f ${JSON.stringify(ciReadyAt)} ]; then
+        node -e 'process.stdout.write(String(Date.now()+${ciMode === "deadline" ? 60000 : 10000}))' > ${JSON.stringify(ciReadyAt)}
+      fi
+      if node -e 'process.exit(Date.now()<Number(require("node:fs").readFileSync(process.argv[1],"utf8"))?0:1)' ${JSON.stringify(ciReadyAt)}; then
+        printf '%s\\n' '{"check_runs":[{"id":1,"name":"quality","status":"in_progress","conclusion":null,"app":{"id":15368}}]}'
+        exit 0
+      fi
+    fi
     if [ -f ${JSON.stringify(evidence)} ]; then
       text="$(jq -c .output.text ${JSON.stringify(evidence)})"
       printf '{"check_runs":[{"id":2,"name":"quality-review-evidence","status":"completed","conclusion":"success","completed_at":"2026-08-11T12:00:00Z","output":{"text":%s}},{"id":1,"name":"quality","status":"completed","conclusion":"success","app":{"id":15368}}]}\\n' "$text"
@@ -5963,63 +5979,123 @@ if [ "$1" = "api" ]; then
 fi
 exit 1
 `,
-    );
-    chmodSync(gh, 0o755);
-    const reviewEvidenceKeys = generateKeyPairSync("ed25519");
-    const env = {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH}`,
-      QUALITY_STAMP_CI_TIMEOUT: "5",
-      QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY: reviewEvidenceKeys.privateKey
-        .export({ format: "der", type: "pkcs8" })
-        .toString("base64"),
-      QUALITY_REVIEW_EVIDENCE_PUBLIC_KEY: reviewEvidenceKeys.publicKey
-        .export({ format: "der", type: "spki" })
-        .toString("base64"),
-      // Keep default key discovery hermetic; this fixture supplies an
-      // explicit ephemeral signer for the critical-tier stamp path.
-      XDG_CONFIG_HOME: path.join(harness, "xdg"),
-    };
+      );
+      chmodSync(gh, 0o755);
+      const reviewEvidenceKeys = generateKeyPairSync("ed25519");
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        QUALITY_STAMP_CI_TIMEOUT: ciMode === "immediate" ? "5" : "40",
+        QUALITY_REVIEW_EVIDENCE_PRIVATE_KEY: reviewEvidenceKeys.privateKey
+          .export({ format: "der", type: "pkcs8" })
+          .toString("base64"),
+        QUALITY_REVIEW_EVIDENCE_PUBLIC_KEY: reviewEvidenceKeys.publicKey
+          .export({ format: "der", type: "spki" })
+          .toString("base64"),
+        // Keep default key discovery hermetic; this fixture supplies an
+        // explicit ephemeral signer for the critical-tier stamp path.
+        XDG_CONFIG_HOME: path.join(harness, "xdg"),
+      };
 
-    const reviewedHead = git(root, ["rev-parse", "HEAD"]);
-    const denied = spawnSync(
-      "bash",
-      [STAMP_AND_MERGE, "--manifest", manifest],
-      { cwd: root, env, encoding: "utf8" },
-    );
-    expect(denied.status).not.toBe(0);
-    expect(git(root, ["rev-parse", "HEAD"])).toBe(reviewedHead);
-    expect(git(root, ["ls-remote", "origin", "refs/heads/feature"])).toContain(
-      reviewedHead,
-    );
-    expect(JSON.parse(readFileSync(manifest, "utf8")).merge.stampHead).toBe(
-      undefined,
-    );
-    unlinkSync(denyPreflight);
-    const result = spawnSync(
-      "bash",
-      [STAMP_AND_MERGE, "--manifest", manifest],
-      {
-        cwd: root,
-        env,
-        encoding: "utf8",
-      },
-    );
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).not.toContain("unbound variable");
-    expect(git(root, ["rev-parse", "HEAD"])).toBe(reviewedHead);
-    expect(
-      JSON.parse(readFileSync(manifest, "utf8")).merge.stampHead,
-    ).toBeUndefined();
-    expect(git(root, ["ls-remote", "origin", "refs/heads/feature"])).toContain(
-      reviewedHead,
-    );
-    expect(existsSync(pushLog)).toBe(false);
-    const calls = readFileSync(log, "utf8");
-    expect(calls.indexOf(`/commits/${reviewedHead}/check-runs`)).toBeLessThan(
-      calls.indexOf("pr merge 1"),
-    );
-  }, 90_000);
+      const reviewedHead = git(root, ["rev-parse", "HEAD"]);
+      const denied = spawnSync(
+        "bash",
+        [STAMP_AND_MERGE, "--manifest", manifest],
+        { cwd: root, env, encoding: "utf8" },
+      );
+      expect(denied.status).not.toBe(0);
+      expect(git(root, ["rev-parse", "HEAD"])).toBe(reviewedHead);
+      expect(
+        git(root, ["ls-remote", "origin", "refs/heads/feature"]),
+      ).toContain(reviewedHead);
+      expect(JSON.parse(readFileSync(manifest, "utf8")).merge.stampHead).toBe(
+        undefined,
+      );
+      unlinkSync(denyPreflight);
+      const supervisor = path.join(
+        ROOT,
+        "scripts",
+        "quality-process-supervisor.js",
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          `
+require(${JSON.stringify(supervisor)}).supervise('bash', ${JSON.stringify([STAMP_AND_MERGE, "--manifest", manifest])},
+  {stopAt:Date.now()+${ciMode === "deadline" ? 12000 : 45000}, forwardOutput:true})
+  .then(result=>{process.stdout.write(JSON.stringify({supervisedResult:result})+'\\n'); process.exitCode=result.code;})
+  .catch(error=>{process.stderr.write(error.message);process.exitCode=2;});
+`,
+        ],
+        {
+          cwd: root,
+          env,
+          encoding: "utf8",
+          timeout: 50000,
+          killSignal: "SIGKILL",
+        },
+      );
+      if (ciMode === "deadline") {
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(1);
+        const supervised = JSON.parse(
+          result.stdout.trim().split("\n").at(-1),
+        ).supervisedResult;
+        expect(supervised.deadlineExpired).toBe(true);
+        expect(supervised.terminationError).toBeUndefined();
+        expect(existsSync(ciReadyAt)).toBe(true);
+        expect(existsSync(merged)).toBe(false);
+        const ciPid = Number(readFileSync(ciPidFile, "utf8"));
+        let pollingSurvived = false;
+        try {
+          process.kill(ciPid, 0);
+          pollingSurvived = true;
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+        if (pollingSurvived) {
+          const command = spawnSync(
+            "ps",
+            ["-p", String(ciPid), "-o", "command="],
+            { encoding: "utf8" },
+          ).stdout;
+          if (command.includes(manifest)) process.kill(ciPid, "SIGTERM");
+        }
+        expect(
+          pollingSurvived,
+          "required-check poller survived the outer deadline",
+        ).toBe(false);
+        expect(git(root, ["rev-parse", "HEAD"])).toBe(reviewedHead);
+        expect(readFileSync(log, "utf8")).not.toContain("pr merge 1");
+        return;
+      }
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain("unbound variable");
+      expect(git(root, ["rev-parse", "HEAD"])).toBe(reviewedHead);
+      expect(
+        JSON.parse(readFileSync(manifest, "utf8")).merge.stampHead,
+      ).toBeUndefined();
+      expect(
+        git(root, ["ls-remote", "origin", "refs/heads/feature"]),
+      ).toContain(reviewedHead);
+      expect(existsSync(pushLog)).toBe(false);
+      const calls = readFileSync(log, "utf8");
+      expect(calls.indexOf(`/commits/${reviewedHead}/check-runs`)).toBeLessThan(
+        calls.indexOf("pr merge 1"),
+      );
+      if (ciMode === "delayed") {
+        expect(existsSync(ciReadyAt)).toBe(true);
+        expect(Date.now()).toBeGreaterThanOrEqual(
+          Number(readFileSync(ciReadyAt, "utf8")),
+        );
+        expect(
+          calls.split(`/commits/${reviewedHead}/check-runs`).length,
+        ).toBeGreaterThan(2);
+      }
+    },
+    90_000,
+  );
 
   it("rejects cross-repository PRs before creating unusable state", () => {
     const root = repo("cross-repo");

@@ -42,6 +42,10 @@ death cancels its foreground group. A blocked invocation can leave the durable
 campaign in its prior nonterminal state: expiry does not run a potentially
 blocking metadata transaction just to write a terminal marker. The existing
 recovery path must reconcile that preserved evidence before more work starts.
+Nested `quality-run-bounded.sh` calls inherit the supervisor deadline and use
+the same parent-disconnect cancellation path. Their own phase cap can shorten,
+but cannot extend, the inherited deadline. Calls outside supervised execution
+keep the existing standalone wrapper behavior.
 Calls without the option retain their existing behavior. Automatic wake
 registration and scheduling are separate from this runner input.
 

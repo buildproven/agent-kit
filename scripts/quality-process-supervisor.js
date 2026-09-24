@@ -3,6 +3,7 @@
 // The only process which signals a group is its still-live group leader.
 // Payload code never runs on the supervisor's deadline event loop.
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 
 function groupAbsent(pid) {
   try {
@@ -39,10 +40,13 @@ function supervise(command, args, options) {
     let stderr = "";
     let settled = false;
     let timer;
+    let cancelTimer;
+    let cancelled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearInterval(cancelTimer);
       child.stdout.destroy();
       child.stderr.destroy();
       if (child.connected) child.disconnect();
@@ -65,6 +69,14 @@ function supervise(command, args, options) {
       });
     };
     observeDeadline();
+    if (options.cancelFile) {
+      cancelTimer = setInterval(() => {
+        if (fs.existsSync(options.cancelFile)) {
+          cancelled = true;
+          if (child.connected) child.disconnect();
+        }
+      }, 50);
+    }
     child.stdout.on("data", (chunk) => {
       stdout = `${stdout}${chunk}`.slice(-32768);
       if (options.forwardOutput !== false) process.stdout.write(chunk);
@@ -82,6 +94,7 @@ function supervise(command, args, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearInterval(cancelTimer);
       reject(error);
     });
     child.once("exit", async () => {
@@ -91,6 +104,13 @@ function supervise(command, args, options) {
       while (!groupAbsent(child.pid) && Date.now() < until)
         await new Promise((done) => setTimeout(done, 10));
       const absent = groupAbsent(child.pid);
+      if (cancelled && absent)
+        return finish({
+          code: 143,
+          signal: "SIGTERM",
+          deadlineExpired: false,
+          cancelled: true,
+        });
       finish(
         result && (absent || result.terminationError)
           ? result
@@ -122,6 +142,7 @@ function supervise(command, args, options) {
     } catch (error) {
       if (child.connected) child.disconnect();
       clearTimeout(timer);
+      clearInterval(cancelTimer);
       reject(error);
     }
   });
@@ -183,6 +204,7 @@ function main() {
       return finish({ code: 1, signal: null });
     const payload = spawn(message.command, message.args, {
       cwd: message.cwd,
+      env: { ...process.env, BS_QUALITY_SUPERVISED_STOP_AT: String(stopAt) },
       detached: false,
       // A payload IPC channel is freshly created, never the parent's channel.
       stdio: message.payloadIpc
@@ -207,5 +229,42 @@ function main() {
   deadline();
 }
 
-if (require.main === module) main();
+async function boundedCommand() {
+  const [seconds, cancelFile, separator, command, ...args] =
+    process.argv.slice(3);
+  const inherited = Number(process.env.BS_QUALITY_SUPERVISED_STOP_AT);
+  const duration = Number(seconds);
+  if (
+    separator !== "--" ||
+    !command ||
+    !Number.isSafeInteger(inherited) ||
+    !Number.isFinite(duration) ||
+    duration <= 0
+  )
+    throw new Error(
+      "bounded supervisor requires a valid inherited deadline and timeout",
+    );
+  const stopAt = Math.min(inherited, Date.now() + duration * 1000);
+  let executable = command;
+  let commandArgs = args;
+  if (process.platform === "darwin") {
+    fs.accessSync("/usr/bin/caffeinate", fs.constants.X_OK);
+    executable = "/usr/bin/caffeinate";
+    commandArgs = ["-i", command, ...args];
+  }
+  const result = await supervise(executable, commandArgs, {
+    stopAt,
+    cancelFile,
+  });
+  process.exitCode = result.deadlineExpired ? 124 : result.code;
+}
+
+if (require.main === module) {
+  if (process.argv[2] === "--bounded")
+    boundedCommand().catch((error) => {
+      process.stderr.write(`quality-run-bounded: ${error.message}\n`);
+      process.exitCode = 2;
+    });
+  else main();
+}
 module.exports = { supervise };

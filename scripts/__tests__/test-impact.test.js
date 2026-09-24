@@ -54,10 +54,26 @@ describe("cross-language test impact", () => {
   ])("selects existing behavioral coverage for %s", (source, test) => {
     const selected = plan([source], loadPolicy(ROOT), { root: ROOT });
     expect(selected.mode).toBe("focused");
-    expect(selected.commands).toHaveLength(1);
-    expect(selected.commands[0].executable).toBe("npx");
-    expect(selected.commands[0].args.slice(0, 2)).toEqual(["vitest", "run"]);
-    expect(selected.commands[0].args).toContain(`scripts/__tests__/${test}`);
+    const coverage = selected.commands.find((command) =>
+      command.args.includes(`scripts/__tests__/${test}`),
+    );
+    expect(coverage?.executable).toBe("npx");
+    expect(coverage?.args.slice(0, 2)).toEqual(["vitest", "run"]);
+    expect(selected.commands).toHaveLength(
+      source === "scripts/quality-run-bounded.sh" ? 2 : 1,
+    );
+    if (source === "scripts/quality-run-bounded.sh") {
+      expect(selected.commands).toContainEqual({
+        executable: "npx",
+        args: [
+          "vitest",
+          "run",
+          "scripts/__tests__/quality-invocation.test.js",
+          "-t",
+          "keeps the reviewed HEAD immutable with",
+        ],
+      });
+    }
   });
 
   it("reports unknown repository coverage instead of hiding it behind an audit", () => {

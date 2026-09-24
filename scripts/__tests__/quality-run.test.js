@@ -18,6 +18,51 @@ const { ownershipSchemaVersion } = require("../quality-runner-ownership");
 const { supervise } = require("../quality-process-supervisor");
 
 describe("owned deadline process boundary", () => {
+  it("caps a nested legacy wrapper at the inherited deadline", async () => {
+    const result = await supervise(
+      "bash",
+      [
+        path.resolve(__dirname, "..", "quality-run-bounded.sh"),
+        "--timeout",
+        "60",
+        "--",
+        process.execPath,
+        "-e",
+        "process.stdout.write(String(process.pid)); setInterval(()=>{},1000)",
+      ],
+      { stopAt: Date.now() + 500, forwardOutput: false },
+    );
+    expect(result.deadlineExpired || result.code === 124).toBe(true);
+    expect(result.terminationError).toBeUndefined();
+    const pid = Number(result.stdout);
+    expect(pid).toBeGreaterThan(0);
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  it("retains cancel-file behavior through the supervised legacy wrapper", async () => {
+    const entry = fixture();
+    const cancelFile = entry.manifestPath + ".cancel";
+    writeFileSync(cancelFile, "cancel");
+    const result = await supervise(
+      "bash",
+      [
+        path.resolve(__dirname, "..", "quality-run-bounded.sh"),
+        "--timeout",
+        "60",
+        "--cancel-file",
+        cancelFile,
+        "--",
+        process.execPath,
+        "-e",
+        "setInterval(()=>{},1000)",
+      ],
+      { stopAt: Date.now() + 2000, forwardOutput: false },
+    );
+    expect(result.code).toBe(143);
+    expect(result.deadlineExpired).toBe(false);
+    expect(result.terminationError).toBeUndefined();
+  });
+
   it("preserves target exit code and argument boundaries", async () => {
     const result = await supervise(
       process.execPath,

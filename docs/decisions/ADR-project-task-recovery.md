@@ -99,9 +99,42 @@ product defect. The shared ownership module owns the read-only quiescence check
 used by both wake and standalone expiry.
 
 The combined runner/wake/runtime suite passes **129/129** in 47.23 seconds,
-including native launchd. Delayed-CI acceptance and final exact-head review
-remain unfinished. These are component/native-fixture results, not installed
-builder recovery, provider authentication or SOTA evidence.
+including native launchd. These are component/native-fixture results, not
+installed builder recovery, provider authentication or SOTA evidence.
+
+### Delayed-CI merge-path acceptance
+
+The real stamp/merge script, manifest checks, signed fixture review evidence,
+Git refs and required-check poller now run under the supervisor with only the
+GitHub boundary simulated. Three cases pass (68.60 seconds): immediate green,
+delayed green with repeated exact-head checks and one merge invocation, and a
+fixed outer deadline with no merge. No manual resume occurs between polls.
+These do not claim a real hosted merge or a full installed builder campaign.
+
+The first deadline case exposed a real cleanup defect despite returning a
+blocked result: `quality-run-bounded.sh` used job control to create another
+group, leaving the CI poller alive after its outer supervisor exited. The
+strengthened test failed on that surviving PID (20.50 seconds). When running
+inside a supervised invocation, the wrapper now uses the same IPC-owned
+supervisor protocol with the minimum of its phase cap and inherited absolute
+deadline. Parent disconnect cancels it; Darwin caffeinate and cancel-file
+behavior remain. Standalone callers without a supervisor retain the prior
+path. The strengthened case passes (20.27 seconds), including poller absence.
+Two focused nested-cap/cancel-file tests pass in 0.79 seconds.
+
+CI on `5c9cea9` passed 4,288 tests but failed an older classifier timeout
+fixture. Its successful shell stubs did not consume stdin, so an early exit
+could cause EPIPE before the hanging classifier started. A large-input probe
+reproduced that failure in 0.31 seconds. Making those stubs consume input fixes
+both classifier/admission cases (2/2, 4.39 seconds); the three-attempt retry was
+removed, not increased. No production hook timeout or protection was relaxed.
+
+The affected recovery/provider/parser/hook/selector run passed 377 tests and
+failed one selector expectation for the intentionally expanded plan. That
+assertion now requires the focused merge-path cases as well as provider tests;
+the selector suite passes 66/66 (1.02 seconds). The other six suites passed,
+including native launchd. A complete exact-head regression and independent
+code review remain required before merge.
 
 The optional runner deadline is implemented locally, not yet reviewed or merged.
 The public CLI orchestration suite passes 80/80 tests (32.90 seconds). The
