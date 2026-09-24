@@ -30,8 +30,24 @@ read-only repeated registration, clean controller binding, and refusal of
 symlinked/shared/repository-contained state. These plus the existing autonomous
 runtime tests pass 21/21 (2.78 seconds). The controller in these registration
 tests is deliberately a registration-only fixture, not an execution proof.
-Reconciliation, scheduling and the real crash/re-entry acceptance test below
-remain unimplemented. No production wake job has been installed.
+Reconciliation is implemented locally through `reconcile-quality
+--registration <path>`. The combined registration/recovery/runtime suites pass
+33/33 tests (10.26 seconds). Two tests use a committed fixture controller with
+the candidate adapter, real invocation library and real runner: dead idle-owner recovery and dead
+expired-execution recovery both reach the exact missing-product-input block.
+The latter charges one second of expired gate execution exactly once and keeps
+provider usage at zero. Live owners/children, remote and legacy owners, missing
+child identity, pending execution deadlines, terminal campaigns, changed
+identities and expired wake deadlines do not dispatch work. These are local
+component proofs, not the scheduled crash/re-entry proof. Scheduling, race fault
+injection, result-pause persistence and the real launchd acceptance below remain
+unfinished. No production wake job has been installed.
+
+Recovery dispatch must execute from the registered controller's own runtime.
+It uses fixed imports, not dynamic loading of paths from registration data.
+After execution it rechecks registration and campaign identity; a complete
+result requires a matching terminal record. The adapter does not accept an exit
+code alone as proof of completion.
 
 The host entry point is:
 

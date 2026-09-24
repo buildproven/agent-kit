@@ -2,6 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -10,10 +12,36 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { hostname } from "node:os";
 import { describe, expect, it } from "vitest";
 import { makeTempDir } from "./helpers/tmp.js";
 
 const CLI = path.resolve(import.meta.dirname, "../autonomous-loop-runtime.js");
+const SOURCE_ROOT = path.resolve(import.meta.dirname, "../..");
+let controllerArchive;
+function executableController(fx) {
+  controllerArchive ||= execFileSync(
+    "git",
+    ["-C", SOURCE_ROOT, "archive", "--format=tar", "HEAD"],
+    { maxBuffer: 64 * 1024 * 1024 },
+  );
+  execFileSync("tar", ["-xf", "-", "-C", fx.controller], {
+    input: controllerArchive,
+  });
+  for (const file of ["quality-wake.js", "autonomous-loop-runtime.js"]) {
+    copyFileSync(
+      path.join(SOURCE_ROOT, "scripts", file),
+      path.join(fx.controller, "scripts", file),
+    );
+  }
+  symlinkSync(
+    path.join(SOURCE_ROOT, "node_modules"),
+    path.join(fx.controller, "node_modules"),
+  );
+  git(fx.controller, ["add", "."]);
+  git(fx.controller, ["commit", "-qm", "real controller snapshot"]);
+  fx.runtime = path.join(fx.controller, "scripts/autonomous-loop-runtime.js");
+}
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], {
     encoding: "utf8",
@@ -26,6 +54,17 @@ function repository(root) {
   git(root, ["config", "user.email", "wake@example.invalid"]);
   git(root, ["remote", "add", "origin", "https://example.invalid/wake.git"]);
   writeFileSync(path.join(root, "README.md"), "wake fixture\n");
+  writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      private: true,
+      scripts: {
+        lint: "node -e ''",
+        test: "node -e ''",
+        security: "node -e ''",
+      },
+    }),
+  );
   git(root, ["add", "."]);
   git(root, ["commit", "-qm", "initial"]);
 }
@@ -110,6 +149,224 @@ function register(fx, extra = []) {
     },
   );
 }
+
+function wake(fx, registrationPath) {
+  return spawnSync(
+    process.execPath,
+    [
+      fx.runtime || CLI,
+      "reconcile-quality",
+      "--registration",
+      registrationPath,
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, TMPDIR: fx.root },
+      timeout: 10_000,
+    },
+  );
+}
+function registered(fx) {
+  const result = register(fx);
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout).registrationPath;
+}
+
+describe("quality wake reconciliation", () => {
+  it.each([
+    ["remote", "blocked", "owner-host-mismatch"],
+    ["legacy", "blocked", "legacy-owner"],
+    ["missing-child", "blocked", "child-identity-missing"],
+    ["live-child", "busy", "child-live-or-unverifiable"],
+    ["future-execution", "busy", "execution-deadline-pending"],
+  ])("preserves %s ownership without recovery", (scenario, status, reason) => {
+    const fx = fixture();
+    const registration = registered(fx);
+    const dead = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
+    expect(dead.status).toBe(0);
+    const owner = {
+      schemaVersion: scenario === "legacy" ? 1 : 2,
+      hostname: scenario === "remote" ? "other-host.invalid" : hostname(),
+      pid: dead.pid,
+      nonce: "preserve-owner",
+      acquiredAt: new Date().toISOString(),
+      childInFlight: true,
+      child: null,
+    };
+    if (["live-child", "future-execution"].includes(scenario))
+      owner.child = {
+        pid: scenario === "live-child" ? process.pid : dead.pid,
+        processGroupId: dead.pid,
+        startedAt: new Date().toISOString(),
+      };
+    if (scenario === "future-execution") {
+      fx.manifest.governor.activeExecution = {
+        kind: "gate",
+        name: "test",
+        startedAt: new Date().toISOString(),
+        timeoutSeconds: 60,
+      };
+      writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    }
+    writeFileSync(fx.manifestPath + ".runner-lock", JSON.stringify(owner));
+    const before = readFileSync(fx.manifestPath, "utf8");
+    const result = wake(fx, registration);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status, reason });
+    expect(readFileSync(fx.manifestPath, "utf8")).toBe(before);
+    expect(
+      JSON.parse(readFileSync(fx.manifestPath + ".runner-lock", "utf8")),
+    ).toEqual(owner);
+  });
+
+  it("does no work after the original wake deadline", () => {
+    const fx = fixture();
+    fx.manifest.createdAt = new Date(Date.now() - 10_000).toISOString();
+    fx.stopAt = new Date(Date.now() - 1000).toISOString();
+    writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    const registration = registered(fx);
+    const before = readFileSync(fx.manifestPath, "utf8");
+    const result = wake(fx, registration);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "stop-at-expired",
+    });
+    expect(readFileSync(fx.manifestPath, "utf8")).toBe(before);
+    expect(existsSync(fx.manifestPath + ".runner-lock")).toBe(false);
+  });
+
+  it.each([false, true])(
+    "reconciles a dead owner and enters the real runner without bypassing its input gate (expired execution: %s)",
+    (expiredExecution) => {
+      const fx = fixture();
+      executableController(fx);
+      fx.manifest.governor.executionBudgetVersion = 1;
+      fx.manifest.requiredGatesPolicyVersion = 3;
+      fx.manifest.options.productPrd = "requirements.md";
+      if (expiredExecution)
+        fx.manifest.governor.activeExecution = {
+          kind: "gate",
+          name: "test",
+          startedAt: new Date(Date.now() - 10_000).toISOString(),
+          timeoutSeconds: 1,
+        };
+      writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+      const registration = registered(fx);
+      const dead = spawnSync(process.execPath, ["-e", ""], {
+        encoding: "utf8",
+      });
+      expect(dead.status).toBe(0);
+      const owner = {
+        schemaVersion: 2,
+        hostname: hostname(),
+        pid: dead.pid,
+        nonce: "dead-test-owner",
+        acquiredAt: new Date().toISOString(),
+        childInFlight: expiredExecution,
+        child: expiredExecution
+          ? {
+              pid: dead.pid,
+              processGroupId: dead.pid,
+              startedAt: new Date().toISOString(),
+            }
+          : null,
+      };
+      writeFileSync(fx.manifestPath + ".runner-lock", JSON.stringify(owner));
+      const result = wake(fx, registration);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const response = JSON.parse(result.stdout.trim().split("\n").at(-1));
+      expect(response).toMatchObject({
+        status: "terminal",
+        state: "blocked",
+        invocationId: fx.manifest.invocationId,
+      });
+      expect(response.message).toContain(
+        "requires --product-prd, --product-tasks, and --delivery-evidence",
+      );
+      expect(existsSync(fx.manifestPath + ".runner-lock")).toBe(false);
+      const final = JSON.parse(readFileSync(fx.manifestPath, "utf8"));
+      expect(final.terminalState.state).toBe("blocked");
+      expect(final.governor.providerSecondsUsed).toBe(0);
+      expect(final.governor.gateSecondsUsed).toBe(expiredExecution ? 1 : 0);
+      expect(final.governor.activeExecution).toBeNull();
+      expect(final.reviews).toEqual([]);
+    },
+  );
+
+  it("does not duplicate a live runner or change its campaign", () => {
+    const fx = fixture();
+    const registration = registered(fx);
+    const owner = {
+      schemaVersion: 2,
+      hostname: hostname(),
+      pid: process.pid,
+      nonce: "live-test-owner",
+      acquiredAt: new Date().toISOString(),
+      childInFlight: false,
+      child: null,
+    };
+    writeFileSync(fx.manifestPath + ".runner-lock", JSON.stringify(owner));
+    const before = readFileSync(fx.manifestPath, "utf8");
+    const result = wake(fx, registration);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "busy",
+      reason: "runner-live",
+    });
+    expect(readFileSync(fx.manifestPath, "utf8")).toBe(before);
+    expect(
+      JSON.parse(readFileSync(fx.manifestPath + ".runner-lock", "utf8")),
+    ).toEqual(owner);
+  });
+
+  it("keeps a terminal campaign read-only on repeated ticks", () => {
+    const fx = fixture();
+    const registration = registered(fx);
+    fx.manifest.terminalState = {
+      state: "provider-incomplete",
+      head: fx.manifest.revisions.currentHead,
+    };
+    writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    const before = readFileSync(fx.manifestPath, "utf8");
+    for (let tick = 0; tick < 2; tick += 1) {
+      const result = wake(fx, registration);
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        status: "paused",
+        reason: "campaign-terminal",
+        state: "provider-incomplete",
+      });
+    }
+    expect(readFileSync(fx.manifestPath, "utf8")).toBe(before);
+  });
+
+  it("refuses changed controller code before inspecting recovery", () => {
+    const fx = fixture();
+    const registration = registered(fx);
+    writeFileSync(
+      path.join(fx.controller, "scripts/quality-run.js"),
+      "changed\n",
+    );
+    const result = wake(fx, registration);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("controller must be clean");
+  });
+
+  it("refuses changed campaign creation identity", () => {
+    const fx = fixture();
+    const registration = registered(fx);
+    fx.manifest.createdAt = new Date(
+      Date.parse(fx.manifest.createdAt) - 1000,
+    ).toISOString();
+    writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+    const result = wake(fx, registration);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "campaign no longer matches wake registration",
+    );
+  });
+});
 
 describe("quality wake registration", () => {
   it("binds a real campaign and clean controller without changing the campaign", () => {

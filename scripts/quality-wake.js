@@ -5,11 +5,13 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const { isDeepStrictEqual } = require("node:util");
 const quality = require("./quality-invocation");
 const { atomicCreate } = require("./quality-manifest-io");
 const { parseStopAt } = require("./quality-run");
+const ownership = require("./quality-runner-ownership");
 
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], {
@@ -144,4 +146,196 @@ function registerQuality(options, defaultStateDirectory) {
   };
 }
 
-module.exports = { registerQuality, readRegistration, controllerIdentity };
+function validatedWake(file) {
+  const registration = readRegistration(file);
+  if (
+    registration.schemaVersion !== 1 ||
+    !registration.controller ||
+    typeof registration.manifestPath !== "string"
+  ) {
+    throw new Error("unsupported or incomplete wake registration");
+  }
+  const stopAt = parseStopAt(registration.stopAt);
+  if (stopAt === null)
+    throw new Error("wake registration is missing its deadline");
+  if (
+    !isDeepStrictEqual(
+      controllerIdentity(registration.controller.root),
+      registration.controller,
+    )
+  ) {
+    throw new Error("controller no longer matches wake registration");
+  }
+  const { manifest, manifestPath } = quality.loadManifest(
+    registration.manifestPath,
+  );
+  if (
+    manifestPath !== registration.manifestPath ||
+    manifest.invocationId !== registration.invocationId ||
+    manifest.repo.key !== registration.repoKey ||
+    manifest.repo.realpath !== registration.target ||
+    manifest.createdAt !== registration.createdAt
+  ) {
+    throw new Error("campaign no longer matches wake registration");
+  }
+  quality.validateIdentity(manifest, manifest.repo.realpath, {
+    requireHead: false,
+  });
+  return { registration, manifest, stopAt };
+}
+
+function ownerReadiness(observed, activeExecution) {
+  if (!observed) return { status: "blocked", reason: "owner-unverifiable" };
+  const owner = observed.record;
+  if (owner.hostname !== os.hostname())
+    return { status: "blocked", reason: "owner-host-mismatch" };
+  if (!ownership.processAbsent(owner.pid))
+    return { status: "busy", reason: "runner-live" };
+  if (owner.schemaVersion !== 2)
+    return { status: "blocked", reason: "legacy-owner" };
+  if (owner.child) {
+    if (
+      !ownership.processAbsent(owner.child.pid) ||
+      !ownership.processGroupAbsent(owner.child.processGroupId)
+    ) {
+      return { status: "busy", reason: "child-live-or-unverifiable" };
+    }
+  } else if (owner.childInFlight || activeExecution) {
+    return { status: "blocked", reason: "child-identity-missing" };
+  }
+  if (activeExecution) {
+    if (
+      !Number.isFinite(Date.parse(activeExecution.startedAt)) ||
+      !Number.isFinite(activeExecution.timeoutSeconds) ||
+      activeExecution.timeoutSeconds <= 0
+    ) {
+      return { status: "blocked", reason: "execution-deadline-invalid" };
+    }
+    if (!quality.hasAbandonedExecution({ governor: { activeExecution } }))
+      return { status: "busy", reason: "execution-deadline-pending" };
+  }
+  return null;
+}
+
+async function reconcileQuality(options) {
+  if (!options.registration)
+    throw new Error("reconcile-quality requires --registration");
+  const file = path.resolve(options.registration);
+  const snapshot = validatedWake(file);
+  const { registration, manifest, stopAt } = snapshot;
+  const manifestPath = registration.manifestPath;
+  const identity = {
+    schemaVersion: 1,
+    invocationId: registration.invocationId,
+    repoKey: registration.repoKey,
+    manifestPath,
+    head: manifest.revisions.currentHead,
+  };
+  if (Date.now() >= stopAt)
+    return { ...identity, status: "blocked", reason: "stop-at-expired" };
+  if (
+    manifest.terminalState &&
+    manifest.terminalState.state !== "interrupted"
+  ) {
+    return {
+      ...identity,
+      status: "paused",
+      reason: "campaign-terminal",
+      state: manifest.terminalState.state,
+    };
+  }
+  if (
+    manifest.orchestration?.head === identity.head &&
+    manifest.orchestration.status === "work-required"
+  ) {
+    return { ...identity, status: "paused", reason: "work-required" };
+  }
+  const ownerFile = `${manifestPath}.runner-lock`;
+  const observed = ownership.readOwner(ownerFile);
+  if (observed || fs.existsSync(ownerFile)) {
+    const notReady = ownerReadiness(
+      observed,
+      manifest.governor.activeExecution,
+    );
+    if (notReady) return { ...identity, ...notReady };
+  } else if (manifest.governor.activeExecution) {
+    return {
+      ...identity,
+      status: "blocked",
+      reason: "active-execution-owner-missing",
+    };
+  }
+  // Dispatch must run inside the pinned host controller. Do not dynamically
+  // load executable code selected by registration data or candidate files.
+  if (
+    fs.realpathSync(path.resolve(__dirname, "..")) !==
+    registration.controller.root
+  ) {
+    throw new Error(
+      "invoke reconcile-quality using the registered controller runtime",
+    );
+  }
+  const controllerQuality = quality;
+  const controllerRunner = require("./quality-run");
+  const controllerOwnership = ownership;
+  if (observed) {
+    controllerRunner.pinRepositoryLease(manifest);
+    if (manifest.governor.activeExecution)
+      controllerQuality.advanceManifest(manifestPath);
+    const current = validatedWake(file);
+    const currentOwner = ownership.readOwner(ownerFile);
+    if (Date.now() >= stopAt)
+      return { ...identity, status: "blocked", reason: "stop-at-expired" };
+    if (
+      !isDeepStrictEqual(current.registration, registration) ||
+      current.manifest.revisions.currentHead !== identity.head ||
+      current.manifest.governor.activeExecution ||
+      !currentOwner ||
+      currentOwner.stat.ino !== observed.stat.ino ||
+      currentOwner.stat.dev !== observed.stat.dev ||
+      !isDeepStrictEqual(currentOwner.record, observed.record) ||
+      ownerReadiness(currentOwner, null)
+    ) {
+      return {
+        ...identity,
+        status: "busy",
+        reason: "recovery-observation-changed",
+      };
+    }
+    controllerOwnership.reconcileRunner({
+      manifestPath,
+      expectedHead: identity.head,
+      expectedHost: observed.record.hostname,
+      expectedPid: observed.record.pid,
+      expectedNonce: observed.record.nonce,
+    });
+  }
+  const result = await controllerRunner.runManifest(manifestPath, { stopAt });
+  const completed = validatedWake(file);
+  const final = completed.manifest;
+  if (
+    !isDeepStrictEqual(completed.registration, registration) ||
+    result.head !== final.revisions.currentHead ||
+    final.invocationId !== identity.invocationId
+  ) {
+    throw new Error("wake result does not match the final campaign identity");
+  }
+  if (
+    result.status === "complete" &&
+    (!["merged", "verified-unmerged"].includes(result.state) ||
+      final.terminalState?.state !== result.state ||
+      final.terminalState.head !== result.head)
+  ) {
+    throw new Error(
+      "wake completion lacks a matching terminal campaign record",
+    );
+  }
+  return { ...identity, ...result };
+}
+
+module.exports = {
+  registerQuality,
+  reconcileQuality,
+  readRegistration,
+  controllerIdentity,
+};
