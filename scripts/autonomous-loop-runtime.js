@@ -640,6 +640,12 @@ function runCli() {
   const { command, options } = parseArguments(process.argv.slice(2));
   let result;
   switch (command) {
+    case "register-quality":
+      result = require("./quality-wake").registerQuality(
+        options,
+        path.join(runtimeDirectory(), "quality-wakes"),
+      );
+      break;
     case "admit":
       result = admit(options);
       break;
@@ -657,7 +663,7 @@ function runCli() {
       break;
     default:
       throw new RuntimeError(
-        "usage: autonomous-loop-runtime.js admit|release|repair|context-break|fresh-launch [--option value]",
+        "usage: autonomous-loop-runtime.js admit|release|repair|context-break|fresh-launch|register-quality [--option value]",
         "INVALID_COMMAND",
       );
   }

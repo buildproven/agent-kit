@@ -1426,6 +1426,7 @@ module.exports = {
   WORK_REQUIRED_EXIT,
   ORCHESTRATION_SCHEMA_VERSION,
   parseArgs,
+  parseStopAt,
   pinRepositoryLease,
   reviewSummary,
   trustedReleaseCiEligible,

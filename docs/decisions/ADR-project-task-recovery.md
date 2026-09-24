@@ -21,8 +21,33 @@ review termination including ignored SIGTERM, preserved active-execution/owner
 records, and invalid UTC/calendar inputs. ESLint has zero errors; existing
 complexity warnings remain. This suite uses the actual runner and ownership
 code with a fixture invocation library. It does not prove real-manifest recovery
-or launchd wake-up. Registration, reconciliation, scheduling and the real
-crash/re-entry acceptance test below remain unimplemented.
+or launchd wake-up.
+
+Host registration is now implemented locally through `register-quality`. Eight
+CLI tests use real Git repositories and the real manifest loader/identity check.
+They prove private state, fixed identity/deadline, no campaign mutation,
+read-only repeated registration, clean controller binding, and refusal of
+symlinked/shared/repository-contained state. These plus the existing autonomous
+runtime tests pass 21/21 (2.78 seconds). The controller in these registration
+tests is deliberately a registration-only fixture, not an execution proof.
+Reconciliation, scheduling and the real crash/re-entry acceptance test below
+remain unimplemented. No production wake job has been installed.
+
+The host entry point is:
+
+```bash
+node scripts/autonomous-loop-runtime.js register-quality \
+  --manifest /absolute/path/to/invocation.json \
+  --stop-at 2026-09-24T03:00:00.000Z
+```
+
+Use the actual intended deadline, not the example timestamp. The default
+controller is the checkout containing the runtime; `--controller` selects a
+different installed controller repository. Its clean Git revision, Node path
+and version, and dependency-lock digest are retained. The default registration
+directory is the operator's autonomous-loop state directory under
+`quality-wakes`; `--state-dir` selects an isolated host state directory. It must
+be private and outside both repositories. Registration does not start work.
 
 ## Problem and rejected first design
 

@@ -4,6 +4,26 @@
   "mappings": [
     {
       "paths": [
+        "scripts/quality-wake.js",
+        "scripts/autonomous-loop-runtime.js",
+        "scripts/__tests__/quality-wake.test.js",
+        "scripts/__tests__/autonomous-loop-runtime.test.js",
+        "docs/decisions/ADR-project-task-recovery.md"
+      ],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": [
+            "vitest",
+            "run",
+            "scripts/__tests__/quality-wake.test.js",
+            "scripts/__tests__/autonomous-loop-runtime.test.js"
+          ]
+        }
+      ]
+    },
+    {
+      "paths": [
         "scripts/provider-worker-sandbox.sh",
         "scripts/__tests__/provider-worker-sandbox.test.js",
         "docs/decisions/ADR-provider-worker-sandbox.md"
