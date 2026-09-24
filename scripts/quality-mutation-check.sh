@@ -142,7 +142,7 @@ run_conventional_sibling_test() {
     [ -f "$SANDBOX/$sibling" ] || continue
     SIBLING_TEST_SELECTED=true
     bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-      npx "$runner" run --bail=1 "$sibling" >> "$log" 2>&1
+      node "$SCRIPT_DIR/quality-repository-command.js" npx "$runner" run --bail=1 "$sibling" >> "$log" 2>&1
     return $?
   done
   return 2
@@ -230,7 +230,7 @@ run_mutation_command() {
         return "$PLAN_ERROR_STATUS"
       fi
       if plan="$(cd "$SANDBOX" && bash "$SCRIPT_DIR/quality-run-bounded.sh" \
-        --timeout "$timeout_seconds" -- "$executable" "${plan_args[@]}" 2>> "$log")"; then
+        --timeout "$timeout_seconds" -- node "$SCRIPT_DIR/quality-repository-command.js" "$executable" "${plan_args[@]}" 2>> "$log")"; then
         plan_status=0
       else
         plan_status=$?
@@ -315,7 +315,7 @@ run_mutation_command() {
   fi
 
   bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-    "$executable" "${args[@]+"${args[@]}"}" >> "$log" 2>&1
+    node "$SCRIPT_DIR/quality-repository-command.js" "$executable" "${args[@]+"${args[@]}"}" >> "$log" 2>&1
 }
 
 run_candidate_tests() {
@@ -775,7 +775,7 @@ prepare_mutation_dependencies() {
         return 1
       }
       bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-        env CI=true pnpm --config.manage-package-manager-versions=false --config.pm-on-fail=ignore install --offline --frozen-lockfile --ignore-scripts >> "$log" 2>&1
+        node "$SCRIPT_DIR/quality-repository-command.js" env CI=true pnpm --config.manage-package-manager-versions=false --config.pm-on-fail=ignore install --offline --frozen-lockfile --ignore-scripts >> "$log" 2>&1
       ;;
     npm)
       [ -f "$SANDBOX/package-lock.json" ] || [ -f "$SANDBOX/npm-shrinkwrap.json" ] || {
@@ -783,7 +783,7 @@ prepare_mutation_dependencies() {
         return 1
       }
       bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-        env CI=true npm ci --offline --ignore-scripts >> "$log" 2>&1
+        node "$SCRIPT_DIR/quality-repository-command.js" env CI=true npm ci --offline --ignore-scripts >> "$log" 2>&1
       ;;
     yarn)
       [ -f "$SANDBOX/yarn.lock" ] || {
@@ -792,10 +792,10 @@ prepare_mutation_dependencies() {
       }
       if [ -f "$SANDBOX/.yarnrc.yml" ]; then
         bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-          env CI=true YARN_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-builds >> "$log" 2>&1
+          node "$SCRIPT_DIR/quality-repository-command.js" env CI=true YARN_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-builds >> "$log" 2>&1
       else
         bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-          env CI=true yarn install --offline --frozen-lockfile --non-interactive --ignore-scripts >> "$log" 2>&1
+          node "$SCRIPT_DIR/quality-repository-command.js" env CI=true yarn install --offline --frozen-lockfile --non-interactive --ignore-scripts >> "$log" 2>&1
       fi
       ;;
     bun)
@@ -804,7 +804,7 @@ prepare_mutation_dependencies() {
         return 1
       }
       bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$timeout_seconds" -- \
-        env CI=true bun install --offline --frozen-lockfile --ignore-scripts >> "$log" 2>&1
+        node "$SCRIPT_DIR/quality-repository-command.js" env CI=true bun install --offline --frozen-lockfile --ignore-scripts >> "$log" 2>&1
       ;;
   esac
   )
@@ -855,7 +855,7 @@ if [ -n "$STRYKER_CONFIG" ] && \
   set +e
   cd "$SANDBOX"
   bash "$SCRIPT_DIR/quality-run-bounded.sh" --timeout "$CHECK_SECONDS" -- \
-    "$TEST_EXECUTABLE" run test:mutation > "$LOG" 2>&1
+    node "$SCRIPT_DIR/quality-repository-command.js" "$TEST_EXECUTABLE" run test:mutation > "$LOG" 2>&1
   RESULT=$?
   set -e
   cd "$ROOT"
