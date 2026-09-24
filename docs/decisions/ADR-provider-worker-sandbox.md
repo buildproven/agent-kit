@@ -5,7 +5,86 @@
 Accepted for BUI-954. The first delivery is a launch wrapper. It is not yet a
 claim that every provider workflow is isolated.
 
+## Process-introspection correction (implemented locally; delivery pending)
+
+Sol/high reviewed this ADR on 2026-09-24 at 04:08–04:11 UTC. Its only finding
+was an ambiguous observation date; the UTC timestamp below resolves it. No
+architecture defect was reported. This is design review, not code review or
+merge authorization. The native failed acceptance remains open until repaired.
+
+Native acceptance on 2026-09-24 at 03:48 UTC shows that a worker can call
+`sysctl(KERN_PROCARGS2)` for an unrelated, same-user synthetic Node process and
+read its environment marker under the current wrapper and Sandbox Runtime
+0.0.77. No real credentials were read. Blocking `ps`, clearing the worker's own
+environment, and denying credential files do not close this kernel interface.
+The synthetic process is needed: the OS omits environment values for some
+platform-signed targets, which would give a vacuous passing control.
+
+Decision: retain the existing runtime CLI and lifecycle; carry a
+version-pinned, tracked dependency patch adding these two profile restrictions:
+
+```scheme
+(deny process-info* (require-not (target self)))
+(deny sysctl-read (sysctl-name-prefix "kern.procargs"))
+```
+
+Apply the patch with the maintained `patch-package` installer, not an ad hoc
+source rewrite or runtime string substitution. Keep the runtime and patch
+installer available in the same dependency installation mode. The wrapper
+must validate the supported runtime version and the SHA-256 of the patched
+profile generator against committed values before any worker or canary launch.
+Skipping lifecycle scripts, a missing patch, an unsupported version, or changed
+generator bytes therefore refuses execution; it must not quietly use the
+unpatched runtime. Future upgrades regenerate/review the patch and expected
+digest together, with the native regression and client compatibility proofs.
+
+The license gate rejects `jsonify`, a transitive dependency of patch-package's
+serializer. A scoped npm override substitutes MIT-licensed
+`fast-json-stable-stringify@2.1.0` for that serializer only. The only caller
+writes JSON patch state; compact output preserves its parsed state. An isolated
+install proved patch application, the expected generator hash, state save/read
+round-trip, and the unchanged license allowlist. This follows the proposed
+[upstream replacement](https://github.com/ds300/patch-package/pull/606), which
+is not yet merged; it does not claim upstream approval.
+
+Alternatives: a nested second Seatbelt sandbox is refused by the OS. The public
+SDK returns a shell command on macOS, not a structured profile hook; editing
+that string would couple a new launcher and proxy/signal lifecycle to an
+undocumented format. A diagnostic-only string edit proved the policy direction,
+but will not ship. A new credential broker, VM service, or broad read grant does
+not fix this demonstrated native policy omission. No installed package has
+been modified during diagnosis. Check for an upstream release before carrying
+the patch; npm currently reports 0.0.77 as latest.
+
+Verification before adoption: the same native synthetic reader must succeed
+outside confinement and receive EPERM/no marker under the patched final wrapper;
+removing the denial must expose the marker again. Keep positive allowed reads
+and writes, denied outside paths, Keychain controls, argv quoting and both native
+client startup checks. The captured final wrapper policy and correct allowed
+working directory let Claude --version pass both before and after the prototype
+denials; Codex startup also passes. Neither version check proves authentication.
+Add a missing/altered-patch preflight test that proves the worker never starts,
+plus clean-install checks. Do not relax existing filesystem/network policy.
+
+Rollback restores the prior dependency and wrapper together but keeps A9
+explicitly failed and the worker boundary uncommissioned. It cannot advertise
+credential isolation with a known process-environment read path. This design
+does not reset PR647's exhausted review campaign or grant merge authority.
+
 ## Context
+
+Local correction evidence (2026-09-24, 04:18–04:20 UTC): the native process
+environment regression failed before the patch (marker readable) and passed
+after it (EPERM, no marker), with the outside-sandbox positive control retained.
+The wrapper now checks the pinned version and patched generator SHA-256 before
+any sandbox invocation. Missing, altered, and wrong-version fixtures all refuse
+before the worker or write probe starts. The focused suite passes 22 tests with
+two opt-in Keychain cases skipped, both before and after a clean `npm ci`.
+ESLint, shell syntax, and diff whitespace checks pass. This is local evidence,
+not completed independent code review, authenticated acceptance, or merge proof.
+An additional opt-in native Keychain run passes the ordinary credential case;
+the data-protection case remains unverified because the host baseline lacks its
+required entitlement (the other 22 cases were excluded by the test filter).
 
 Provider workers inherit the coordinator's local environment by default. This
 can expose GitHub credentials, SSH agent sockets, credential helpers, and
@@ -81,7 +160,51 @@ AppleEvents, controller Git hooks/configuration, real provider authentication,
 linked-worktree Git metadata, nested-repository rejection, and a provider
 worker canary before this wrapper is wired into normal provider execution.
 
-## Rollback
+## Executable-path follow-up (BUI-954, measured decision)
+
+The installed clients fail before startup because their launchers resolve into
+denied user directories. A native probe in an already allowed target also fails
+when invoked through `/var` rather than its canonical `/private/var` path.
+
+A proposed receipt extension for extra executable reads received a bounded
+Claude Opus design review. Its intended red regression then passed on unchanged
+code. Actual native Claude and Codex `--version` also pass without extra grants.
+Therefore do not implement that extension. Process execution and file reading
+are separate sandbox operations; an executable does not always need a read grant.
+The Claude shell launcher failed while searching a denied versions directory;
+the Codex npm launcher failed, but its native executable did not. A future
+controller integration must resolve native binaries before confinement and use
+canonical paths. Do not grant package trees to compensate for launcher behavior.
+No production wrapper or receipt schema change is needed for these version probes.
+This finding does not establish authenticated execution or ordinary tool use.
+
+Before integration, repeat filesystem/environment and native Keychain probes
+under the exact final policy. Any policy change invalidates prior results.
+The ordinary native `SecItemCopyMatching` canary is readable outside confinement
+with the same scrubbed environment and returns no item inside. The synthetic
+item is removed in a finally path. Data-protection item creation returns -34018
+outside confinement: this case is unverified, not a sandbox pass. The installed
+Claude and Codex entitlements contain no Keychain access groups; do not assume
+this establishes support or isolation for future signed clients. Authentication
+integration must resolve that gap or explicitly reject an unsupported client.
+No test reads real account credentials.
+
+Alternatives: broad home/package grants are rejected because they expose
+unrelated state. Loading a JS launcher is unnecessary for the installed native
+clients and adds interpreter/package-path obligations. Future script-only
+installations require a separate bounded launch contract, not silent fallback.
+
+Verification: exact installed native `--version` for both clients; canonical
+native execution while the same file remains unreadable; unchanged file/Git
+write/ambient-environment denial; and native credential probes. Run the optional
+host credential tests with `BS_SANDBOX_CREDENTIAL_PROBE=1 npx vitest run
+scripts/__tests__/provider-worker-sandbox.test.js`. They create uniquely named
+synthetic items only, clean them up in finally paths, and explicitly skip an
+unsupported data-protection baseline instead of claiming it passed. The default
+suite does not require access to an operator's Keychain. A selected isolation
+mode must never fall back to unrestricted execution.
+
+## Integration rollback
 
 The wrapper is an unused, fail-closed launch utility until a later provider-run
 integration. Removing that integration returns workers to the existing launch

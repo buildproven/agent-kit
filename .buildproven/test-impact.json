@@ -3,9 +3,21 @@
   "jsRunner": "vitest",
   "mappings": [
     {
+      "paths": [".buildproven/test-impact.json"],
+      "commands": [
+        {
+          "executable": "npx",
+          "args": ["vitest", "run", "scripts/__tests__/test-impact.test.js"]
+        }
+      ]
+    },
+    {
       "paths": [
         "scripts/provider-worker-sandbox.sh",
         "scripts/__tests__/provider-worker-sandbox.test.js",
+        "scripts/__tests__/fixtures/credential-boundary.c",
+        "scripts/__tests__/fixtures/process-environment-boundary.c",
+        "patches/@anthropic-ai+sandbox-runtime+0.0.77.patch",
         "docs/decisions/ADR-provider-worker-sandbox.md"
       ],
       "commands": [
