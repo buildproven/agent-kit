@@ -59,6 +59,176 @@ function phaseTarget(prefix = "governor-phase-") {
 }
 
 describe("compute governor", () => {
+  it.each([
+    ["scan", ["README.md"], {}, "economy-micro", "gpt-5.6-luna", "medium"],
+    [
+      "implement",
+      ["docs/guide.md"],
+      {},
+      "economy-builder",
+      "gpt-5.6-luna",
+      "medium",
+    ],
+    [
+      "implement",
+      ["src/feature.js"],
+      {},
+      "standard",
+      "gpt-5.6-terra",
+      "medium",
+    ],
+    [
+      "scan",
+      ["README.md"],
+      { ambiguous: true },
+      "standard",
+      "gpt-5.6-terra",
+      "medium",
+    ],
+    ["scan", ["src/"], {}, "standard", "gpt-5.6-terra", "medium"],
+    ["scan", ["**"], {}, "standard", "gpt-5.6-terra", "medium"],
+    [
+      "scan",
+      ["one.md", "two.md", "three.md"],
+      {},
+      "standard",
+      "gpt-5.6-terra",
+      "medium",
+    ],
+    [
+      "scan",
+      ["README.md"],
+      { changedFiles: 3 },
+      "standard",
+      "gpt-5.6-terra",
+      "medium",
+    ],
+    [
+      "scan",
+      ["README.md"],
+      { targetedProof: false },
+      "standard",
+      "gpt-5.6-terra",
+      "medium",
+    ],
+    [
+      "implement",
+      ["README.md"],
+      { reversible: false },
+      "standard",
+      "gpt-5.6-terra",
+      "medium",
+    ],
+    ["implement", ["README.MD"], {}, "standard", "gpt-5.6-terra", "medium"],
+    ["implement", ["nested/agents.md"], {}, "critical", "gpt-5.6-sol", "high"],
+    ["implement", ["AGENTS.md"], {}, "critical", "gpt-5.6-sol", "high"],
+    [
+      "implement",
+      [".claude/skills/quality/SKILL.md"],
+      {},
+      "critical",
+      "gpt-5.6-sol",
+      "high",
+    ],
+    [
+      "implement",
+      ["docs/decisions/ADR-example.md"],
+      {},
+      "critical",
+      "gpt-5.6-sol",
+      "high",
+    ],
+    [
+      "diagnose",
+      ["src/one.js", "src/two.js"],
+      { localized: false },
+      "expert",
+      "gpt-5.6-terra",
+      "high",
+    ],
+  ])(
+    "applies static task routing for %s %j %j",
+    (phase, plannedPaths, extra, route, model, effort) => {
+      const { target, prompt } = phaseTarget();
+      const plan = resolvePhaseExecution(
+        {
+          schemaVersion: 2,
+          caller: "interactive-ralph",
+          provider: "codex",
+          phase,
+          evidence: {
+            ...phaseEvidence,
+            localized: true,
+            reversible: true,
+            targetedProof: true,
+            ambiguous: false,
+            changedFiles: 1,
+            plannedPaths,
+            ...extra,
+          },
+        },
+        prompt,
+        target,
+      );
+      expect(plan).toMatchObject({ route, model, effort });
+      expect(validatePhaseExecutionPlan(plan, prompt, target)).toEqual(plan);
+    },
+  );
+
+  it.each([
+    ["text", "updated guide\n", 0o644, null],
+    ["binary", "updated\0guide", 0o644, "cannot contain binary files"],
+    [
+      "executable",
+      "updated guide\n",
+      0o755,
+      "disallowed Git change kind or file mode",
+    ],
+  ])(
+    "checks economy Markdown handoff for %s content",
+    (_kind, content, mode, error) => {
+      const { target, prompt } = phaseTarget();
+      const plan = resolvePhaseExecution(
+        {
+          schemaVersion: 2,
+          caller: "interactive-ralph",
+          provider: "codex",
+          phase: "implement",
+          evidence: {
+            ...phaseEvidence,
+            localized: true,
+            reversible: true,
+            targetedProof: true,
+            ambiguous: false,
+            changedFiles: 1,
+            plannedPaths: ["README.md"],
+          },
+        },
+        prompt,
+        target,
+      );
+      expect(plan.route).toBe("economy-builder");
+      writeFileSync(path.join(target, "README.md"), content);
+      chmodSync(path.join(target, "README.md"), mode);
+      const patch = path.join(makeTempDir("economy-patch-"), "change.patch");
+      writeFileSync(
+        patch,
+        execFileSync("git", ["diff", "--binary", "HEAD", "--"], {
+          cwd: target,
+        }),
+      );
+      if (error)
+        expect(() => validatePhaseCandidate(plan, target, patch)).toThrow(
+          error,
+        );
+      else
+        expect(validatePhaseCandidate(plan, target, patch)).toMatchObject({
+          status: "approved",
+          changedFiles: 1,
+        });
+    },
+  );
+
   it("routes Claude native advice only through the exact neutral profile", () => {
     const result = resolve({
       interface: "native-advisory",
@@ -714,12 +884,12 @@ describe("compute governor", () => {
     );
     expect(plan).toMatchObject({
       schemaVersion: 2,
-      route: "standard",
+      route: phase === "diagnose" ? "expert" : "standard",
       provider: "codex",
       model: "gpt-5.6-terra",
       phase,
       accessProfile,
-      promotion: "economy-execution-disabled",
+      promotion: "static-task-policy",
     });
     expect(validatePhasePlan(plan)).toEqual(plan);
     expect(validatePhaseExecutionPlan(plan, prompt, target)).toEqual(plan);
@@ -899,9 +1069,13 @@ describe("compute governor", () => {
         cwd: protectedSubject.target,
       }),
     );
-    expect(() =>
+    expect(protectedPlan.route).toBe("critical");
+    expect(
       validatePhaseCandidate(protectedPlan, protectedSubject.target, patchFile),
-    ).toThrow("undeclared protected path");
+    ).toMatchObject({
+      status: "approved",
+      discoveredProtectedSurfaces: ["auth"],
+    });
 
     const nestedSubject = phaseTarget("governor-nested-protected-path-");
     const nestedPlan = resolvePhaseExecution(

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "policyVersion": "2026-08-22-phase-v2",
+  "policyVersion": "2026-09-23-static-task-v2",
   "executionProfile": {
     "version": "codex-isolated-v1",
     "approval": "never",
@@ -33,10 +33,25 @@
     }
   },
   "routes": {
+    "economy-micro": {
+      "caps": { "maxWallSeconds": 300, "maxWorkers": 1 },
+      "model": "gpt-5.6-luna",
+      "effort": "medium"
+    },
+    "economy-builder": {
+      "caps": { "maxWallSeconds": 900, "maxWorkers": 1 },
+      "model": "gpt-5.6-luna",
+      "effort": "medium"
+    },
     "standard": {
       "caps": { "maxWallSeconds": 1800, "maxWorkers": 1 },
       "model": "gpt-5.6-terra",
       "effort": "medium"
+    },
+    "expert": {
+      "caps": { "maxWallSeconds": 2700, "maxWorkers": 1 },
+      "model": "gpt-5.6-terra",
+      "effort": "high"
     },
     "critical": {
       "caps": { "maxWallSeconds": 3600, "maxWorkers": 1 },
@@ -64,6 +79,16 @@
     "public-contract": ["api/", "cli/", "sdk/"],
     "deployment": [".github/workflows/", "deploy/", "infrastructure/"],
     "security": [
+      "AGENTS.md",
+      "CLAUDE.md",
+      "SKILL.md",
+      "commands/",
+      "skills/",
+      ".claude/",
+      ".codex/",
+      ".agents/",
+      "policies/",
+      "docs/decisions/",
       "security/",
       "secrets/",
       "scripts/compute-governor.js",
