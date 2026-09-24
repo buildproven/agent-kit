@@ -172,7 +172,213 @@ function registered(fx) {
   return JSON.parse(result.stdout).registrationPath;
 }
 
+async function waitFor(check, milliseconds = 25_000) {
+  const until = Date.now() + milliseconds;
+  while (Date.now() < until) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("timed out waiting for the isolated wake job");
+}
+
+it.runIf(
+  process.platform === "darwin" &&
+    process.env.BS_QUALITY_WAKE_LAUNCHD_TEST === "1",
+)(
+  "launchd wakes a crashed coordinator without repeating its live gate",
+  async () => {
+    const fx = fixture();
+    executableController(fx);
+    const gateReady = path.join(fx.root, "gate-ready");
+    const gateCount = path.join(fx.root, "gate-count");
+    writeFileSync(
+      path.join(fx.target, "hold-gate.js"),
+      `const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(gateCount)}, "lint\\n");
+fs.writeFileSync(${JSON.stringify(gateReady)}, "ready");
+setTimeout(() => process.exit(1), 5000);\n`,
+    );
+    writeFileSync(
+      path.join(fx.target, "package.json"),
+      JSON.stringify({
+        private: true,
+        scripts: {
+          lint: "node hold-gate.js",
+          test: "node -e ''",
+          security: "node -e ''",
+        },
+      }),
+    );
+    git(fx.target, ["add", "."]);
+    git(fx.target, ["commit", "-qm", "isolated failing gate"]);
+    fx.manifestPath = execFileSync(
+      process.execPath,
+      [
+        path.join(fx.controller, "scripts/quality-invocation.js"),
+        "create",
+        "--repo",
+        fx.target,
+        "--base-ref",
+        "main",
+        "--primary",
+        "claude",
+        "--fallback",
+        "none",
+      ],
+      {
+        encoding: "utf8",
+        cwd: fx.target,
+        env: { ...process.env, TMPDIR: fx.root },
+      },
+    ).trim();
+    fx.manifest = JSON.parse(readFileSync(fx.manifestPath, "utf8"));
+    fx.stopAt = new Date(Date.now() + 40_000).toISOString();
+    const registration = registered(fx);
+    const render = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "render-quality-wake",
+        "--registration",
+        registration,
+        "--interval-seconds",
+        "1",
+      ],
+      { encoding: "utf8", env: { ...process.env, TMPDIR: fx.root } },
+    );
+    expect(render.status, render.stderr).toBe(0);
+    const job = JSON.parse(render.stdout);
+    const plist = path.join(fx.root, "isolated-wake.plist");
+    writeFileSync(plist, job.plist, { mode: 0o600 });
+    const domain = `gui/${process.getuid()}`;
+    let loaded = false;
+    let childGroup;
+    let testFailure;
+    const cleanupFailures = [];
+    try {
+      execFileSync("launchctl", ["bootstrap", domain, plist], {
+        encoding: "utf8",
+      });
+      loaded = true;
+      await waitFor(() => existsSync(gateReady));
+      const owner = JSON.parse(
+        readFileSync(fx.manifestPath + ".runner-lock", "utf8"),
+      );
+      expect(owner.hostname).toBe(hostname());
+      expect(owner.childInFlight).toBe(true);
+      childGroup = owner.child.processGroupId;
+      process.kill(owner.pid, "SIGKILL");
+      const stdout = registration + ".stdout.log";
+      await waitFor(
+        () =>
+          existsSync(stdout) &&
+          readFileSync(stdout, "utf8").includes("child-live-or-unverifiable"),
+      );
+      await waitFor(
+        () =>
+          existsSync(stdout) &&
+          readFileSync(stdout, "utf8").includes("campaign-terminal"),
+      );
+      const final = JSON.parse(readFileSync(fx.manifestPath, "utf8"));
+      expect(final.invocationId).toBe(fx.manifest.invocationId);
+      expect(final.terminalState.state).toBe("blocked");
+      expect(final.governor.providerSecondsUsed).toBe(0);
+      expect(readFileSync(gateCount, "utf8")).toBe("lint\n");
+    } catch (error) {
+      testFailure = error;
+    } finally {
+      if (loaded) {
+        try {
+          execFileSync("launchctl", ["bootout", `${domain}/${job.label}`], {
+            encoding: "utf8",
+          });
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (Number.isInteger(childGroup) && childGroup > 0) {
+        try {
+          process.kill(-childGroup, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH") cleanupFailures.push(error);
+        }
+      }
+    }
+    if (testFailure || cleanupFailures.length) {
+      throw new AggregateError(
+        [...(testFailure ? [testFailure] : []), ...cleanupFailures],
+        "isolated wake probe or cleanup failed",
+      );
+    }
+    const absent = spawnSync("launchctl", ["print", `${domain}/${job.label}`], {
+      encoding: "utf8",
+    });
+    expect(absent.status).not.toBe(0);
+  },
+  60_000,
+);
+
 describe("quality wake reconciliation", () => {
+  it.each(["work-required", "action-required"])(
+    "honors the existing durable %s pause",
+    (status) => {
+      const fx = fixture();
+      const registration = registered(fx);
+      fx.manifest.orchestration = {
+        head: fx.manifest.revisions.currentHead,
+        status,
+      };
+      writeFileSync(fx.manifestPath, JSON.stringify(fx.manifest));
+      const before = readFileSync(fx.manifestPath, "utf8");
+      const result = wake(fx, registration);
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        status: "paused",
+        reason: status,
+      });
+      expect(readFileSync(fx.manifestPath, "utf8")).toBe(before);
+    },
+  );
+
+  it("renders a project-specific launchd job without installing it", () => {
+    const fx = fixture();
+    executableController(fx);
+    const registration = registered(fx);
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "render-quality-wake",
+        "--registration",
+        registration,
+        "--interval-seconds",
+        "1",
+      ],
+      { encoding: "utf8", env: { ...process.env, TMPDIR: fx.root } },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const rendered = JSON.parse(result.stdout);
+    expect(rendered.label).toMatch(
+      /^com\.buildproven\.quality-wake\.[a-f0-9]{20}$/,
+    );
+    expect(rendered.plist).toContain(
+      "<key>StartInterval</key><integer>1</integer>",
+    );
+    expect(rendered.plist).toContain("<string>reconcile-quality</string>");
+    expect(rendered.plist).toContain(
+      fx.controller + "/scripts/autonomous-loop-runtime.js",
+    );
+    const plist = path.join(fx.root, "wake.plist");
+    writeFileSync(plist, rendered.plist, { mode: 0o600 });
+    if (process.platform === "darwin") {
+      const lint = spawnSync("plutil", ["-lint", plist], { encoding: "utf8" });
+      expect(lint.status, lint.stdout + lint.stderr).toBe(0);
+    }
+    expect(readFileSync(fx.manifestPath, "utf8")).toBe(
+      JSON.stringify(fx.manifest),
+    );
+  });
+
   it.each([
     ["remote", "blocked", "owner-host-mismatch"],
     ["legacy", "blocked", "legacy-owner"],

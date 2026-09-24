@@ -640,6 +640,9 @@ async function runCli() {
   const { command, options } = parseArguments(process.argv.slice(2));
   let result;
   switch (command) {
+    case "render-quality-wake":
+      result = require("./quality-wake").renderQualityWake(options);
+      break;
     case "reconcile-quality":
       result = await require("./quality-wake").reconcileQuality(options);
       break;
@@ -666,7 +669,7 @@ async function runCli() {
       break;
     default:
       throw new RuntimeError(
-        "usage: autonomous-loop-runtime.js admit|release|repair|context-break|fresh-launch|register-quality|reconcile-quality [--option value]",
+        "usage: autonomous-loop-runtime.js admit|release|repair|context-break|fresh-launch|register-quality|reconcile-quality|render-quality-wake [--option value]",
         "INVALID_COMMAND",
       );
   }

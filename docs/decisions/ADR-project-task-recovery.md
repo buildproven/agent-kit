@@ -39,15 +39,29 @@ The latter charges one second of expired gate execution exactly once and keeps
 provider usage at zero. Live owners/children, remote and legacy owners, missing
 child identity, pending execution deadlines, terminal campaigns, changed
 identities and expired wake deadlines do not dispatch work. These are local
-component proofs, not the scheduled crash/re-entry proof. Scheduling, race fault
-injection, result-pause persistence and the real launchd acceptance below remain
-unfinished. No production wake job has been installed.
+component proofs. The native launchd crash probe now also passes (12.42 seconds):
+an isolated job starts a real campaign and gate; the test kills its coordinator;
+launchd wakes the same registration; the wake reports the still-live child and
+does not duplicate the gate; the deliberately failing gate leaves the campaign
+blocked with zero provider usage. The gate counter remains exactly one. The
+temporary job is booted out and absence is verified. This proves scheduled
+crash wake-up and failure preservation, not successful delayed-CI completion.
+The combined native/runtime run passes 35/35 tests (23.20 seconds).
+Race fault injection, deadline edge cases and the
+remaining delayed-CI acceptance below are unfinished. No production wake job
+has been installed.
 
 Recovery dispatch must execute from the registered controller's own runtime.
 It uses fixed imports, not dynamic loading of paths from registration data.
 After execution it rechecks registration and campaign identity; a complete
 result requires a matching terminal record. The adapter does not accept an exit
 code alone as proof of completion.
+
+Pause persistence reuses the runner's existing exact-head orchestration record.
+`work-required` and `action-required` are read-only pauses on later ticks; a wake
+cannot grant the missing decision or external capability. No second result
+state machine or pause store is added. Explicit supported runner re-entry owns
+resumption after that work or authority is supplied.
 
 The host entry point is:
 
@@ -64,6 +78,22 @@ and version, and dependency-lock digest are retained. The default registration
 directory is the operator's autonomous-loop state directory under
 `quality-wakes`; `--state-dir` selects an isolated host state directory. It must
 be private and outside both repositories. Registration does not start work.
+
+`render-quality-wake --registration <path> [--interval-seconds 30]` returns a
+project-specific launchd label and plist as JSON. It does not install or start a
+job. The plist uses an absolute Node path and registered controller runtime,
+explicit argument vector, periodic interval, private-state log paths, and a
+bounded executable search path. It contains no provider credentials. macOS
+`plutil -lint` validates the generated plist. Production bootstrap remains a
+separate deployment action. The native test is opt-in on macOS:
+
+```bash
+BS_QUALITY_WAKE_LAUNCHD_TEST=1 npx vitest run \
+  scripts/__tests__/quality-wake.test.js -t 'launchd wakes'
+```
+
+Tick exit zero means a typed result was returned, not that delivery succeeded.
+Consumers must inspect `status`, campaign identity and matching manifest state.
 
 ## Problem and rejected first design
 

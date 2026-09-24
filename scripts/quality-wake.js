@@ -246,9 +246,13 @@ async function reconcileQuality(options) {
   }
   if (
     manifest.orchestration?.head === identity.head &&
-    manifest.orchestration.status === "work-required"
+    ["work-required", "action-required"].includes(manifest.orchestration.status)
   ) {
-    return { ...identity, status: "paused", reason: "work-required" };
+    return {
+      ...identity,
+      status: "paused",
+      reason: manifest.orchestration.status,
+    };
   }
   const ownerFile = `${manifestPath}.runner-lock`;
   const observed = ownership.readOwner(ownerFile);
@@ -333,9 +337,88 @@ async function reconcileQuality(options) {
   return { ...identity, ...result };
 }
 
+function xmlString(value) {
+  if ([...value].some((character) => character.codePointAt(0) < 32)) {
+    throw new Error("launchd arguments cannot contain control characters");
+  }
+  const entities = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&apos;",
+  };
+  return `<string>${value.replace(/[&<>"']/g, (character) => entities[character])}</string>`;
+}
+
+function renderQualityWake(options) {
+  if (!options.registration)
+    throw new Error("render-quality-wake requires --registration");
+  const requested = path.resolve(options.registration);
+  const { registration, stopAt } = validatedWake(requested);
+  const file = fs.realpathSync(requested);
+  if (Date.now() >= stopAt)
+    throw new Error("cannot schedule an expired wake registration");
+  const interval = Number(options["interval-seconds"] || 30);
+  if (!Number.isSafeInteger(interval) || interval < 1 || interval > 3600) {
+    throw new Error(
+      "wake interval must be an integer from 1 through 3600 seconds",
+    );
+  }
+  const runtime = path.join(
+    registration.controller.root,
+    "scripts/autonomous-loop-runtime.js",
+  );
+  git(registration.controller.root, [
+    "ls-files",
+    "--error-unmatch",
+    "--",
+    "scripts/autonomous-loop-runtime.js",
+  ]);
+  if (!fs.lstatSync(runtime).isFile())
+    throw new Error(
+      "registered controller runtime must be a regular tracked file",
+    );
+  const label = `com.buildproven.quality-wake.${crypto.createHash("sha256").update(file).digest("hex").slice(0, 20)}`;
+  const args = [
+    registration.controller.node,
+    runtime,
+    "reconcile-quality",
+    "--registration",
+    file,
+  ];
+  const executablePath = [
+    path.dirname(registration.controller.node),
+    path.join(os.homedir(), ".local/bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ].join(path.delimiter);
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key>${xmlString(label)}
+<key>ProgramArguments</key><array>${args.map(xmlString).join("")}</array>
+<key>WorkingDirectory</key>${xmlString(registration.controller.root)}
+<key>StartInterval</key><integer>${interval}</integer>
+<key>ThrottleInterval</key><integer>${interval}</integer>
+<key>EnvironmentVariables</key><dict>
+<key>PATH</key>${xmlString(executablePath)}
+<key>TMPDIR</key>${xmlString(fs.realpathSync(process.env.TMPDIR || os.tmpdir()))}
+</dict>
+<key>StandardOutPath</key>${xmlString(file + ".stdout.log")}
+<key>StandardErrorPath</key>${xmlString(file + ".stderr.log")}
+</dict></plist>\n`;
+  return { status: "rendered", label, registrationPath: file, plist };
+}
+
 module.exports = {
   registerQuality,
   reconcileQuality,
   readRegistration,
   controllerIdentity,
+  renderQualityWake,
 };
